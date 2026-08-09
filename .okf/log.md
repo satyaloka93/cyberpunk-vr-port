@@ -1,6 +1,7 @@
 # Update Log
 
 ## 2026-08-09
+* **Update**: Expanded the initial three tested weapon overrides into a conservative all-category Sense baseline and made explicit that users should choose categories rather than leave DualSense-oriented defaults, then tune every choice to taste.
 * **Finding**: Native Settings category overrides produced better Sense mechanics than complex DualSense defaults; recorded Handguns = Very Soft, Shotgun = Hard, and Submachine Gun = Choppy as the initial PSVR2 compatibility profile despite the mod's DualSense-oriented Not Recommended label.
 * **Update**: Added full-game stereo audio-derived Sense PCM for explosions, impacts, vehicles, ambience, and other audible gameplay, plus explicit same-mode shotgun recoil detection and stronger two-hand heavy-weapon impulses.
 * **Fix**: Replaced incompatible DualSense raw Bow packing with Sense-tuned gradual weapon curves and shot-event resistance release after a `4/4` handgun profile was observed as stiff and chunky.

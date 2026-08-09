@@ -51,15 +51,24 @@ The bridge writes `DSXData.json` next to `DualSenseXConfig.txt`, allowing the mo
 
 ## Recommended Sense weapon overrides
 
-Enhanced DualSense Support labels its weapon-category override page **Not Recommended** because overriding Default replaces some per-model DualSense effects with a category-wide preset. That trade-off is usually undesirable on DualSense, but its complex defaults do not transfer cleanly to PS VR2 Sense. Testing found the simpler official presets more nuanced and controllable on Sense:
+Enhanced DualSense Support labels its weapon-category override page **Not Recommended** because overriding Default replaces some per-model DualSense effects with a category-wide preset. That trade-off is usually undesirable on DualSense, but its complex defaults do not transfer cleanly to PS VR2 Sense. A category choice should therefore be made for each weapon family to recover usable Sense nuance. The following is a conservative baseline, not a mandate; users should adjust every category to taste:
 
-| Weapon category | Override | Stored value |
-|---|---|---:|
-| Handguns | Very Soft | 4 |
-| Shotgun | Hard | 7 |
-| Submachine Gun | Choppy | 3 |
+| Weapon category | Baseline override |
+|---|---|
+| Handguns | Very Soft |
+| Revolver | Soft |
+| Submachine / Light Machine / Heavy Machine Gun | Choppy |
+| Rifle | Medium |
+| Precision Rifle / Sniper Rifle | Hard |
+| Shotgun / Double-Barrel Shotgun | Hard |
+| Projectile Launch System | Hard |
+| Fists / Knife / Monowire | Very Soft |
+| Sword / Katana / Mantis Blades | Soft |
+| Machete / Axe / One-Handed Club / Gorilla Arms | Medium |
+| Two-Handed Club / Hammer | Hard |
+| Chainsword | Choppy |
 
-These settings are intentional for the PSVR2 bridge and are not unsafe. They alter R2 while the mod continues to provide gameplay state and L2 behavior. Leave Double-Barrel Shotgun, Light Machine Gun, Heavy Machine Gun, and other untested categories at Default until calibrated. Back up `DualSense Support\config\settings.json` before changing many categories.
+Stored values are `3=Choppy`, `4=Very Soft`, `5=Soft`, `6=Medium`, and `7=Hard`; Default is `1`. These settings are intentional for the PSVR2 bridge and are not unsafe. They alter R2 while the mod continues to provide gameplay state and L2 behavior. Back up `DualSense Support\config\settings.json` before changing categories. Avoid Very Hard, Hardest, and Rigid as global defaults unless specifically desired, because they fatigue the shorter Sense trigger quickly.
 
 ## Effect fidelity
 
