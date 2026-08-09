@@ -70,8 +70,13 @@ D-PAD SHIFTING
         right stick up / down / left / right   D-pad up / down / left / right
 
     Turning is suppressed while Triangle touch is held. Triangle click still performs
-    weapon switch. L3 can be used as a second D-pad modifier; releasing L3 without choosing
-    a direction emits normal L3/sprint.
+    weapon switch. A shifted LEFT/RIGHT flick also pans the dynamic center overlays by one
+    step while preserving the game's D-pad input: LEFT moves the overlay left to reveal text
+    on its right edge; RIGHT moves it back right. Recenter the stick before each additional
+    step. Reset or fine-tune the position with F10 -> HUD -> Center overlays -> X.
+
+    L3 can be used as a second D-pad modifier; releasing L3 without choosing a direction
+    emits normal L3/sprint.
 
 HOTKEYS
     F7                                 recenter HMD

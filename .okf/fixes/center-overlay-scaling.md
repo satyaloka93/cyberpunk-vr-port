@@ -21,6 +21,8 @@ A new `Center overlays` X/Y/Size region covers:
 - `cursor_device`;
 - the generic `TopCenter` and `BottomCenter` roots.
 
+Shifted D-pad left/right also pans this region in `160`-pixel steps. Left moves the overlay left to reveal information beyond its right lens edge; right moves it back. Each direction fires once until the stick recenters, and the normal XInput D-pad bit is preserved. The resulting X offset is persisted and appears in the F10 slider, where it can be fine-tuned or reset to zero.
+
 Its persisted keys are:
 
 ```text
@@ -35,7 +37,7 @@ The default Size is `1.0`, which follows existing HUD semantics and applies a `0
 
 Deployed locally for retest:
 
-- `CyberpunkVR_Stereo.dll` SHA-256: `78190018f2df5c4bf81e7ed870a1a264d3b1f87f9541f25a251a7bf63814aed5`
+- `CyberpunkVR_Stereo.dll` SHA-256: `3851a4906739e7ef5bad2f2bbb38b3d42beab5c3103ac97e55edefd1a61001cb`
 - CET HUD script SHA-256: `5244fb1bc1160ff42c59e75867d9dad8bbc8abe03245bdf509b6107666e95046`
 
 The deployment preserved both `vrik_calibration.ini` and the existing `hud_layout.ini` byte-for-byte.
@@ -46,4 +48,6 @@ The deployment preserved both `vrik_calibration.ini` and the existing `hud_layou
 2. Open the quickhack chooser and confirm all entries fit in view.
 3. Trigger interaction and game-information popups and confirm they use the same size control.
 4. Verify crosshair/cursor behavior; these generic center roots intentionally share the region until individual controller identities are captured.
-5. Confirm named minimap, health, quest, and corner regions retain their prior settings.
+5. Use shifted D-pad left/right and verify one pan step per recentered flick; confirm the game still receives D-pad left/right.
+6. Confirm F10 reflects the new X value and setting X back to zero re-centers the overlays.
+7. Confirm named minimap, health, quest, and corner regions retain their prior settings.

@@ -60,6 +60,10 @@ static const char* const kHudKeys[kHudFieldCount] = {
     "xr_hud_boss_health", "xr_hud_vehicle_scan", "xr_hud_progress_bar", "xr_hud_oxygen_bar",
 };
 static float g_hudValues[kHudFieldCount];
+static SRWLOCK g_hudValuesLock = SRWLOCK_INIT;
+static constexpr int kHudCenterOverlayXIndex = static_cast<int>(
+    (offsetof(LiveControlsUiState, xrHudCenterOverlay) - offsetof(LiveControlsUiState, xrHudScale)) / sizeof(float));
+static_assert(kHudCenterOverlayXIndex == 27, "HUD key order must match LiveControlsUiState");
 static bool g_hudDefaultsInit = false;
 static bool g_hudLoaded = false;
 
@@ -350,6 +354,22 @@ static void EnsureHudLoaded() {
     DWORD attrs = GetFileAttributesA(g_hudLayoutPath);
     ReadHudLayoutFile();                                   // existing file -> g_hudValues
     if (attrs == INVALID_FILE_ATTRIBUTES) WriteHudLayoutFile(); // first run -> create it
+}
+
+// A horizontal shifted-D-pad flick pans the dynamic center-overlay group in fixed logical-UI
+// steps. This is intentionally persisted through the same bridge as the F10 HUD sliders so CET
+// can apply it without a new native/Lua ABI, and so F10 shows the resulting position next time it
+// opens. Call only on a direction EDGE -- it writes one tiny file per step.
+static void NudgeHudCenterOverlayX(float delta) {
+    EnsureHudLoaded();
+    AcquireSRWLockExclusive(&g_hudValuesLock);
+    float next = g_hudValues[kHudCenterOverlayXIndex] + delta;
+    if (next < -1200.0f) next = -1200.0f;
+    if (next > 1200.0f) next = 1200.0f;
+    g_hudValues[kHudCenterOverlayXIndex] = next;
+    WriteHudLayoutFile();
+    ReleaseSRWLockExclusive(&g_hudValuesLock);
+    Log("HUD: shifted-D-pad center-overlay pan X=%.0f.\n", next);
 }
 
 // Publish the mouse-Y flag for the CET VRIK mod (it reads this from its own folder).
@@ -844,7 +864,9 @@ static LiveControlsUiState MakeLiveControlsUiState() {
     // HUD placement isn't stored in g_liveControls; pull the last overlay-set
     // values (loaded from hud_layout.ini) into the contiguous xrHud* block.
     EnsureHudLoaded();
+    AcquireSRWLockShared(&g_hudValuesLock);
     memcpy(&state.xrHudScale, g_hudValues, kHudFieldCount * sizeof(float));
+    ReleaseSRWLockShared(&g_hudValuesLock);
     return state;
 }
 
@@ -971,8 +993,10 @@ extern "C" void SetLiveControlsUiState(const LiveControlsUiState* state, int per
     // the CET HUD mod polls. Done every call (not just on persist) so dragging a
     // slider updates the HUD live.
     EnsureHudLoaded();
+    AcquireSRWLockExclusive(&g_hudValuesLock);
     memcpy(g_hudValues, &state->xrHudScale, kHudFieldCount * sizeof(float));
     WriteHudLayoutFile();
+    ReleaseSRWLockExclusive(&g_hudValuesLock);
 
     if (persistToFile != 0) {
         PersistLiveControlsUiState(MakeLiveControlsUiState());
@@ -6726,6 +6750,21 @@ static DWORD WINAPI HookedXInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState
 
     // Buttons: OR (so a physical pad can still augment, and vice versa).
     pState->Gamepad.wButtons |= vr.buttons;
+
+    // Shifted D-pad horizontal flicks also pan the dynamic center-overlay group, one 160px
+    // step per recentered flick. Keep the D-pad bit itself: the game still receives its normal
+    // left/right action, while the viewport can be pulled toward text that sits beyond a lens edge.
+    // Left moves the UI left (revealing its right side); right moves it back to the right.
+    {
+        LONG direction = 0;
+        const bool dpadLeft = (vr.buttons & XINPUT_GAMEPAD_DPAD_LEFT) != 0;
+        const bool dpadRight = (vr.buttons & XINPUT_GAMEPAD_DPAD_RIGHT) != 0;
+        if (dpadLeft != dpadRight) direction = dpadLeft ? -1 : 1;
+        static volatile LONG s_hudPanDirection = 0;
+        const LONG previous = InterlockedExchange(&s_hudPanDirection, direction);
+        if (direction != 0 && previous != direction)
+            NudgeHudCenterOverlayX(static_cast<float>(direction) * 160.0f);
+    }
 
     // Match UEVR's one-action pause/select split. A quick SystemButton press emits
     // XInput Start only when released; holding for at least 500 ms emits XInput Back
