@@ -70,10 +70,15 @@ D-PAD SHIFTING
         right stick up / down / left / right   D-pad up / down / left / right
 
     Turning is suppressed while Triangle touch is held. Triangle click still performs
-    weapon switch. A shifted LEFT/RIGHT flick also pans the dynamic center overlays by one
-    step while preserving the game's D-pad input: LEFT moves the overlay left to reveal text
-    on its right edge; RIGHT moves it back right. Recenter the stick before each additional
-    step. Reset or fine-tune the position with F10 -> HUD -> Center overlays -> X.
+    weapon switch. A shifted LEFT/RIGHT flick also pans the quickhack chooser and its
+    separate right-side description panel together while preserving the game's D-pad input:
+    LEFT moves both panels left to reveal text on the right edge; RIGHT moves them back.
+    Recenter the stick before each additional step. Reset or fine-tune both positions with
+    F10 -> HUD -> Center overlays -> X and Right center -> X.
+
+    The final merged right-stick X/Y axes are forced to zero for the whole shift hold. This
+    prevents the stick from moving the external scanner target; head-look remains available
+    for targeting.
 
     L3 can be used as a second D-pad modifier; releasing L3 without choosing a direction
     emits normal L3/sprint.

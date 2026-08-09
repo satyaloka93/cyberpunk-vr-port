@@ -2,9 +2,8 @@
 
 ## 2026-08-09
 * **Creation**: Documented the optional [PSVR2 adaptive-trigger and grip-haptic integration](/operations/psvr2-adaptive-triggers.md), including its extended dependencies, direct-config ownership rules, raw trigger fidelity, launcher-DLL incompatibility, and driver recovery procedure.
-
-## 2026-08-09
-* **Update**: Added shifted-D-pad horizontal HUD panning: each recentered left/right flick moves `Center overlays` by 160 pixels while preserving normal D-pad input; deployed test DLL SHA-256 `3851a4906739e7ef5bad2f2bbb38b3d42beab5c3103ac97e55edefd1a61001cb` and preserved calibration/layout files.
+* **Fix**: Extended shifted-D-pad panning to the separate `RightCenter` quickhack description panel and carried `dpadShiftActive` into the XInput hook to zero final merged right-stick axes during selection; deployed test DLL SHA-256 `d32ce2f2d4f6c17a45b6a58cb8e772a3650c88d93c11eaa85233b228772c9b7c`.
+* **Update**: Added shifted-D-pad horizontal HUD panning: each recentered left/right flick moves `Center overlays` by 160 pixels while preserving normal D-pad input; deployed the preceding center-only test DLL and preserved calibration/layout files.
 * **Fix**: Added a live `Center overlays` HUD region after runtime logs showed scanner, quickhack, and popup layers arriving as unclassified centered `HUDMiddleWidget` roots; deployed a test DLL and CET script while preserving VRIK calibration and the user's existing HUD layout.
 
 ## 2026-08-08

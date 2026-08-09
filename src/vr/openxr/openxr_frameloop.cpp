@@ -935,6 +935,11 @@ DWORD OpenXRManager::FrameThreadMain() {
                 }
 
                 if (gameplayInputActive) {
+                    // Keep the modifier itself in the snapshot. Zeroing ctrl.rightThumb above
+                    // suppresses the OpenXR stick, but a Steam/physical XInput source can still
+                    // contribute axes when the hook merges states; the hook must clear those too.
+                    ctrl.dpadShiftActive = leftDpadTouchModifier || leftStickClicked;
+
                     // SteamVR's Oculus->PSVR2 auto-remapper currently drops menu, system and
                     // thumbrest paths entirely (vrserver logs list them as inputs, then omit
                     // them from the completed remap). Keep the native action for runtimes that

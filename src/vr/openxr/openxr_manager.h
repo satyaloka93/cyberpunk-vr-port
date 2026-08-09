@@ -45,6 +45,9 @@ struct VRControllerState {
     // Raw combined OpenXR SystemButton state. The XInput hook owns the timing
     // state machine so its one-shot Start/Back edges cannot fall between polls.
     bool     pauseSelectPressed = false;
+    // True for the full Triangle-touch/thumbrest/L3 shift hold. The XInput hook
+    // uses it to clear any underlying Steam/physical right-stick axes too.
+    bool     dpadShiftActive = false;
     bool     leftHandValid  = false;
     bool     rightHandValid = false;
 };

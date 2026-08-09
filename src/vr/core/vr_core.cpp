@@ -61,9 +61,12 @@ static const char* const kHudKeys[kHudFieldCount] = {
 };
 static float g_hudValues[kHudFieldCount];
 static SRWLOCK g_hudValuesLock = SRWLOCK_INIT;
+static constexpr int kHudRightCenterXIndex = static_cast<int>(
+    (offsetof(LiveControlsUiState, xrHudRightCenter) - offsetof(LiveControlsUiState, xrHudScale)) / sizeof(float));
 static constexpr int kHudCenterOverlayXIndex = static_cast<int>(
     (offsetof(LiveControlsUiState, xrHudCenterOverlay) - offsetof(LiveControlsUiState, xrHudScale)) / sizeof(float));
-static_assert(kHudCenterOverlayXIndex == 27, "HUD key order must match LiveControlsUiState");
+static_assert(kHudRightCenterXIndex == 24 && kHudCenterOverlayXIndex == 27,
+              "HUD key order must match LiveControlsUiState");
 static bool g_hudDefaultsInit = false;
 static bool g_hudLoaded = false;
 
@@ -360,16 +363,29 @@ static void EnsureHudLoaded() {
 // steps. This is intentionally persisted through the same bridge as the F10 HUD sliders so CET
 // can apply it without a new native/Lua ABI, and so F10 shows the resulting position next time it
 // opens. Call only on a direction EDGE -- it writes one tiny file per step.
-static void NudgeHudCenterOverlayX(float delta) {
+static float ClampHudOffset(float value) {
+    if (value < -1200.0f) return -1200.0f;
+    if (value > 1200.0f) return 1200.0f;
+    return value;
+}
+
+static void NudgeHudQuickhackPanelsX(float delta) {
     EnsureHudLoaded();
     AcquireSRWLockExclusive(&g_hudValuesLock);
-    float next = g_hudValues[kHudCenterOverlayXIndex] + delta;
-    if (next < -1200.0f) next = -1200.0f;
-    if (next > 1200.0f) next = 1200.0f;
-    g_hudValues[kHudCenterOverlayXIndex] = next;
+    // The quickhack chooser arrives in generic centered roots, but its description panel is a
+    // separate RightCenter root. Move both as one readable composition.
+    const float previousCenterX = g_hudValues[kHudCenterOverlayXIndex];
+    const float previousDetailsX = g_hudValues[kHudRightCenterXIndex];
+    // Older test builds moved only the center roots. On the first new flick, catch a mismatched
+    // details panel up to the existing center offset instead of moving the chooser a second step.
+    const bool needsSync = fabsf(previousCenterX - previousDetailsX) > 0.5f;
+    const float nextX = ClampHudOffset(previousCenterX + (needsSync ? 0.0f : delta));
+    g_hudValues[kHudCenterOverlayXIndex] = nextX;
+    g_hudValues[kHudRightCenterXIndex] = nextX;
     WriteHudLayoutFile();
     ReleaseSRWLockExclusive(&g_hudValuesLock);
-    Log("HUD: shifted-D-pad center-overlay pan X=%.0f.\n", next);
+    Log("HUD: shifted-D-pad pan center/right-details X=%.0f%s.\n",
+        nextX, needsSync ? " (synchronized)" : "");
 }
 
 // Publish the mouse-Y flag for the CET VRIK mod (it reads this from its own folder).
@@ -6763,7 +6779,7 @@ static DWORD WINAPI HookedXInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState
         static volatile LONG s_hudPanDirection = 0;
         const LONG previous = InterlockedExchange(&s_hudPanDirection, direction);
         if (direction != 0 && previous != direction)
-            NudgeHudCenterOverlayX(static_cast<float>(direction) * 160.0f);
+            NudgeHudQuickhackPanelsX(static_cast<float>(direction) * 160.0f);
     }
 
     // Match UEVR's one-action pause/select split. A quick SystemButton press emits
@@ -6940,6 +6956,15 @@ static DWORD WINAPI HookedXInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState
 
     if (fabsf(rx) > fabsf(pState->Gamepad.sThumbRX / 32767.0f)) pState->Gamepad.sThumbRX = FloatToSHORT(rx);
     if (fabsf(ry) > fabsf(pState->Gamepad.sThumbRY / 32767.0f)) pState->Gamepad.sThumbRY = FloatToSHORT(ry);
+
+    // The OpenXR frame loop zeros its own right-stick sample during D-pad shifting, but this hook
+    // deliberately composes a real/Steam virtual XInput pad too. Clear the FINAL merged axes for
+    // the whole modifier hold so the scanner's external target/camera cannot drift with the stick;
+    // head-look remains the targeting source while shifted D-pad directions are selected.
+    if (vr.dpadShiftActive) {
+        pState->Gamepad.sThumbRX = 0;
+        pState->Gamepad.sThumbRY = 0;
+    }
 
     // Stick-gesture buttons: full-forward left stick => sprint (L3), full-down right
     // stick => crouch (R3). OR'd in on top of any physical / VR button press.

@@ -21,7 +21,9 @@ A new `Center overlays` X/Y/Size region covers:
 - `cursor_device`;
 - the generic `TopCenter` and `BottomCenter` roots.
 
-Shifted D-pad left/right also pans this region in `160`-pixel steps. Left moves the overlay left to reveal information beyond its right lens edge; right moves it back. Each direction fires once until the stick recenters, and the normal XInput D-pad bit is preserved. The resulting X offset is persisted and appears in the F10 slider, where it can be fine-tuned or reset to zero.
+Shifted D-pad left/right pans both this region and the separate `RightCenter` quickhack-description root in synchronized `160`-pixel steps. Left moves the composition left to reveal information beyond its right lens edge; right moves it back. Each direction fires once until the stick recenters, and the normal XInput D-pad bit is preserved. The resulting X offsets are persisted and appear in the F10 `Center overlays` and `Right center` sliders. If an older test build moved only the center root, the first flick synchronizes the description panel to that existing offset rather than moving the chooser a second step.
+
+The raw `dpadShiftActive` state is also carried from the OpenXR frame snapshot into the XInput hook. During the full modifier hold, the hook zeros the final merged right-stick X/Y axes—not only the OpenXR sample—so a Steam virtual or physical XInput source cannot move the external scanner target. Head-look remains available for target movement.
 
 Its persisted keys are:
 
@@ -37,7 +39,7 @@ The default Size is `1.0`, which follows existing HUD semantics and applies a `0
 
 Deployed locally for retest:
 
-- `CyberpunkVR_Stereo.dll` SHA-256: `3851a4906739e7ef5bad2f2bbb38b3d42beab5c3103ac97e55edefd1a61001cb`
+- `CyberpunkVR_Stereo.dll` SHA-256: `d32ce2f2d4f6c17a45b6a58cb8e772a3650c88d93c11eaa85233b228772c9b7c`
 - CET HUD script SHA-256: `5244fb1bc1160ff42c59e75867d9dad8bbc8abe03245bdf509b6107666e95046`
 
 The deployment preserved both `vrik_calibration.ini` and the existing `hud_layout.ini` byte-for-byte.
@@ -48,6 +50,7 @@ The deployment preserved both `vrik_calibration.ini` and the existing `hud_layou
 2. Open the quickhack chooser and confirm all entries fit in view.
 3. Trigger interaction and game-information popups and confirm they use the same size control.
 4. Verify crosshair/cursor behavior; these generic center roots intentionally share the region until individual controller identities are captured.
-5. Use shifted D-pad left/right and verify one pan step per recentered flick; confirm the game still receives D-pad left/right.
-6. Confirm F10 reflects the new X value and setting X back to zero re-centers the overlays.
-7. Confirm named minimap, health, quest, and corner regions retain their prior settings.
+5. Use shifted D-pad left/right and verify the chooser and right-side description move together, one pan step per recentered flick; confirm the game still receives D-pad left/right.
+6. While the shift modifier is held, move the right stick and confirm the external scanner target does not move; confirm head-look still moves it.
+7. Confirm F10 reflects both new X values and setting both back to zero re-centers the composition.
+8. Confirm named minimap, health, quest, and corner regions retain their prior settings.

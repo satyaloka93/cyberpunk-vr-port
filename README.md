@@ -146,10 +146,12 @@ VR controller input is merged into the native CP2077 gamepad, so the in-game
 with the **right stick** — up / down / left / right. On PSVR2 through SteamVR,
 **Triangle capacitive touch** is the left-thumbrest modifier, matching UEVR's
 PSVR2 `LEFT_TOUCH` behavior. The right stick is removed from camera/snap turn
-while shifting. A shifted left/right flick also pans dynamic center overlays by one
-step: left pulls the overlay left to reveal its right edge, and right moves it back.
-Recenter the stick between steps; reset with **F10 → HUD → Center overlays → X**.
-The game's D-pad input is still emitted. Left-stick click remains a fallback modifier;
+while shifting. A shifted left/right flick pans the quickhack chooser **and its separate
+right-side description panel** together: left pulls them left to reveal the right edge,
+and right moves them back. Recenter the stick between steps; reset both
+**F10 → HUD → Center overlays → X** and **Right center → X** to zero. The game's D-pad
+input is still emitted, but the final merged right-stick axes are suppressed for the whole
+shift hold so the external scanner target remains head-look controlled. Left-stick click remains a fallback modifier;
 release it without choosing a direction to emit normal L3/sprint.
 
 Buttons follow each runtime's interaction profile (Touch / PSVR2 Sense through
