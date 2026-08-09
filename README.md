@@ -73,6 +73,16 @@ actually built.
 
 Install RED4ext, CET and redscript first (the usual Nexus dependencies).
 
+### Optional PS VR2 adaptive triggers and grip haptics
+
+The PS VR2 path can additionally reuse [Enhanced DualSense Support](https://www.nexusmods.com/cyberpunk2077/mods/4156)'s gameplay profiles through the [PSVR2Toolkit community fork](https://github.com/satyaloka93/PSVR2Toolkit). This optional feature adds three dependencies:
+
+- Enhanced DualSense Support
+- [Native Settings UI](https://www.nexusmods.com/cyberpunk2077/mods/3518)
+- [PSVR2Toolkit Cyberpunk DSX Bridge](https://github.com/satyaloka93/PSVR2Toolkit/releases/tag/cyberpunk-dsx-bridge-v0.1.0) and its matching raw-trigger driver
+
+DSX and Enhanced DualSense Support's bundled UDP client are **not** used. Follow [`docs/PSVR2-ADAPTIVE-TRIGGERS.md`](docs/PSVR2-ADAPTIVE-TRIGGERS.md) for installation, UDP-autostart settings, launcher-DLL compatibility, recovery, and troubleshooting.
+
 ## Installation (drop-in)
 
 Download the archive from the [PS VR2 fork releases](https://github.com/satyaloka93/cyberpunk-vr-port/releases)
@@ -110,7 +120,9 @@ pwsh scripts\deploy_stereo.ps1 -GameRoot "<game root>"
 
 For PS VR2 installation, SteamVR binding steps, the complete Sense control map,
 and troubleshooting, read **[`docs/PSVR2-CONTROLS.txt`](docs/PSVR2-CONTROLS.txt)**.
-The same file is included at the root of the release archive.
+The same file is included at the root of the release archive. Optional adaptive
+triggers and grip haptics are documented separately in
+**[`docs/PSVR2-ADAPTIVE-TRIGGERS.md`](docs/PSVR2-ADAPTIVE-TRIGGERS.md)**.
 
 VR controller input is merged into the native CP2077 gamepad, so the in-game
 "Controller" key bindings apply. Default VR mapping:

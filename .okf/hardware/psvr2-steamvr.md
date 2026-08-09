@@ -4,7 +4,7 @@ title: PlayStation VR2 through SteamVR/OpenXR
 description: Measured PSVR2 runtime geometry and controller-profile behavior for the CyberpunkVR port.
 resource: https://github.com/satyaloka93/cyberpunk-vr-port/tree/psvr2-tweaks
 tags: [psvr2, steamvr, openxr, controllers, resolution]
-timestamp: 2026-08-08T03:20:00Z
+timestamp: 2026-08-09T13:00:00+09:00
 ---
 
 # Runtime identity
@@ -80,3 +80,4 @@ The same `vrserver.txt` independently confirmed a driver/tracking failure, not a
 - [`src/vr/openxr/openxr_manager.cpp`](https://github.com/satyaloka93/cyberpunk-vr-port/blob/psvr2-tweaks/src/vr/openxr/openxr_manager.cpp)
 - [Controller input pipeline](/architecture/controller-input-pipeline.md)
 - [PSVR2 Triangle-touch D-pad shifting](/fixes/psvr2-triangle-dpad.md)
+- [Optional adaptive triggers and grip haptics](/operations/psvr2-adaptive-triggers.md)

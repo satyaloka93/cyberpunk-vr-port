@@ -1,5 +1,8 @@
 # Update Log
 
+## 2026-08-09
+* **Creation**: Documented the optional [PSVR2 adaptive-trigger and grip-haptic integration](/operations/psvr2-adaptive-triggers.md), including its extended dependencies, direct-config ownership rules, raw trigger fidelity, launcher-DLL incompatibility, and driver recovery procedure.
+
 ## 2026-08-08
 * **Release preparation**: Created the `satyaloka93/cyberpunk-vr-port` GitHub fork, added bundled `PSVR2-CONTROLS.txt`, PS VR2 release notes, and package-script support for shipping both documents in `0.1.1-psvr2.1`.
 * **Update**: Implemented and deployed UEVR-style dual-role SystemButton timing in the XInput poll: quick release emits Start, a ≥500 ms hold emits Back once, and Triangle-touch + R3 feeds the same fallback state machine while bare R3 remains crouch. Deployed DLL SHA-256: `72bb2a6459010bbff66473979403dd2a3e4b0a3d22c09ad0a7c0a232c82cde7b`; prior DLL backed up as `build/backups/CyberpunkVR_Stereo.pre-uevr-systembutton-timing-20260809-1100.dll`; VRIK calibration remained unchanged.

@@ -1,0 +1,46 @@
+---
+type: Integration Runbook
+title: PSVR2 Sense adaptive triggers and grip haptics
+description: Optional integration of Enhanced DualSense Support gameplay profiles with the PSVR2Toolkit bridge.
+resource: https://github.com/satyaloka93/PSVR2Toolkit/releases/tag/cyberpunk-dsx-bridge-v0.1.0
+tags: [psvr2, sense, adaptive-triggers, haptics, cyberpunk, dependencies]
+timestamp: 2026-08-09T13:00:00+09:00
+---
+
+# Dependency boundary
+
+This is an optional extension of the [PSVR2 SteamVR compatibility path](/hardware/psvr2-steamvr.md), not a base requirement of CyberpunkVR Port. It adds Enhanced DualSense Support, Native Settings UI, and the matching PSVR2Toolkit Cyberpunk bridge/driver. CET and RED4ext are already base dependencies.
+
+The integration does not use DSX. Enhanced DualSense Support remains the gameplay-profile producer; the bridge directly monitors its `DualSenseXConfig.txt`, translates effects, publishes `DSXData.json` status, and sends commands through Toolkit CAPI.
+
+# Runtime ownership
+
+Only the Toolkit bridge may own the DSX-compatible UDP port/controller-effect path:
+
+- Disable Enhanced DualSense Support UDP autostart.
+- Do not run DSX or bundled `UDPClient.exe` concurrently.
+- Restart the bridge rather than using the mod's Restart UDP Client command.
+- Start SteamVR before the bridge so Toolkit CAPI can be discovered.
+
+# Native launcher boundary
+
+Enhanced DualSense Support's RED4ext process-launcher DLL is unnecessary. The installed historical DLL advertised runtime revision `3.0.80.33925` while the tested game runtime was `3.0.80.51928`. Patching only that advertised revision caused a freeze/exit. If RED4ext rejects the DLL, disable or remove it; never revision-patch it.
+
+# Trigger and haptic fidelity
+
+The Toolkit fork transports native raw Sense modes Bow `0x22`, Galloping `0x23`, and Machine `0x27`, preserving snap force and timing fields that official trigger presets flatten. The bridge also emits overdriven signed 8-bit PCM at 3000 Hz for recoil and automatic-fire grip textures.
+
+Grip PCM is synthesized from gameplay state changes. Enhanced DualSense Support does not expose Cyberpunk's original DualSense audio waveform, so exact console haptic reproduction is outside this integration's current data boundary.
+
+# Deployment and recovery
+
+The release's installer must run with SteamVR closed. It backs up `driver_playstation_vr2.dll` before installing the matching raw-trigger Toolkit driver. PlayStation VR2 App updates may restore Sony's driver; rerun the matching installer after such an update.
+
+Detailed user instructions and troubleshooting live in [`docs/PSVR2-ADAPTIVE-TRIGGERS.md`](https://github.com/satyaloka93/cyberpunk-vr-port/blob/psvr2-tweaks/docs/PSVR2-ADAPTIVE-TRIGGERS.md).
+
+# Citations
+
+[1] [PSVR2Toolkit community fork](https://github.com/satyaloka93/PSVR2Toolkit)
+[2] [Cyberpunk DSX Bridge v0.1.0](https://github.com/satyaloka93/PSVR2Toolkit/releases/tag/cyberpunk-dsx-bridge-v0.1.0)
+[3] [Enhanced DualSense Support](https://www.nexusmods.com/cyberpunk2077/mods/4156)
+[4] [Native Settings UI](https://www.nexusmods.com/cyberpunk2077/mods/3518)

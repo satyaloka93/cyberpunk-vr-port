@@ -77,6 +77,14 @@ HOTKEYS
     F7                                 recenter HMD
     F10 or Insert                      open the in-headset mod settings overlay
 
+OPTIONAL ADAPTIVE TRIGGERS AND GRIP HAPTICS
+    Enhanced DualSense Support's gameplay profiles can drive the Sense controllers through
+    the PSVR2Toolkit Cyberpunk DSX bridge. DSX and the mod's UDPClient.exe are not used.
+    Additional dependencies, driver installation, compatibility notes, and recovery steps:
+
+        docs\PSVR2-ADAPTIVE-TRIGGERS.md
+        https://github.com/satyaloka93/PSVR2Toolkit/releases/tag/cyberpunk-dsx-bridge-v0.1.0
+
 TROUBLESHOOTING
     * Keep SteamVR running before starting the game.
     * If controls do not arrive, verify xr_input_actions=1 and xr_xinput_hook=1 in

@@ -115,6 +115,7 @@ foreach ($a in @("cyberpunkvrport.archive","VRCigarette.archive.xl")) {
 
 # ---- bundled user documentation ---------------------------------------------------------------
 Add-File (Need (Join-Path $RepoRoot "docs\PSVR2-CONTROLS.txt") "PSVR2 controls") "PSVR2-CONTROLS.txt"
+Add-File (Need (Join-Path $RepoRoot "docs\PSVR2-ADAPTIVE-TRIGGERS.md") "PSVR2 adaptive-trigger guide") "PSVR2-ADAPTIVE-TRIGGERS.md"
 $releaseNotes = Join-Path $RepoRoot "docs\RELEASE-$Version.txt"
 if (Test-Path -LiteralPath $releaseNotes) {
     Add-File $releaseNotes "RELEASE-NOTES.txt"
@@ -152,6 +153,11 @@ REQUIREMENTS
     Nothing else may proxy dxgi. If bin\x64\dxgi.dll exists (R.E.A.L. VR installs one), move it
     out of the folder -- two VR paths in one process fight over the same engine hooks.
 
+    Optional PS VR2 adaptive triggers/grip haptics additionally require Enhanced DualSense
+    Support, Native Settings UI, and the matching PSVR2Toolkit Cyberpunk DSX Bridge release.
+    DSX and Enhanced DualSense Support's UDPClient.exe are not used. Read
+    PSVR2-ADAPTIVE-TRIGGERS.md before installing that optional driver-level add-on.
+
 INSTALL
     Extract the contents of this folder into your Cyberpunk 2077 game root -- the folder that
     contains bin\, r6\, red4ext\ and archive\. The paths inside already match.
@@ -174,7 +180,8 @@ PLAYSTATION VR2 QUICK START
     Fallback: touch Triangle without clicking and use R3 with the same quick/hold timing. Bare
     R3 remains crouch. For D-pad input, touch Triangle without clicking and move the RIGHT stick;
     turning is suppressed during the shift. Read PSVR2-CONTROLS.txt for the full control map,
-    binding steps, and troubleshooting.
+    binding steps, and troubleshooting. Read PSVR2-ADAPTIVE-TRIGGERS.md to add weapon/vehicle
+    trigger profiles and synthesized grip haptics through the PSVR2Toolkit bridge.
 
 WHAT LANDS WHERE
     red4ext\plugins\CyberpunkVR_Stereo\   the VR plugin, its shaders, the settings template
