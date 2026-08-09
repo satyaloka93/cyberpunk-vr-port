@@ -1,6 +1,6 @@
 # PS VR2 Sense adaptive triggers and grip haptics
 
-This is an **optional PS VR2 add-on** for CyberpunkVR Port. It combines the gameplay profiles from [Enhanced DualSense Support](https://www.nexusmods.com/cyberpunk2077/mods/4156) with the [PSVR2Toolkit Cyberpunk DSX bridge](https://github.com/satyaloka93/PSVR2Toolkit/releases/tag/cyberpunk-dsx-bridge-v0.1.1).
+This is an **optional PS VR2 add-on** for CyberpunkVR Port. It combines the gameplay profiles from [Enhanced DualSense Support](https://www.nexusmods.com/cyberpunk2077/mods/4156) with the [PSVR2Toolkit Cyberpunk DSX bridge](https://github.com/satyaloka93/PSVR2Toolkit/releases/tag/cyberpunk-dsx-bridge-v0.2.0).
 
 The Cyberpunk mod decides which weapon, vehicle, scanner, menu, and other gameplay effect is active. The bridge reads that state directly, translates its DSX-style trigger profile to native PS VR2 Sense commands, and sends synthesized 3000 Hz PCM recoil/fire textures to the controller grips. DSX itself is not used.
 
@@ -10,7 +10,7 @@ These extend the normal CyberpunkVR Port requirements **only when adaptive trigg
 
 1. [Enhanced DualSense Support](https://www.nexusmods.com/cyberpunk2077/mods/4156).
 2. [Native Settings UI](https://www.nexusmods.com/cyberpunk2077/mods/3518), required by Enhanced DualSense Support.
-3. [PSVR2Toolkit Cyberpunk DSX Bridge v0.1.1](https://github.com/satyaloka93/PSVR2Toolkit/releases/tag/cyberpunk-dsx-bridge-v0.1.1), which includes the matching Toolkit driver.
+3. [PSVR2Toolkit Cyberpunk DSX Bridge v0.2.0](https://github.com/satyaloka93/PSVR2Toolkit/releases/tag/cyberpunk-dsx-bridge-v0.2.0), which includes the matching Toolkit driver.
 
 Cyber Engine Tweaks and RED4ext are already requirements of CyberpunkVR Port. Do **not** install or run DSX for this path.
 
@@ -53,14 +53,18 @@ The bridge writes `DSXData.json` next to `DualSenseXConfig.txt`, allowing the mo
 
 DualSense and PS VR2 Sense reuse custom mode numbers `0x22`, `0x23`, and `0x27`, but their parameter layouts differ. Directly sending DSX's packed Bow bytes to Sense made ordinary handgun profiles excessively stiff. The Sense-tuned bridge instead uses each weapon's start/end/strength parameters to create gradual take-up and increasing resistance, followed by a motor release at the detected shot event.
 
-Official feedback, weapon, vibration, slope, and multi-position effects translate directly. Galloping and Machine use safe official trigger vibration while their temporal detail is carried by grip PCM. Grip effects are synthesized from gameplay state transitions because Enhanced DualSense Support does not expose Cyberpunk's original DualSense audio waveform. Recoil and automatic-fire texture should be clearly perceptible, but they are not a bit-perfect copy of the console waveform.
+Official feedback, weapon, vibration, slope, and multi-position effects translate directly. Galloping and Machine use safe official trigger vibration while their temporal detail is carried by grip PCM.
+
+Grip haptics combine two sources. A semantic layer detects weapon transitions—including same-mode shotgun breakpoint jumps—and adds explicit handgun, revolver, shotgun, support-hand, automatic-fire, and charge effects. A full-game layer captures the Windows default audio output only while Cyberpunk is running, extracts a stereo 28–320 Hz tactile band plus sharp transients, compresses it, and converts it to 3000 Hz Sense PCM. This extends feedback to explosions, impacts, vehicles, ambience, and other audible gameplay instead of limiting haptics to trigger changes. It is not a bit-perfect copy of Cyberpunk's inaccessible original DualSense waveform.
+
+The default audio-haptic gain is `1.35`. Advanced users can run the bridge with `--audio-haptics-gain 0..3` or disable that layer with `--no-game-audio-haptics`.
 
 ## Troubleshooting
 
 - **Bridge says CAPI cannot be located:** start SteamVR with the modified Toolkit driver before starting the bridge.
 - **No `DualSenseXConfig.txt`:** verify Enhanced DualSense Support and Native Settings UI load in CET, then enter the game once.
 - **UDP bind failed:** close DSX, `UDPClient.exe`, or another bridge instance.
-- **Triggers work but grip haptics do not:** look for `Cyberpunk grip PCM haptics enabled` in the bridge window.
+- **Triggers work but grip haptics do not:** look for both `Cyberpunk grip PCM haptics enabled` and `Full-game audio haptics active` in the bridge window or `bridge.log`. Confirm Cyberpunk is playing through the Windows default output device captured when the bridge starts.
 - **Effects remain active after a crash:** restart the bridge and stop it with Ctrl+C, or restart SteamVR.
 - **A PlayStation VR2 App update removes the effects:** Steam may have restored Sony's driver; close SteamVR and rerun `INSTALL_RAW_TRIGGER_DRIVER.cmd` from the matching bridge release.
 

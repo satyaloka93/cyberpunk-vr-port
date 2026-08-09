@@ -93,7 +93,7 @@ OPTIONAL ADAPTIVE TRIGGERS AND GRIP HAPTICS
     Additional dependencies, driver installation, compatibility notes, and recovery steps:
 
         docs\PSVR2-ADAPTIVE-TRIGGERS.md
-        https://github.com/satyaloka93/PSVR2Toolkit/releases/tag/cyberpunk-dsx-bridge-v0.1.1
+        https://github.com/satyaloka93/PSVR2Toolkit/releases/tag/cyberpunk-dsx-bridge-v0.2.0
 
 TROUBLESHOOTING
     * Keep SteamVR running before starting the game.

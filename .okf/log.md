@@ -1,6 +1,7 @@
 # Update Log
 
 ## 2026-08-09
+* **Update**: Added full-game stereo audio-derived Sense PCM for explosions, impacts, vehicles, ambience, and other audible gameplay, plus explicit same-mode shotgun recoil detection and stronger two-hand heavy-weapon impulses.
 * **Fix**: Replaced incompatible DualSense raw Bow packing with Sense-tuned gradual weapon curves and shot-event resistance release after a `4/4` handgun profile was observed as stiff and chunky.
 * **Fix**: Converted bundle-root absolute concept links to file-relative links so OKF navigation works both for bundle consumers and directly in GitHub's `.okf/` tree.
 * **Creation**: Documented the optional [PSVR2 adaptive-trigger and grip-haptic integration](operations/psvr2-adaptive-triggers.md), including its extended dependencies, direct-config ownership rules, profile fidelity, launcher-DLL incompatibility, and driver recovery procedure.
