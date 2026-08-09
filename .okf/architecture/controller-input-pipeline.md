@@ -15,7 +15,7 @@ timestamp: 2026-08-08T03:27:00Z
 4. `HookedXInputGetState` merges the snapshot into that virtual gamepad. It owns the UEVR-style `SystemButton` timer so a release before 500 ms emits one XInput Start event and a hold of at least 500 ms emits one XInput Back event without also emitting Start on release.
 5. Cyberpunk consumes its normal gamepad bindings; CET/native modules read additional grip and gesture values from shared slots.
 
-For [PSVR2 through SteamVR](/hardware/psvr2-steamvr.md), the active compatibility profile is expected to be Oculus Touch. Capacitive actions also provide [Triangle-touch D-pad shifting](/fixes/psvr2-triangle-dpad.md).
+For [PSVR2 through SteamVR](../hardware/psvr2-steamvr.md), the active compatibility profile is expected to be Oculus Touch. Capacitive actions also provide [Triangle-touch D-pad shifting](../fixes/psvr2-triangle-dpad.md).
 
 # Early XInput hook and falsified capabilities hypothesis
 

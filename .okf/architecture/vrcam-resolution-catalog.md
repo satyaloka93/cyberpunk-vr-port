@@ -28,7 +28,7 @@ The WolvenKit source project is external to this repository. An exact new resolu
 
 # PSVR2 decision
 
-For initial [PSVR2 support](/hardware/psvr2-steamvr.md), the launcher exposes only square resolutions already present in the shipped archive: `1920`, `2048`, `2560`, `3072`, `3584`, and `4096` per eye. This avoids dead dropdown entries while reducing the aspect mismatch from the Pimax choice.
+For initial [PSVR2 support](../hardware/psvr2-steamvr.md), the launcher exposes only square resolutions already present in the shipped archive: `1920`, `2048`, `2560`, `3072`, `3584`, and `4096` per eye. This avoids dead dropdown entries while reducing the aspect mismatch from the Pimax choice.
 
 An exact `3400x3468` option is deferred until the matching VRCAM component, dynamic texture, catalogue entry, and packed archive can ship together.
 

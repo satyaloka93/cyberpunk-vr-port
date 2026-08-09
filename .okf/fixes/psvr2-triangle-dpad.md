@@ -21,7 +21,7 @@ SteamVR exposes Sense through `/interaction_profiles/oculus/touch_controller`, b
 /user/hand/left/input/y/touch
 ```
 
-The plugin therefore mirrors that action into the left D-pad-shift modifier only when the runtime system is [PSVR2](/hardware/psvr2-steamvr.md). Triangle click remains XInput Y/weapon switch.
+The plugin therefore mirrors that action into the left D-pad-shift modifier only when the runtime system is [PSVR2](../hardware/psvr2-steamvr.md). Triangle click remains XInput Y/weapon switch.
 
 SteamVR's generated Oculus binding describes left Create as Menu and right Options as System, but the tested Oculus-to-`playstation_vr2_sense` auto-remapper omitted both paths. Separate actions did not deliver state. A single UEVR-style global `SystemButton` action made the application action manually assignable in SteamVR; mapping physical left Create to it successfully delivered state. UEVR itself has no separate OpenXR Start/Menu action: its one `/actions/default/in/SystemButton` accepts both wildcard `system/click` and `menu/click` paths, then translates a short release to XInput Start and a hold of at least 500 ms to XInput Back/Select. The Cyberpunk port now implements the same timing in the XInput hook, where the one-shot edge cannot fall between game polls. Triangle capacitive touch plus R3 feeds the same state machine as a binding-independent fallback. In both cases, tap opens Cyberpunk's system/pause menu and hold opens its Back/in-game menu; neither exposes SteamVR's reserved dashboard. Bare R3 remains XInput right-thumb/crouch.
 

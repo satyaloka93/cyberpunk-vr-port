@@ -28,7 +28,7 @@ The 2026-08-08 stereo retest reported runtime IPD `0.0590 m`; `PatchCamera` diag
 
 The shipped archive has no exact PSVR2-shaped VRCAM asset. The PSVR2 launcher ladder therefore uses existing square assets. Square is 2.0% wider than the measured ideal and is the closest currently authored shape. The previously selected Pimax Dream Air `3072x2536` shape is 23.6% wider than PSVR2's measured runtime shape.
 
-See [VRCAM resolution catalogue](/architecture/vrcam-resolution-catalog.md) before adding an exact `3400x3468` option.
+See [VRCAM resolution catalogue](../architecture/vrcam-resolution-catalog.md) before adding an exact `3400x3468` option.
 
 # Sense controllers
 
@@ -44,7 +44,7 @@ The SteamVR-generated CyberpunkVR binding maps:
 |---|---|---|
 | Left Square | left `x/click` | X |
 | Left Triangle click | left `y/click` | Y |
-| Left Triangle capacitive touch | left `y/touch` | [D-pad shift modifier](/fixes/psvr2-triangle-dpad.md) |
+| Left Triangle capacitive touch | left `y/touch` | [D-pad shift modifier](../fixes/psvr2-triangle-dpad.md) |
 | Right Cross | right `a/click` | A |
 | Right Circle | right `b/click` | B |
 | Sticks | `thumbstick` | left/right sticks |
@@ -78,6 +78,6 @@ The same `vrserver.txt` independently confirmed a driver/tracking failure, not a
 
 - [`src/vr/overlay/launcher_dialog.cpp`](https://github.com/satyaloka93/cyberpunk-vr-port/blob/psvr2-tweaks/src/vr/overlay/launcher_dialog.cpp)
 - [`src/vr/openxr/openxr_manager.cpp`](https://github.com/satyaloka93/cyberpunk-vr-port/blob/psvr2-tweaks/src/vr/openxr/openxr_manager.cpp)
-- [Controller input pipeline](/architecture/controller-input-pipeline.md)
-- [PSVR2 Triangle-touch D-pad shifting](/fixes/psvr2-triangle-dpad.md)
-- [Optional adaptive triggers and grip haptics](/operations/psvr2-adaptive-triggers.md)
+- [Controller input pipeline](../architecture/controller-input-pipeline.md)
+- [PSVR2 Triangle-touch D-pad shifting](../fixes/psvr2-triangle-dpad.md)
+- [Optional adaptive triggers and grip haptics](../operations/psvr2-adaptive-triggers.md)
