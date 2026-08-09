@@ -1,6 +1,6 @@
 # PS VR2 Sense adaptive triggers and grip haptics
 
-This is an **optional PS VR2 add-on** for CyberpunkVR Port. It combines the gameplay profiles from [Enhanced DualSense Support](https://www.nexusmods.com/cyberpunk2077/mods/4156) with the [PSVR2Toolkit Cyberpunk DSX bridge](https://github.com/satyaloka93/PSVR2Toolkit/releases/tag/cyberpunk-dsx-bridge-v0.1.0).
+This is an **optional PS VR2 add-on** for CyberpunkVR Port. It combines the gameplay profiles from [Enhanced DualSense Support](https://www.nexusmods.com/cyberpunk2077/mods/4156) with the [PSVR2Toolkit Cyberpunk DSX bridge](https://github.com/satyaloka93/PSVR2Toolkit/releases/tag/cyberpunk-dsx-bridge-v0.1.1).
 
 The Cyberpunk mod decides which weapon, vehicle, scanner, menu, and other gameplay effect is active. The bridge reads that state directly, translates its DSX-style trigger profile to native PS VR2 Sense commands, and sends synthesized 3000 Hz PCM recoil/fire textures to the controller grips. DSX itself is not used.
 
@@ -10,7 +10,7 @@ These extend the normal CyberpunkVR Port requirements **only when adaptive trigg
 
 1. [Enhanced DualSense Support](https://www.nexusmods.com/cyberpunk2077/mods/4156).
 2. [Native Settings UI](https://www.nexusmods.com/cyberpunk2077/mods/3518), required by Enhanced DualSense Support.
-3. [PSVR2Toolkit Cyberpunk DSX Bridge v0.1.0](https://github.com/satyaloka93/PSVR2Toolkit/releases/tag/cyberpunk-dsx-bridge-v0.1.0), which includes the matching Toolkit driver.
+3. [PSVR2Toolkit Cyberpunk DSX Bridge v0.1.1](https://github.com/satyaloka93/PSVR2Toolkit/releases/tag/cyberpunk-dsx-bridge-v0.1.1), which includes the matching Toolkit driver.
 
 Cyber Engine Tweaks and RED4ext are already requirements of CyberpunkVR Port. Do **not** install or run DSX for this path.
 
@@ -51,13 +51,9 @@ The bridge writes `DSXData.json` next to `DualSenseXConfig.txt`, allowing the mo
 
 ## Effect fidelity
 
-The matching Toolkit driver preserves the Sense controller's raw custom modes:
+DualSense and PS VR2 Sense reuse custom mode numbers `0x22`, `0x23`, and `0x27`, but their parameter layouts differ. Directly sending DSX's packed Bow bytes to Sense made ordinary handgun profiles excessively stiff. The Sense-tuned bridge instead uses each weapon's start/end/strength parameters to create gradual take-up and increasing resistance, followed by a motor release at the detected shot event.
 
-- Bow `0x22`: trigger wall plus snap-back force.
-- Galloping `0x23`: timed two-step rhythm.
-- Machine `0x27`: alternating amplitudes, frequency, and period.
-
-Official feedback, weapon, vibration, slope, and multi-position effects also translate directly. Grip effects are synthesized from gameplay state transitions because Enhanced DualSense Support does not expose Cyberpunk's original DualSense audio waveform. Recoil and automatic-fire texture should be clearly perceptible, but they are not a bit-perfect copy of the console waveform.
+Official feedback, weapon, vibration, slope, and multi-position effects translate directly. Galloping and Machine use safe official trigger vibration while their temporal detail is carried by grip PCM. Grip effects are synthesized from gameplay state transitions because Enhanced DualSense Support does not expose Cyberpunk's original DualSense audio waveform. Recoil and automatic-fire texture should be clearly perceptible, but they are not a bit-perfect copy of the console waveform.
 
 ## Troubleshooting
 

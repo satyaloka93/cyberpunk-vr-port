@@ -2,9 +2,9 @@
 type: Integration Runbook
 title: PSVR2 Sense adaptive triggers and grip haptics
 description: Optional integration of Enhanced DualSense Support gameplay profiles with the PSVR2Toolkit bridge.
-resource: https://github.com/satyaloka93/PSVR2Toolkit/releases/tag/cyberpunk-dsx-bridge-v0.1.0
+resource: https://github.com/satyaloka93/PSVR2Toolkit/releases/tag/cyberpunk-dsx-bridge-v0.1.1
 tags: [psvr2, sense, adaptive-triggers, haptics, cyberpunk, dependencies]
-timestamp: 2026-08-09T13:00:00+09:00
+timestamp: 2026-08-09T18:45:00+09:00
 ---
 
 # Dependency boundary
@@ -28,9 +28,9 @@ Enhanced DualSense Support's RED4ext process-launcher DLL is unnecessary. The in
 
 # Trigger and haptic fidelity
 
-The Toolkit fork transports native raw Sense modes Bow `0x22`, Galloping `0x23`, and Machine `0x27`, preserving snap force and timing fields that official trigger presets flatten. The bridge also emits overdriven signed 8-bit PCM at 3000 Hz for recoil and automatic-fire grip textures.
+DualSense and Sense reuse custom effect IDs `0x22`, `0x23`, and `0x27` but use different parameter layouts. The initial direct mapping packed a normal DSX Bow strength pair of `4/4` into byte `0x1b`, which Sense interpreted as excessive force. The corrected bridge maps each weapon's start/end/strength semantics to a gradual official Sense slope and releases trigger resistance on the detected firing transition. Galloping and Machine use safe official trigger vibration while timing detail is carried in grip PCM.
 
-Grip PCM is synthesized from gameplay state changes. Enhanced DualSense Support does not expose Cyberpunk's original DualSense audio waveform, so exact console haptic reproduction is outside this integration's current data boundary.
+The bridge emits overdriven signed 8-bit PCM at 3000 Hz for recoil and automatic-fire grip textures. Grip PCM is synthesized from gameplay state changes. Enhanced DualSense Support does not expose Cyberpunk's original DualSense audio waveform, so exact console haptic reproduction is outside this integration's current data boundary.
 
 # Deployment and recovery
 
@@ -41,6 +41,6 @@ Detailed user instructions and troubleshooting live in [`docs/PSVR2-ADAPTIVE-TRI
 # Citations
 
 [1] [PSVR2Toolkit community fork](https://github.com/satyaloka93/PSVR2Toolkit)
-[2] [Cyberpunk DSX Bridge v0.1.0](https://github.com/satyaloka93/PSVR2Toolkit/releases/tag/cyberpunk-dsx-bridge-v0.1.0)
+[2] [Cyberpunk DSX Bridge v0.1.1](https://github.com/satyaloka93/PSVR2Toolkit/releases/tag/cyberpunk-dsx-bridge-v0.1.1)
 [3] [Enhanced DualSense Support](https://www.nexusmods.com/cyberpunk2077/mods/4156)
 [4] [Native Settings UI](https://www.nexusmods.com/cyberpunk2077/mods/3518)

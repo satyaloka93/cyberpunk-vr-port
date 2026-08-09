@@ -79,7 +79,7 @@ The PS VR2 path can additionally reuse [Enhanced DualSense Support](https://www.
 
 - Enhanced DualSense Support
 - [Native Settings UI](https://www.nexusmods.com/cyberpunk2077/mods/3518)
-- [PSVR2Toolkit Cyberpunk DSX Bridge](https://github.com/satyaloka93/PSVR2Toolkit/releases/tag/cyberpunk-dsx-bridge-v0.1.0) and its matching raw-trigger driver
+- [PSVR2Toolkit Cyberpunk DSX Bridge](https://github.com/satyaloka93/PSVR2Toolkit/releases/tag/cyberpunk-dsx-bridge-v0.1.1) and its matching Sense-tuned driver
 
 DSX and Enhanced DualSense Support's bundled UDP client are **not** used. Follow [`docs/PSVR2-ADAPTIVE-TRIGGERS.md`](docs/PSVR2-ADAPTIVE-TRIGGERS.md) for installation, UDP-autostart settings, launcher-DLL compatibility, recovery, and troubleshooting.
 
