@@ -39,12 +39,12 @@ static FILETIME g_lastVrikRecenterWrite = {};
 static const int kNoRecenterBaseline = -2000000000;
 static int g_lastVrikRecenterCounter = kNoRecenterBaseline;
 
-// HUD placement values = the 34 contiguous floats in LiveControlsUiState
+// HUD placement values = the 37 contiguous floats in LiveControlsUiState
 // (xrHudScale .. xrHudOxygenBar). The CET HUD mod (CyberpunkVRPort_HUD)
 // polls hud_layout.ini for these xr_hud_* keys; g_liveControls has no HUD
 // fields, so we keep the last overlay-set values here and (de)serialize them.
 // Order MUST match the struct field order so a single memcpy bridges them.
-static const int kHudFieldCount = 34;
+static const int kHudFieldCount = 37;
 static const char* const kHudKeys[kHudFieldCount] = {
     "xr_hud_scale", "xr_hud_scale_y", "xr_hud_scale_scale",
     "xr_hud_phone", "xr_hud_phone_y", "xr_hud_phone_scale",
@@ -55,6 +55,7 @@ static const char* const kHudKeys[kHudFieldCount] = {
     "xr_hud_radio", "xr_hud_radio_y", "xr_hud_radio_scale",
     "xr_hud_bottom_right", "xr_hud_bottom_right_y", "xr_hud_bottom_right_scale",
     "xr_hud_right_center", "xr_hud_right_center_y", "xr_hud_right_center_scale",
+    "xr_hud_center_overlay", "xr_hud_center_overlay_y", "xr_hud_center_overlay_scale",
     "xr_hud_johnny_hint", "xr_hud_activity_log", "xr_hud_warning",
     "xr_hud_boss_health", "xr_hud_vehicle_scan", "xr_hud_progress_bar", "xr_hud_oxygen_bar",
 };

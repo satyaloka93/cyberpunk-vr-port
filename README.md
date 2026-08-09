@@ -183,7 +183,8 @@ Five tabs, live, and saved to `vrport.ini` — nothing here needs a restart.
   and reaching the headset.
 - **VRIK** — start/stop tracking, IK calibration (reach scale, height, elbow
   swing/pole, wrist offset), diagnostics.
-- **HUD** — per-element X / Y / scale for every HUD group.
+- **HUD** — per-element X / Y / scale for every HUD group, including a dedicated
+  **Center overlays** row for scanner, quickhack, interaction, and game-info popups.
 
 The launcher (before the game starts) picks the render resolution and carries a
 **DEBUG** tick-box that arms every diagnostic probe at once. Leave it off for

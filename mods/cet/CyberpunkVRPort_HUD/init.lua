@@ -53,6 +53,9 @@ local function cloneDefaultLayout()
         rightCenter = 0.0,
         rightCenterY = 0.0,
         rightCenterScale = 1.00,
+        centerOverlay = 0.0,
+        centerOverlayY = 0.0,
+        centerOverlayScale = 1.00,
         johnnyHint = 0.0,
         activityLog = 0.0,
         warning = 0.0,
@@ -171,6 +174,9 @@ local function readLayoutText(path)
         xr_hud_right_center = 'rightCenter',
         xr_hud_right_center_y = 'rightCenterY',
         xr_hud_right_center_scale = 'rightCenterScale',
+        xr_hud_center_overlay = 'centerOverlay',
+        xr_hud_center_overlay_y = 'centerOverlayY',
+        xr_hud_center_overlay_scale = 'centerOverlayScale',
         xr_hud_johnny_hint = 'johnnyHint',
         xr_hud_activity_log = 'activityLog',
         xr_hud_warning = 'warning',
@@ -368,6 +374,13 @@ local function isTopLeftAlertsItem(item)
         (item.name == 'HUDMiddleWidget' and item.anchor == inkEAnchor.TopLeft)
 end
 
+local function isCenterOverlayItem(item)
+    return item.name == 'cursor_device' or
+        item.name == 'TopCenter' or
+        item.name == 'BottomCenter' or
+        (item.name == 'HUDMiddleWidget' and item.anchor == inkEAnchor.Centered)
+end
+
 local function getLayoutValueForItem(item)
     local layout = hudLive.layout or cloneDefaultLayout()
 
@@ -391,6 +404,8 @@ local function getLayoutValueForItem(item)
         return layout.bottomRight, layout.bottomRightY, layout.bottomRightScale
     elseif item.name == 'RightCenter' then
         return layout.rightCenter, layout.rightCenterY, layout.rightCenterScale
+    elseif isCenterOverlayItem(item) then
+        return layout.centerOverlay, layout.centerOverlayY, layout.centerOverlayScale
     elseif item.name == 'LeftCenter' or item.name == 'activity_log' then
         return layout.activityLog, 0.0, 1.0
     elseif item.name == 'warning' then
@@ -493,6 +508,14 @@ local function applyInsetToCapturedWidgets(root, force)
             elseif item.name == 'InputHintJohnny' then
                 right = right - valueX
                 top = top + valueY
+                adjusted = true
+            elseif isCenterOverlayItem(item) then
+                left = left + valueX
+                if item.anchor == inkEAnchor.BottomCenter then
+                    bottom = bottom - valueY
+                else
+                    top = top + valueY
+                end
                 adjusted = true
             elseif item.name == 'LeftCenter' or item.name == 'activity_log' then
                 left = left + valueX

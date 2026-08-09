@@ -63,6 +63,12 @@ struct LiveControlsUiState {
     float xrHudRightCenterY;
     float xrHudRightCenterScale;
 
+    // Dynamic center-screen layers that arrive as generic HUDMiddleWidget roots:
+    // scanner/quickhack panels, interaction overlays, and game-info popups.
+    float xrHudCenterOverlay;
+    float xrHudCenterOverlayY;
+    float xrHudCenterOverlayScale;
+
     float xrHudJohnnyHint;
     float xrHudActivityLog;
     float xrHudWarning;

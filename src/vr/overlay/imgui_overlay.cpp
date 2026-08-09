@@ -959,6 +959,9 @@ bool DrawHudControls(LiveControlsUiState& state) {
     changed |= DrawHudXYAndScale("Radio", &state.xrHudRadio, &state.xrHudRadioY, &state.xrHudRadioScale);
     changed |= DrawHudXYAndScale("Bottom-right main", &state.xrHudBottomRight, &state.xrHudBottomRightY, &state.xrHudBottomRightScale);
     changed |= DrawHudXYAndScale("Right center", &state.xrHudRightCenter, &state.xrHudRightCenterY, &state.xrHudRightCenterScale);
+    changed |= DrawHudXYAndScale("Center overlays", &state.xrHudCenterOverlay, &state.xrHudCenterOverlayY, &state.xrHudCenterOverlayScale);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Generic center-screen game layers: scanner and quickhack overlays, interaction panels, and game-info popups.");
     changed |= DrawHudSingle("Johnny hint X", &state.xrHudJohnnyHint, -1200.0f, 1200.0f, "X %.0f");
     changed |= DrawHudSingle("Activity log X", &state.xrHudActivityLog, -1200.0f, 1200.0f, "X %.0f");
     changed |= DrawHudSingle("Warning Y", &state.xrHudWarning, -1200.0f, 1200.0f, "Y %.0f");
