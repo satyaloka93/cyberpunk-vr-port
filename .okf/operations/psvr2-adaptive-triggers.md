@@ -4,7 +4,7 @@ title: PSVR2 Sense adaptive triggers and grip haptics
 description: Optional integration of Enhanced DualSense Support gameplay profiles with the PSVR2Toolkit bridge.
 resource: https://github.com/satyaloka93/PSVR2Toolkit/releases/tag/cyberpunk-dsx-bridge-v0.2.0
 tags: [psvr2, sense, adaptive-triggers, haptics, cyberpunk, dependencies]
-timestamp: 2026-08-09T19:05:00+09:00
+timestamp: 2026-08-09T19:15:00+09:00
 ---
 
 # Dependency boundary
@@ -25,6 +25,12 @@ Only the Toolkit bridge may own the DSX-compatible UDP port/controller-effect pa
 # Native launcher boundary
 
 Enhanced DualSense Support's RED4ext process-launcher DLL is unnecessary. The installed historical DLL advertised runtime revision `3.0.80.33925` while the tested game runtime was `3.0.80.51928`. Patching only that advertised revision caused a freeze/exit. If RED4ext rejects the DLL, disable or remove it; never revision-patch it.
+
+# Sense weapon-category overrides
+
+Enhanced DualSense Support's **Not Recommended** warning targets its normal DualSense use: category overrides replace per-model effects. On PSVR2 Sense, the complex defaults are not mechanically equivalent, and direct official presets tested as more nuanced. The first measured profile is Handguns = Very Soft (`4`), Shotgun = Hard (`7`), and Submachine Gun = Choppy (`3`). Untested categories remain Default (`1`).
+
+These values live under `weaponsSettings` in `config/settings.json`; back up that file before broad calibration. They affect R2 mode while preserving the mod's state generation and L2 path.
 
 # Trigger and haptic fidelity
 

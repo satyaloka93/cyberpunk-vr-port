@@ -49,6 +49,18 @@ The bridge deliberately bypasses Enhanced DualSense Support's bundled `UDPClient
 
 The bridge writes `DSXData.json` next to `DualSenseXConfig.txt`, allowing the mod's status panel to see a connected bridge without its native client.
 
+## Recommended Sense weapon overrides
+
+Enhanced DualSense Support labels its weapon-category override page **Not Recommended** because overriding Default replaces some per-model DualSense effects with a category-wide preset. That trade-off is usually undesirable on DualSense, but its complex defaults do not transfer cleanly to PS VR2 Sense. Testing found the simpler official presets more nuanced and controllable on Sense:
+
+| Weapon category | Override | Stored value |
+|---|---|---:|
+| Handguns | Very Soft | 4 |
+| Shotgun | Hard | 7 |
+| Submachine Gun | Choppy | 3 |
+
+These settings are intentional for the PSVR2 bridge and are not unsafe. They alter R2 while the mod continues to provide gameplay state and L2 behavior. Leave Double-Barrel Shotgun, Light Machine Gun, Heavy Machine Gun, and other untested categories at Default until calibrated. Back up `DualSense Support\config\settings.json` before changing many categories.
+
 ## Effect fidelity
 
 DualSense and PS VR2 Sense reuse custom mode numbers `0x22`, `0x23`, and `0x27`, but their parameter layouts differ. Directly sending DSX's packed Bow bytes to Sense made ordinary handgun profiles excessively stiff. The Sense-tuned bridge instead uses each weapon's start/end/strength parameters to create gradual take-up and increasing resistance, followed by a motor release at the detected shot event.
