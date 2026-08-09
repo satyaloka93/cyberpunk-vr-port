@@ -7,8 +7,14 @@ avatar with motion-controlled hands**; and a set of CET / redscript mods add VR
 weapon aiming, motion melee, hand-to-holster equipping, a VR-friendly HUD and
 more. Everything is configured from an in-headset **F10** overlay.
 
-Repository: <https://github.com/dariulone/cyberpunk-vr-port>
+PS VR2 community fork: <https://github.com/satyaloka93/cyberpunk-vr-port><br>
+Upstream project: <https://github.com/dariulone/cyberpunk-vr-port>
 
+> **PS VR2 fork.** The `psvr2-tweaks` branch and `0.1.1-psvr2.*` releases add the
+> tested SteamVR/OpenXR Sense-controller path, PS VR2 launcher presets, UEVR-style
+> Triangle D-pad shifting, and dual-role Create/menu handling. See
+> [`docs/PSVR2-CONTROLS.txt`](docs/PSVR2-CONTROLS.txt).
+>
 > ⚠️ Experimental community mod. Not affiliated with CD PROJEKT RED. Use at your
 > own risk and keep backups of your saves.
 
@@ -54,7 +60,7 @@ actually built.
 ## Requirements
 
 - Cyberpunk 2077 (PC, 2.31).
-- Cyber Engine Tweaks
+- Cyber Engine Tweaks (**1.37.1 tested on Cyberpunk 2.31**)
 - RED4ext
 - ArchiveXL
 - TweakXL
@@ -69,8 +75,9 @@ Install RED4ext, CET and redscript first (the usual Nexus dependencies).
 
 ## Installation (drop-in)
 
-Download the release archive and extract its contents into your **Cyberpunk 2077
-game root** (the folder that contains `bin\`, `r6\`, `red4ext\`). The files land
+Download the archive from the [PS VR2 fork releases](https://github.com/satyaloka93/cyberpunk-vr-port/releases)
+and extract its contents into your **Cyberpunk 2077 game root** (the folder that
+contains `bin\`, `r6\`, `red4ext\`). The files land
 as:
 
 ```
@@ -81,7 +88,8 @@ bin\x64\plugins\cyber_engine_tweaks\mods\CyberpunkVRPort_*\   # CET mods: Stereo
 r6\scripts\CyberpunkVRPort_*\                                 # redscript: HUD, Holster, Melee, NoAnims, WeaponUp, WorldMap
 ```
 
-Then **start your OpenXR runtime first**, and launch the game.
+Then **start your OpenXR runtime first**, and launch the game. When updating, preserve
+`red4ext\plugins\CyberpunkVR_Stereo\vrik_calibration.ini` if you have calibrated VRIK wrists.
 
 > There is no `dxgi.dll` any more — this is a RED4ext plugin. Anything else that
 > proxies dxgi (R.E.A.L. VR, for one) must be out of `bin\x64` or the two fight
@@ -100,6 +108,10 @@ pwsh scripts\deploy_stereo.ps1 -GameRoot "<game root>"
 
 ## Controls
 
+For PS VR2 installation, SteamVR binding steps, the complete Sense control map,
+and troubleshooting, read **[`docs/PSVR2-CONTROLS.txt`](docs/PSVR2-CONTROLS.txt)**.
+The same file is included at the root of the release archive.
+
 VR controller input is merged into the native CP2077 gamepad, so the in-game
 "Controller" key bindings apply. Default VR mapping:
 
@@ -114,17 +126,30 @@ VR controller input is merged into the native CP2077 gamepad, so the in-game
 | A / B | Jump / Dodge |
 | X / Y | Reload·interact / Weapon switch |
 | Right thumb click | Crouch (R3) |
-| Left menu button | Pause menu |
+| Triangle capacitive touch + R3 | Tap: Start/system-pause menu · hold ≥0.5 s: Back/in-game menu (PSVR2 fallback) |
+| Menu/Create/Options | Tap: Start/system-pause menu · hold ≥0.5 s: Back/in-game menu |
 | Swing a melee weapon | VR motion melee (native attack along the blade) |
 
-**D-pad chord.** Hold the **left stick clicked in**, then pick the direction with
-the **right stick** — up / down / left / right. While the chord is held the right
-stick is taken out of the camera, so selecting a direction cannot snap-turn you.
-Release the left stick *without* having chosen a direction and it emits the normal
-L3 (sprint) press instead, so nothing is lost by using it.
+**D-pad shifting.** Touch/hold the **left thumbrest**, then pick the direction
+with the **right stick** — up / down / left / right. On PSVR2 through SteamVR,
+**Triangle capacitive touch** is the left-thumbrest modifier, matching UEVR's
+PSVR2 `LEFT_TOUCH` behavior. The right stick is removed from camera/snap turn
+while shifting. Left-stick click remains a fallback modifier; release it without
+choosing a direction to emit normal L3/sprint.
 
-Buttons follow each runtime's interaction profile (Touch / Index / Vive / WMR);
-customise the actual actions in the game's *Settings → Key Bindings → Controller*.
+Buttons follow each runtime's interaction profile (Touch / PSVR2 Sense through
+SteamVR / Index / Vive / WMR). Edit physical OpenXR bindings in SteamVR under
+*Settings → Controllers → Manage Controller Bindings*; edit Cyberpunk actions in
+*Settings → Key Bindings → Controller*. On PSVR2, Square/Triangle map to X/Y and
+Cross/Circle map to A/B through SteamVR's Oculus Touch compatibility profile.
+SteamVR's automatic Oculus-to-PSVR2 remapper omits the generated Menu/System paths.
+A manual SteamVR binding can map left **Create** directly to the application's
+**Sense Create / Options** (`SystemButton`) action. It follows UEVR's dual-role timing:
+a quick press/release emits XInput **Start** for Cyberpunk's system/pause menu; holding
+it for at least 0.5 seconds emits XInput **Back** for the in-game menu. Despite the
+action's internal name, neither gesture opens SteamVR's reserved dashboard. The same
+tap/hold behavior is available from the **Triangle-touch + R3** fallback. A bare R3
+remains crouch.
 
 Hotkeys:
 
@@ -181,7 +206,7 @@ play: it is for diagnosis and it costs both frame time and a very large log.
 
 ## Test hardware used during development
 
-- Headset: PICO 4 (via VDXR)
+- Headsets: PICO 4 (via VDXR); PlayStation VR2 compatibility uses SteamVR/OpenXR
 - CPU: AMD Ryzen 7 5800X
 - GPU: NVIDIA RTX 5070 Ti
 - RAM: 32 GB DDR4

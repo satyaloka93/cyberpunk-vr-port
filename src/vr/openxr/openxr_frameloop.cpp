@@ -649,10 +649,13 @@ DWORD OpenXRManager::FrameThreadMain() {
                 // for-byte identical to the pre-Controls-tab behaviour.
                 const bool gameplayInputActive = (GetInputActionsEnabled() != 0) && (m_thumbstickAction != XR_NULL_HANDLE);
                 VRControllerState ctrl{};
-                // D-PAD chord state (left hand is processed first, right second):
-                // HOLD the LEFT stick click, pick the direction with the RIGHT stick.
-                bool leftStickClicked  = false;
-                bool dpadUsedThisFrame = false;
+                // D-PAD shift state (left hand is processed first, right second):
+                // touch the LEFT thumbrest -- Triangle touch on SteamVR PSVR2 -- and
+                // pick a direction with the RIGHT stick. L3 remains a fallback modifier.
+                bool leftStickClicked       = false;
+                bool rightStickClicked      = false;
+                bool leftDpadTouchModifier  = false;
+                bool dpadUsedThisFrame      = false;
 
                 std::lock_guard<std::mutex> handLock(m_handMutex);
                 // ONE INSTANT: the head position that goes with these controller poses, plus the
@@ -820,9 +823,24 @@ DWORD OpenXRManager::FrameThreadMain() {
                     const float grip = getFloat(m_gripAction);
                     float sx = 0.0f, sy = 0.0f;
                     getVec2(m_thumbstickAction, sx, sy);
-                    const bool sclick = getBool(m_thumbstickClickAction);
-                    const bool prim   = getBool(m_primaryButtonAction);
-                    const bool sec    = getBool(m_secondaryButtonAction);
+                    const bool sclick        = getBool(m_thumbstickClickAction);
+                    const bool prim          = getBool(m_primaryButtonAction);
+                    const bool sec           = getBool(m_secondaryButtonAction);
+                    const bool secondaryTouch = getBool(m_secondaryButtonTouchAction);
+                    const bool thumbrestTouch = getBool(m_thumbrestTouchAction);
+
+                    // One quiet proof that the PSVR2 binding is delivering real action data. The
+                    // generated SteamVR binding file can exist even when the active interaction
+                    // profile or physical-controller binding is wrong; a non-zero action state is
+                    // the first end-to-end confirmation. Do not turn this into per-frame chatter.
+                    static bool s_psvr2InputConfirmed = false;
+                    if (!s_psvr2InputConfirmed && IsRuntimePsvr2() &&
+                        (fabsf(trig) > 0.01f || fabsf(grip) > 0.01f || fabsf(sx) > 0.01f ||
+                         fabsf(sy) > 0.01f || sclick || prim || sec || secondaryTouch || thumbrestTouch)) {
+                        s_psvr2InputConfirmed = true;
+                        Log("OpenXRManager[PSVR2]: Sense controller actions confirmed (hand=%s).\n",
+                            i == 0 ? "left" : "right");
+                    }
 
                     // XInput-compatible button bits so the hook can OR them into
                     // XINPUT_GAMEPAD.wButtons directly (XINPUT_GAMEPAD_*).
@@ -831,7 +849,6 @@ DWORD OpenXRManager::FrameThreadMain() {
                     constexpr uint16_t XB_X              = 0x4000;
                     constexpr uint16_t XB_Y              = 0x8000;
                     constexpr uint16_t XB_LEFT_SHOULDER  = 0x0100;
-                    constexpr uint16_t XB_RIGHT_SHOULDER = 0x0200;
                     constexpr uint16_t XB_LEFT_THUMB     = 0x0040;
                     constexpr uint16_t XB_RIGHT_THUMB    = 0x0080;
                     constexpr uint16_t XB_DPAD_UP        = 0x0001;
@@ -849,24 +866,38 @@ DWORD OpenXRManager::FrameThreadMain() {
                         if (sec)    ctrl.buttons |= XB_Y;
                         if (grip >= 0.7f) ctrl.buttons |= XB_LEFT_SHOULDER;
 
-                        // LEFT stick click = D-Pad modifier (direction picked with the
-                        // RIGHT stick, see the right-hand branch). The vanilla L3
-                        // (sprint) is emitted DEFERRED, after the loop: only when the
-                        // click is released without a D-Pad direction having been used.
+                        // Match UEVR's LEFT_TOUCH D-pad method. Native Touch controllers
+                        // use the left thumbrest sensor. SteamVR PSVR2 does not expose
+                        // that Sense input through its Oculus profile, so Triangle's
+                        // capacitive y/touch channel is the deliberate fallback.
+                        leftDpadTouchModifier = thumbrestTouch || (IsRuntimePsvr2() && secondaryTouch);
+                        if (IsRuntimePsvr2() && secondaryTouch) {
+                            static bool s_triangleDpadLogged = false;
+                            if (!s_triangleDpadLogged) {
+                                s_triangleDpadLogged = true;
+                                Log("OpenXRManager[PSVR2]: Triangle-touch D-pad modifier active.\n");
+                            }
+                        }
+
+                        // L3 remains a second D-pad modifier. Its vanilla sprint press is
+                        // emitted DEFERRED after the loop only when released without a
+                        // D-pad direction having been used.
                         leftStickClicked = sclick;
                     } else {
                         ctrl.rightTrigger = trig;
                         ctrl.rightGrip    = grip;
                         ctrl.rightThumbX  = sx;
                         ctrl.rightThumbY  = sy;
+                        rightStickClicked = sclick;
                         if (sclick) ctrl.buttons |= XB_RIGHT_THUMB;
                         if (prim)   ctrl.buttons |= XB_A;
                         if (sec)    ctrl.buttons |= XB_B;
 
-                        // D-PAD CHORD: while the LEFT stick click is held, the RIGHT
-                        // stick picks the D-Pad direction. The right axes are zeroed for
-                        // the whole hold so snap-turn/camera cannot fire during selection.
-                        if (leftStickClicked) {
+                        // D-PAD SHIFT: while left thumbrest/Triangle touch (or fallback
+                        // L3) is held, the RIGHT stick picks the D-pad direction. Zero
+                        // the right axes for the entire hold so smooth/snap turn cannot
+                        // fire during selection, matching UEVR's LEFT_TOUCH behavior.
+                        if (leftDpadTouchModifier || leftStickClicked) {
                             constexpr float threshold = 0.5f;
                             if (sy > threshold)  { ctrl.buttons |= XB_DPAD_UP;    dpadUsedThisFrame = true; }
                             if (sy < -threshold) { ctrl.buttons |= XB_DPAD_DOWN;  dpadUsedThisFrame = true; }
@@ -904,15 +935,47 @@ DWORD OpenXRManager::FrameThreadMain() {
                 }
 
                 if (gameplayInputActive) {
-                    // Menu button is single (no per-hand binding) on Touch/Index/Vive/WMR.
+                    // SteamVR's Oculus->PSVR2 auto-remapper currently drops menu, system and
+                    // thumbrest paths entirely (vrserver logs list them as inputs, then omit
+                    // them from the completed remap). Keep the native action for runtimes that
+                    // do deliver it, and provide a direct PSVR2 fallback using inputs proven to
+                    // survive remapping: rest the thumb on Triangle and click R3. A bare R3 is
+                    // still crouch; clear it only while this explicit chord is held.
+                    const bool psvr2MenuChord = IsRuntimePsvr2() &&
+                                                leftDpadTouchModifier && rightStickClicked;
+                    if (psvr2MenuChord) {
+                        ctrl.buttons &= static_cast<uint16_t>(~0x0080u); // suppress R3/crouch
+                        static bool s_psvr2MenuChordLogged = false;
+                        if (!s_psvr2MenuChordLogged) {
+                            s_psvr2MenuChordLogged = true;
+                            Log("OpenXRManager[PSVR2]: Triangle-touch + R3 menu fallback active (tap=Start, hold=Back).\n");
+                        }
+                    }
+
+                    // Retain the one-action UEVR-style path for runtimes/driver versions that
+                    // expose either auxiliary button instead of reserving it for SteamVR.
+                    bool senseMenuPressed = false;
                     if (m_menuButtonAction != XR_NULL_HANDLE) {
                         XrActionStateGetInfo gi{XR_TYPE_ACTION_STATE_GET_INFO};
                         gi.action = m_menuButtonAction;
                         gi.subactionPath = XR_NULL_PATH;
                         XrActionStateBoolean st{XR_TYPE_ACTION_STATE_BOOLEAN};
-                        if (XR_SUCCEEDED(xrGetActionStateBoolean(m_session, &gi, &st)) && st.isActive && st.currentState)
-                            ctrl.buttons |= 0x0010; // XINPUT_GAMEPAD_START
+                        senseMenuPressed = XR_SUCCEEDED(xrGetActionStateBoolean(m_session, &gi, &st)) &&
+                                           st.isActive && st.currentState;
                     }
+                    if (senseMenuPressed && IsRuntimePsvr2()) {
+                        static bool s_senseMenuLogged = false;
+                        if (!s_senseMenuLogged) {
+                            s_senseMenuLogged = true;
+                            Log("OpenXRManager[PSVR2]: Sense Create/Options active (tap=Start, hold=Back).\n");
+                        }
+                    }
+
+                    // Publish the RAW hold state instead of a frame-loop button pulse. The
+                    // XInput hook runs at the exact instant the game polls and performs UEVR's
+                    // timing split there: release before 500 ms = Start; hold = Back. This
+                    // avoids a one-XR-frame pulse being missed between slower game polls.
+                    ctrl.pauseSelectPressed = senseMenuPressed || psvr2MenuChord;
 
                     // Publish the snapshot for the XInput hook.
                     std::lock_guard<std::mutex> inLock(m_inputMutex);

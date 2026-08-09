@@ -543,6 +543,18 @@ bool OpenXRManager::Init() {
             systemProps.graphicsProperties.maxLayerCount,
             systemProps.trackingProperties.positionTracking ? 1 : 0,
             systemProps.trackingProperties.orientationTracking ? 1 : 0);
+
+        // SteamVR identifies the PC adapter as "SteamVR/OpenXR : playstation_vr2", but exposes
+        // the Sense controllers to OpenXR applications through the Oculus Touch interaction
+        // profile. That profile is already suggested below (Square/Triangle -> X/Y,
+        // Cross/Circle -> A/B). Keep an explicit hardware flag for diagnostics and PSVR2-only
+        // compatibility behavior without pretending the unsupported Sony profile is active.
+        const bool psvr2 = strstr(systemProps.systemName, "playstation_vr2") != nullptr;
+        m_runtimeIsPsvr2.store(psvr2, std::memory_order_relaxed);
+        if (psvr2) {
+            Log("OpenXRManager[PSVR2]: headset detected; using SteamVR's Oculus Touch controller emulation. "
+                "Sense face buttons map as Square/Triangle=X/Y and Cross/Circle=A/B.\n");
+        }
     }
 
     uint32_t viewCount = 0;
@@ -600,9 +612,14 @@ bool OpenXRManager::Init() {
             makeAction(m_triggerAction,         XR_ACTION_TYPE_FLOAT_INPUT,    "trigger",          "Trigger",              true);
             makeAction(m_gripAction,            XR_ACTION_TYPE_FLOAT_INPUT,    "grip",             "Grip",                 true);
             makeAction(m_thumbstickClickAction, XR_ACTION_TYPE_BOOLEAN_INPUT,  "thumbstick_click", "Thumbstick Click",     true);
-            makeAction(m_primaryButtonAction,   XR_ACTION_TYPE_BOOLEAN_INPUT,  "primary_button",   "Primary Button (A/X)", true);
-            makeAction(m_secondaryButtonAction, XR_ACTION_TYPE_BOOLEAN_INPUT,  "secondary_button", "Secondary Button (B/Y)", true);
-            makeAction(m_menuButtonAction,      XR_ACTION_TYPE_BOOLEAN_INPUT,  "menu",             "Menu Button",          false);
+            makeAction(m_primaryButtonAction,        XR_ACTION_TYPE_BOOLEAN_INPUT, "primary_button",         "Primary Button (A/X)",       true);
+            makeAction(m_secondaryButtonAction,      XR_ACTION_TYPE_BOOLEAN_INPUT, "secondary_button",       "Secondary Button (B/Y)",     true);
+            makeAction(m_secondaryButtonTouchAction, XR_ACTION_TYPE_BOOLEAN_INPUT, "secondary_button_touch", "Secondary Button Touch",     true);
+            makeAction(m_thumbrestTouchAction,       XR_ACTION_TYPE_BOOLEAN_INPUT, "thumbrest_touch",        "D-pad Shift Thumbrest Touch", true);
+            // One combined action matches UEVR's proven SteamVR PSVR2 path. SteamVR merges
+            // left Menu/Create and right System/Options into this action; separate actions
+            // generated correct-looking JSON but neither delivered a runtime state.
+            makeAction(m_menuButtonAction,           XR_ACTION_TYPE_BOOLEAN_INPUT, "systembutton",           "Sense Create / Options",     false);
         }
         Log("OpenXRManager[Input]: gameplay action set %s (xr_input_actions=%d)\n",
             inputActionsEnabled ? "ENABLED" : "DISABLED (pose-only)", (int)inputActionsEnabled);
@@ -646,7 +663,8 @@ bool OpenXRManager::Init() {
             goto bindings_done;
         }
 
-        // -- Oculus Touch (Quest/Rift): X/Y on left, A/B on right, menu = left menu button --
+        // -- Oculus Touch (Quest/Rift, plus SteamVR's PSVR2 Sense emulation): X/Y on left,
+        //    A/B on right, menu = left menu/Create button when SteamVR exposes it --
         suggest("/interaction_profiles/oculus/touch_controller", {
             { m_handPoseAction,        "/user/hand/left/input/grip/pose" },
             { m_handPoseAction,        "/user/hand/right/input/grip/pose" },
@@ -662,9 +680,19 @@ bool OpenXRManager::Init() {
             { m_gripAction,            "/user/hand/right/input/squeeze/value" },
             { m_primaryButtonAction,   "/user/hand/left/input/x/click" },
             { m_primaryButtonAction,   "/user/hand/right/input/a/click" },
-            { m_secondaryButtonAction, "/user/hand/left/input/y/click" },
-            { m_secondaryButtonAction, "/user/hand/right/input/b/click" },
-            { m_menuButtonAction,      "/user/hand/left/input/menu/click" },
+            { m_secondaryButtonAction,      "/user/hand/left/input/y/click" },
+            { m_secondaryButtonAction,      "/user/hand/right/input/b/click" },
+            // UEVR-compatible capacitive D-pad shift sources. On PSVR2 through
+            // SteamVR, Triangle touch arrives on the Oculus Touch y/touch path and
+            // substitutes for the left thumbrest path that Sense does not expose.
+            { m_secondaryButtonTouchAction, "/user/hand/left/input/y/touch" },
+            { m_secondaryButtonTouchAction, "/user/hand/right/input/b/touch" },
+            { m_thumbrestTouchAction,       "/user/hand/left/input/thumbrest/touch" },
+            { m_thumbrestTouchAction,       "/user/hand/right/input/thumbrest/touch" },
+            // SteamVR PSVR2 exposes the two small Sense buttons separately, but UEVR's
+            // working binding routes both physical paths into ONE SystemButton action.
+            { m_menuButtonAction,           "/user/hand/left/input/menu/click" },
+            { m_menuButtonAction,           "/user/hand/right/input/system/click" },
         });
 
         // -- Valve Index: A/B on both hands, system as menu --
@@ -885,6 +913,28 @@ void OpenXRManager::EndSession() {
     Log("OpenXRManager: Session ended.\n");
 }
 
+void OpenXRManager::LogCurrentInteractionProfiles(const char* reason) {
+    if (m_session == XR_NULL_HANDLE || m_instance == XR_NULL_HANDLE) return;
+
+    for (int hand = 0; hand < 2; ++hand) {
+        XrInteractionProfileState state{XR_TYPE_INTERACTION_PROFILE_STATE};
+        const XrResult getRes = xrGetCurrentInteractionProfile(m_session, m_handPaths[hand], &state);
+        char profile[XR_MAX_PATH_LENGTH]{};
+        uint32_t chars = 0;
+        XrResult pathRes = XR_SUCCESS;
+        if (XR_SUCCEEDED(getRes) && state.interactionProfile != XR_NULL_PATH) {
+            pathRes = xrPathToString(m_instance, state.interactionProfile,
+                                     static_cast<uint32_t>(sizeof(profile)), &chars, profile);
+        }
+        if (XR_FAILED(getRes) || XR_FAILED(pathRes) || profile[0] == '\0') {
+            strcpy_s(profile, "<none>");
+        }
+        Log("OpenXRManager[Input]: active profile reason=%s hand=%s profile=%s getRes=%d pathRes=%d\n",
+            reason ? reason : "unknown", hand == 0 ? "left" : "right", profile,
+            static_cast<int>(getRes), static_cast<int>(pathRes));
+    }
+}
+
 void OpenXRManager::PollEvents() {
     if (m_instance == XR_NULL_HANDLE) return;
 
@@ -902,6 +952,11 @@ void OpenXRManager::PollEvents() {
             } else if (m_sessionState == XR_SESSION_STATE_EXITING || m_sessionState == XR_SESSION_STATE_LOSS_PENDING) {
                 m_stopFrameThread.store(true, std::memory_order_relaxed);
             }
+        } else if (event.type == XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED) {
+            // Essential for PSVR2 diagnosis: SteamVR currently presents Sense as Oculus Touch,
+            // not as /interaction_profiles/sony/playstation_vr2_controller. Log what is ACTIVE,
+            // rather than inferring it from the headset name or from successful suggestions.
+            LogCurrentInteractionProfiles("profile-changed");
         } else if (event.type == XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING) {
             // Native OpenXR recenter (user held the home / system button, or used the runtime menu) —
             // the runtime is about to remap "forward" of its tracking space at changed->changeTime.

@@ -41,6 +41,10 @@ extern void InitRuntimePaths();
 // afterwards. As early as we get -- the game may still have read its settings first, in which case
 // they take on the next launch.
 extern "C" void ApplyFirstLaunchGameSettings();
+// Install both XInputGetCapabilities and XInputGetState IAT hooks before the game performs its
+// one-time controller enumeration. Waiting for WorkerThread's 8-second delay is too late: CP2077
+// can cache "no gamepad" and never poll the synthetic state on the first screen.
+extern bool InstallXInputHook();
 // The game-hook pass: camera, FOV, LoD, DLSS resolution, XInput. Sleeps ~8 s first, then
 // pattern-scans. Unchanged -- none of it depended on being the proxy.
 extern DWORD WINAPI WorkerThread(LPVOID);
@@ -71,6 +75,7 @@ RED4EXT_C_EXPORT bool RED4EXT_CALL Main(RED4ext::v1::PluginHandle, RED4ext::v1::
         InitRuntimePaths();
         Log("=== CyberpunkVRPort red4ext plugin loaded (no dxgi proxy) ===\n");
         ApplyFirstLaunchGameSettings();
+        InstallXInputHook();
         // Must run before the game's D3D12CreateDevice: this is what captures the device and
         // queue, and what patches the descriptor-heap size the second view needs.
         CyberpunkVRPort_InitStereo();

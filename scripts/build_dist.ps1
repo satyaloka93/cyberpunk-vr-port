@@ -113,6 +113,13 @@ foreach ($a in @("cyberpunkvrport.archive","VRCigarette.archive.xl")) {
 # records every VR application on the box. Build it with the xr_probe_layer target and hand over
 # that folder when it is actually needed.
 
+# ---- bundled user documentation ---------------------------------------------------------------
+Add-File (Need (Join-Path $RepoRoot "docs\PSVR2-CONTROLS.txt") "PSVR2 controls") "PSVR2-CONTROLS.txt"
+$releaseNotes = Join-Path $RepoRoot "docs\RELEASE-$Version.txt"
+if (Test-Path -LiteralPath $releaseNotes) {
+    Add-File $releaseNotes "RELEASE-NOTES.txt"
+}
+
 # ---- the note a tester actually reads ----------------------------------------------------------
 $readme = @"
 CyberpunkVRPort $Version
@@ -151,6 +158,23 @@ INSTALL
 
     Then start your OpenXR runtime, then the game. A small launcher window appears first: pick
     your headset and per-eye render resolution there.
+
+PLAYSTATION VR2 QUICK START
+    Use the normal Cyberpunk2077.exe with the PS VR2 PC adapter and SteamVR set as the active
+    OpenXR runtime. Start SteamVR first, select PlayStation VR2 in the mod launcher, and begin
+    with 3072 x 3072 (or 2560 x 2560 for more performance).
+
+    SteamVR may omit Create/Menu when converting the Oculus Touch profile to Sense. In SteamVR's
+    Manage Controller Bindings for the CyberpunkVR OpenXR application, manually map LEFT CREATE
+    to the app action "Sense Create / Options" (SystemButton):
+
+        quick press/release under 0.5 s       Start -> Cyberpunk system/pause menu
+        hold for at least 0.5 s              Back  -> Cyberpunk in-game menu
+
+    Fallback: touch Triangle without clicking and use R3 with the same quick/hold timing. Bare
+    R3 remains crouch. For D-pad input, touch Triangle without clicking and move the RIGHT stick;
+    turning is suppressed during the shift. Read PSVR2-CONTROLS.txt for the full control map,
+    binding steps, and troubleshooting.
 
 WHAT LANDS WHERE
     red4ext\plugins\CyberpunkVR_Stereo\   the VR plugin, its shaders, the settings template

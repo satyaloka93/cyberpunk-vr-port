@@ -23,14 +23,16 @@ registerForEvent("onInit", function()
     VrcamSel.init()
     Stereo.ready = true
     print("[Stereo] " .. VrcamSel.status())
+end)
 
-    -- Bind in CET > Bindings if you edit vrcam.json by hand. The launcher's own writes are picked
-    -- up on the next load anyway; this is for changing the pick without leaving the game.
+-- CET 1.37 exposes registerHotkey while loading a mod, but not from inside its onInit callback.
+-- Register here so an optional convenience binding cannot abort initialization.
+if type(registerHotkey) == "function" then
     registerHotkey("vrcam_reload_selection", "VRCAM: re-read vrcam.json", function()
         VrcamSel.reload()
         print("[Stereo.VRCAM] " .. VrcamSel.status())
     end)
-end)
+end
 
 registerForEvent("onUpdate", function(dt)
     if not Stereo.ready then return end

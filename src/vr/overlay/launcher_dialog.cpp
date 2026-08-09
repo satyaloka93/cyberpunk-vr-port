@@ -169,6 +169,23 @@ static const ResolutionPreset kPimaxDreamAirResolutions[] = {
     {3072, 2536, L"3072 x 2536"},
 };
 
+// PLAYSTATION VR2 (PC adapter, SteamVR/OpenXR).
+//
+// SteamVR reports 3400x3468 per eye at 100% on the test PSVR2 (AR 0.98039), while the physical
+// panel is 2000x2040 (the same AR). The current shipped Cyberpunk archive predates PSVR2 and only
+// carries square VRCAM components near that shape. Square is the closest authored shape (2.0%
+// wider than ideal), and is dramatically better than selecting the Pimax Dream Air ladder
+// (3072x2536 is 23.6% wider than PSVR2's runtime shape). Do not list 3400x3468 here until a matching
+// vrcam_3400x3468 component and dynamic texture have actually been imported into the archive.
+static const ResolutionPreset kPlayStationVr2Resolutions[] = {
+    {1920, 1920, L"1920 x 1920 (Performance)"},
+    {2048, 2048, L"2048 x 2048 (Near panel resolution)"},
+    {2560, 2560, L"2560 x 2560 (Balanced)"},
+    {3072, 3072, L"3072 x 3072 (High)"},
+    {3584, 3584, L"3584 x 3584 (Near runtime scale)"},
+    {4096, 4096, L"4096 x 4096 (Ultra)"},
+};
+
 static const HmdPreset kHmdPresets[] = {
     {0, L"Q2",    L"Meta Quest2",     kQuest2Resolutions,       _countof(kQuest2Resolutions)},
     {1, L"Q3S",   L"Meta Quest3s",    kQuest3SResolutions,      _countof(kQuest3SResolutions)},
@@ -181,6 +198,7 @@ static const HmdPreset kHmdPresets[] = {
     {8, L"CRYWF", L"Crystal Utra Wide", kCrystalWFResolutions,    _countof(kCrystalWFResolutions)},
     {9, L"VINDEX",L"Valve Index",     kValveIndexResolutions,   _countof(kValveIndexResolutions)},
     {10,L"PDA",   L"Pimax Dream Air", kPimaxDreamAirResolutions, _countof(kPimaxDreamAirResolutions)},
+    {11,L"PSVR2", L"PlayStation VR2", kPlayStationVr2Resolutions, _countof(kPlayStationVr2Resolutions)},
 };
 
 struct RuntimeOption {

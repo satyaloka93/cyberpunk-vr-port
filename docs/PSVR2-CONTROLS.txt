@@ -1,0 +1,88 @@
+CyberpunkVR Port — PlayStation VR2 setup and controls
+====================================================
+
+SUPPORTED PATH
+    PS VR2 PC adapter -> SteamVR -> SteamVR OpenXR runtime -> CyberpunkVR Port
+
+    Launch the normal game executable. Do not rename or replace Cyberpunk2077.exe.
+    SteamVR may show an application identifier such as
+    openxr.cyberpunkvrport.cyberpunk2077.exe; that is only its generated OpenXR ID.
+
+SETUP
+    1. Install the PlayStation VR2 App and SteamVR, connect the headset and both Sense
+       controllers, and finish Sony/SteamVR setup.
+    2. In SteamVR settings, make SteamVR the current OpenXR runtime.
+    3. Install this release into the Cyberpunk 2077 game root and start SteamVR before
+       launching Cyberpunk.
+    4. In the mod launcher, select PlayStation VR2. Start with 3072 x 3072 (High), or
+       2560 x 2560 if more performance is needed. The PS VR2 runtime commonly recommends
+       about 3400 x 3468 per eye, but this release must use one of the square VRCAM assets
+       listed by the launcher; an exact 3400 x 3468 asset is not bundled yet.
+
+SENSE BUTTONS
+    Left stick                         walk / strafe
+    Left stick fully forward           sprint
+    Right stick X                      snap or smooth turn
+    Right stick fully down             crouch
+    Left trigger                       aim
+    Right trigger                      fire
+    Square                             XInput X: reload / interact
+    Triangle click                     XInput Y: weapon switch
+    Cross                              XInput A: jump
+    Circle                             XInput B: dodge / back
+    Left grip                          left shoulder / menu tab left
+    Right grip                         hand-to-holster equip / unequip;
+                                       menu tab right while a menu is open
+    Right stick click (R3)             crouch
+    Swing a melee weapon               native motion melee
+
+CREATE / MENU BUTTON
+    SteamVR's automatic Oculus-to-Sense conversion may omit Create/Menu. If Create does
+    nothing, open:
+
+        SteamVR -> Settings -> Controllers -> Manage Controller Bindings
+
+    Select the CyberpunkVR OpenXR application, edit or create a custom binding, and map
+    the physical LEFT CREATE button to the application's:
+
+        Sense Create / Options   (internal action name: SystemButton)
+
+    Save and activate the binding. The action uses UEVR-style timing:
+
+        quick press and release, under 0.5 s   XInput Start -> Cyberpunk system/pause menu
+        hold for at least 0.5 s                XInput Back  -> Cyberpunk in-game menu
+
+    A long press emits Back once and does not emit Start when released. “SystemButton” is
+    only the mod's application-action name; it cannot open SteamVR's runtime-reserved
+    dashboard.
+
+MENU FALLBACK
+    If Create cannot be assigned, rest a finger on Triangle WITHOUT clicking it and use R3:
+
+        Triangle capacitive touch + quick R3   Start / system-pause menu
+        Triangle capacitive touch + hold R3    Back / in-game menu after 0.5 s
+
+    Bare R3 remains crouch.
+
+D-PAD SHIFTING
+    Touch and hold Triangle WITHOUT clicking it, then move the RIGHT stick:
+
+        right stick up / down / left / right   D-pad up / down / left / right
+
+    Turning is suppressed while Triangle touch is held. Triangle click still performs
+    weapon switch. L3 can be used as a second D-pad modifier; releasing L3 without choosing
+    a direction emits normal L3/sprint.
+
+HOTKEYS
+    F7                                 recenter HMD
+    F10 or Insert                      open the in-headset mod settings overlay
+
+TROUBLESHOOTING
+    * Keep SteamVR running before starting the game.
+    * If controls do not arrive, verify xr_input_actions=1 and xr_xinput_hook=1 in
+      bin\x64\vrport.ini.
+    * Check bin\x64\cyberpunkvrport.log for the active Oculus Touch compatibility profile,
+      “Sense controller actions confirmed”, and XInput merge messages.
+    * If either Sense controller repeatedly disappears in SteamVR Home too, troubleshoot
+      controller charge, room lighting/occlusion, pairing, Bluetooth interference, firmware,
+      and USB/Bluetooth power management before changing mod bindings.

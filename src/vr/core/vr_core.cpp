@@ -6623,12 +6623,30 @@ bool InstallNativeSetterClearHook() {
 // ===========================================================================
 
 using XInputGetState_t = DWORD (WINAPI*)(DWORD, XINPUT_STATE*);
+using XInputGetCapabilities_t = DWORD (WINAPI*)(DWORD, DWORD, XINPUT_CAPABILITIES*);
 
 static XInputGetState_t g_realXInputGetState = nullptr;
+static XInputGetCapabilities_t g_realXInputGetCapabilities = nullptr;
 static bool     g_xinputHooked = false;
+static bool     g_xinputCapabilitiesHooked = false;
 static int      g_xinputSnapArmedDir = 0;       // currently latched stick direction so we don't fire while held
 static DWORD    g_xinputSnapPulseStartMs = 0;   // when the current pulse began
 static int      g_xinputSnapPulseDir = 0;       // direction of the active pulse (0 = idle)
+// A disconnected physical pad returns packet 0 on every poll. The old merge incremented that
+// temporary value only for button/trigger changes (not sticks), then let it fall back to 0 on the
+// next poll. Consumers that use dwPacketNumber as XInput intends could therefore miss all PSVR2
+// stick movement and most held controls. Keep one monotonic packet stream for the FINAL merged
+// state instead. SRWLOCK is cheap here and protects games that poll XInput from multiple threads.
+static SRWLOCK  g_xinputPacketLock = SRWLOCK_INIT;
+static XINPUT_GAMEPAD g_xinputLastMergedGamepad{};
+static DWORD    g_xinputMergedPacket = 0;
+static bool     g_xinputMergedPacketInitialized = false;
+// UEVR-style dual-role SystemButton timing is evaluated in XInputGetState, not the XR
+// frame loop, so each synthesized edge is returned directly to a real game poll.
+static SRWLOCK  g_pauseSelectLock = SRWLOCK_INIT;
+static bool     g_pauseSelectWasPressed = false;
+static bool     g_pauseSelectLongPressFired = false;
+static ULONGLONG g_pauseSelectPressedAtMs = 0;
 
 extern "C" int GetSnapTurnPulseMs();
 
@@ -6649,6 +6667,42 @@ static float ApplyStickDeadzone(float v, float dz) {
     return s * (a - dz) / (1.0f - dz);
 }
 
+// CP2077 enumerates XInput devices through GetCapabilities before it commits to polling their
+// state. Hooking GetState alone can produce perfect OpenXR samples forever while the game remains
+// in keyboard mode and never asks for them. Advertise one ordinary gamepad on user slot 0; the
+// state hook below supplies it. A real physical pad, when present, is left intact.
+static DWORD WINAPI HookedXInputGetCapabilities(DWORD dwUserIndex, DWORD dwFlags,
+                                                 XINPUT_CAPABILITIES* pCapabilities) {
+    DWORD r = ERROR_DEVICE_NOT_CONNECTED;
+    if (g_realXInputGetCapabilities) r = g_realXInputGetCapabilities(dwUserIndex, dwFlags, pCapabilities);
+
+    if (!pCapabilities || dwUserIndex != 0 || g_liveControls.xrXInputHook == 0) return r;
+    if (r != ERROR_SUCCESS) {
+        memset(pCapabilities, 0, sizeof(*pCapabilities));
+        pCapabilities->Type = XINPUT_DEVTYPE_GAMEPAD;
+        pCapabilities->SubType = XINPUT_DEVSUBTYPE_GAMEPAD;
+        pCapabilities->Gamepad.wButtons =
+            XINPUT_GAMEPAD_DPAD_UP | XINPUT_GAMEPAD_DPAD_DOWN |
+            XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT |
+            XINPUT_GAMEPAD_START | XINPUT_GAMEPAD_BACK |
+            XINPUT_GAMEPAD_LEFT_THUMB | XINPUT_GAMEPAD_RIGHT_THUMB |
+            XINPUT_GAMEPAD_LEFT_SHOULDER | XINPUT_GAMEPAD_RIGHT_SHOULDER |
+            XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_X | XINPUT_GAMEPAD_Y;
+        pCapabilities->Gamepad.bLeftTrigger = 255;
+        pCapabilities->Gamepad.bRightTrigger = 255;
+        pCapabilities->Gamepad.sThumbLX = 32767;
+        pCapabilities->Gamepad.sThumbLY = 32767;
+        pCapabilities->Gamepad.sThumbRX = 32767;
+        pCapabilities->Gamepad.sThumbRY = 32767;
+        r = ERROR_SUCCESS;
+    }
+
+    static LONG s_logged = 0;
+    if (InterlockedCompareExchange(&s_logged, 1, 0) == 0)
+        Log("XInput: virtual VR gamepad capabilities reported on user 0.\n");
+    return r;
+}
+
 static DWORD WINAPI HookedXInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState) {
     DWORD r = ERROR_DEVICE_NOT_CONNECTED;
     if (g_realXInputGetState) r = g_realXInputGetState(dwUserIndex, pState);
@@ -6660,6 +6714,10 @@ static DWORD WINAPI HookedXInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState
     VRControllerState vr{};
     if (!OpenXRManager::Get().GetControllerState(&vr)) return r;
 
+    static LONG s_firstStatePoll = 0;
+    if (InterlockedCompareExchange(&s_firstStatePoll, 1, 0) == 0)
+        Log("XInput: game began polling virtual VR gamepad state on user 0.\n");
+
     if (r != ERROR_SUCCESS) {
         memset(pState, 0, sizeof(*pState));
         r = ERROR_SUCCESS;
@@ -6667,6 +6725,46 @@ static DWORD WINAPI HookedXInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState
 
     // Buttons: OR (so a physical pad can still augment, and vice versa).
     pState->Gamepad.wButtons |= vr.buttons;
+
+    // Match UEVR's one-action pause/select split. A quick SystemButton press emits
+    // XInput Start only when released; holding for at least 500 ms emits XInput Back
+    // once and suppresses Start on release. Do this in the hook rather than publishing
+    // a one-XR-frame pulse, which a slower game poll could miss entirely.
+    enum class PauseSelectEvent { None, Start, Back };
+    PauseSelectEvent pauseSelectEvent = PauseSelectEvent::None;
+    const ULONGLONG pauseSelectNowMs = GetTickCount64();
+    AcquireSRWLockExclusive(&g_pauseSelectLock);
+    if (vr.pauseSelectPressed) {
+        if (!g_pauseSelectWasPressed) {
+            g_pauseSelectPressedAtMs = pauseSelectNowMs;
+            g_pauseSelectLongPressFired = false;
+        } else if (!g_pauseSelectLongPressFired &&
+                   pauseSelectNowMs - g_pauseSelectPressedAtMs >= 500) {
+            g_pauseSelectLongPressFired = true;
+            pauseSelectEvent = PauseSelectEvent::Back;
+        }
+    } else if (g_pauseSelectWasPressed) {
+        if (!g_pauseSelectLongPressFired) {
+            pauseSelectEvent = (pauseSelectNowMs - g_pauseSelectPressedAtMs >= 500)
+                ? PauseSelectEvent::Back
+                : PauseSelectEvent::Start;
+        }
+        g_pauseSelectLongPressFired = false;
+    }
+    g_pauseSelectWasPressed = vr.pauseSelectPressed;
+    ReleaseSRWLockExclusive(&g_pauseSelectLock);
+
+    if (pauseSelectEvent == PauseSelectEvent::Start) {
+        pState->Gamepad.wButtons |= XINPUT_GAMEPAD_START;
+        static LONG s_shortPauseSelectLogged = 0;
+        if (InterlockedCompareExchange(&s_shortPauseSelectLogged, 1, 0) == 0)
+            Log("XInput: SystemButton quick press mapped to Start/Pause.\n");
+    } else if (pauseSelectEvent == PauseSelectEvent::Back) {
+        pState->Gamepad.wButtons |= XINPUT_GAMEPAD_BACK;
+        static LONG s_longPauseSelectLogged = 0;
+        if (InterlockedCompareExchange(&s_longPauseSelectLogged, 1, 0) == 0)
+            Log("XInput: SystemButton long press mapped to Back/Select.\n");
+    }
 
     // MENU-ONLY: right grip = RB (right shoulder) for tab navigation to the RIGHT,
     // symmetric with the left grip's LB. The right grip is deliberately NEVER merged as
@@ -6810,17 +6908,41 @@ static DWORD WINAPI HookedXInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState
     if (wantCrouch) synthButtons |= XINPUT_GAMEPAD_RIGHT_THUMB;
     pState->Gamepad.wButtons |= synthButtons;
 
-    // Bump packet number on any change so XInput consumers latch it.
-    static uint16_t s_lastButtons = 0;
-    static uint16_t s_lastSynth = 0;
-    static BYTE s_lastLT = 0, s_lastRT = 0;
-    if (vr.buttons != s_lastButtons || synthButtons != s_lastSynth || lt != s_lastLT || rt != s_lastRT) {
-        pState->dwPacketNumber++;
-        s_lastButtons = vr.buttons;
-        s_lastSynth = synthButtons;
-        s_lastLT = lt;
-        s_lastRT = rt;
+    // Prove what reaches the game's actual XInput poll, not merely what OpenXR sampled. Log each
+    // category once so a trigger-only, button-only, or stick-only failure is distinguishable
+    // without per-frame noise.
+    {
+        LONG categories = 0;
+        if (pState->Gamepad.wButtons != 0) categories |= 1;
+        if (pState->Gamepad.bLeftTrigger != 0 || pState->Gamepad.bRightTrigger != 0) categories |= 2;
+        if (pState->Gamepad.sThumbLX != 0 || pState->Gamepad.sThumbLY != 0 ||
+            pState->Gamepad.sThumbRX != 0 || pState->Gamepad.sThumbRY != 0) categories |= 4;
+        static volatile LONG s_loggedCategories = 0;
+        const LONG previous = InterlockedOr(&s_loggedCategories, categories);
+        if ((categories & ~previous) != 0) {
+            Log("XInput: merged VR input buttons=0x%04X LT=%u RT=%u sticks=(%d,%d)/(%d,%d) newCategories=0x%X.\n",
+                pState->Gamepad.wButtons,
+                (unsigned)pState->Gamepad.bLeftTrigger, (unsigned)pState->Gamepad.bRightTrigger,
+                (int)pState->Gamepad.sThumbLX, (int)pState->Gamepad.sThumbLY,
+                (int)pState->Gamepad.sThumbRX, (int)pState->Gamepad.sThumbRY,
+                (unsigned)(categories & ~previous));
+        }
     }
+
+    // Publish a monotonic packet number for every FINAL-state change, including both sticks.
+    // This is independent of whether a physical controller is connected and composes its state
+    // into the comparison, so physical-pad changes are not hidden either.
+    AcquireSRWLockExclusive(&g_xinputPacketLock);
+    if (!g_xinputMergedPacketInitialized) {
+        g_xinputMergedPacketInitialized = true;
+        g_xinputMergedPacket = pState->dwPacketNumber + 1;
+        g_xinputLastMergedGamepad = pState->Gamepad;
+    } else if (memcmp(&g_xinputLastMergedGamepad, &pState->Gamepad, sizeof(XINPUT_GAMEPAD)) != 0) {
+        ++g_xinputMergedPacket;
+        g_xinputLastMergedGamepad = pState->Gamepad;
+    }
+    pState->dwPacketNumber = g_xinputMergedPacket;
+    ReleaseSRWLockExclusive(&g_xinputPacketLock);
     return r;
 }
 
@@ -6831,7 +6953,7 @@ static DWORD WINAPI HookedXInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState
 // dev's -- the exact failure that "xr_xinput_install=1" caused on some setups.
 // It also composes with anything that already hooked the slot (e.g. Steam
 // Input): the previous slot value is chained back as the "real" function.
-static int PatchXInputIat(HMODULE mod, void* newFunc, void** outOrig) {
+static int PatchXInputIat(HMODULE mod, const char* functionName, void* newFunc, void** outOrig) {
     auto base = reinterpret_cast<uint8_t*>(mod);
     auto dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
     if (!base || dos->e_magic != IMAGE_DOS_SIGNATURE) return 0;
@@ -6852,7 +6974,7 @@ static int PatchXInputIat(HMODULE mod, void* newFunc, void** outOrig) {
         for (; nameThunk->u1.AddressOfData; ++nameThunk, ++iatThunk) {
             if (nameThunk->u1.Ordinal & IMAGE_ORDINAL_FLAG) continue;   // imported by ordinal: no name
             auto ibn = reinterpret_cast<IMAGE_IMPORT_BY_NAME*>(base + nameThunk->u1.AddressOfData);
-            if (strcmp(reinterpret_cast<const char*>(ibn->Name), "XInputGetState") != 0) continue;
+            if (strcmp(reinterpret_cast<const char*>(ibn->Name), functionName) != 0) continue;
             void** slot = reinterpret_cast<void**>(&iatThunk->u1.Function);
             if (*slot == newFunc) continue;                            // already ours (re-scan)
             DWORD oldP = 0;
@@ -6868,6 +6990,12 @@ static int PatchXInputIat(HMODULE mod, void* newFunc, void** outOrig) {
 }
 
 bool InstallXInputHook() {
+    if (g_liveControls.xrXInputInstall == 0) {
+        Log("XInput: early virtual-controller hooks disabled by xr_xinput_install=0.\n");
+        return true;
+    }
+    if (g_xinputHooked) return true;
+
     // Make sure an XInput DLL is resolvable so a not-yet-bound import is live and
     // the GetProcAddress fallback below works. Not fatal if absent -- the IAT
     // match is by name, independent of which XInput variant the game imports.
@@ -6876,39 +7004,56 @@ bool InstallXInputHook() {
     if (!xi) xi = LoadLibraryA("XInput1_3.dll");
     if (!xi) xi = LoadLibraryA("xinput9_1_0.dll");
 
-    void* orig = nullptr;
-    int patched = 0;
-    void* hook = reinterpret_cast<void*>(&HookedXInputGetState);
+    void* stateOrig = nullptr;
+    void* capsOrig = nullptr;
+    int statePatched = 0;
+    int capsPatched = 0;
+    void* stateHook = reinterpret_cast<void*>(&HookedXInputGetState);
+    void* capsHook = reinterpret_cast<void*>(&HookedXInputGetCapabilities);
 
-    // Main executable first (CP2077 imports XInputGetState here), then every other
-    // loaded module that imports it, so no caller is missed. The exe is also in the
-    // EnumProcessModules list; the "already ours" guard makes the re-scan a no-op.
-    if (HMODULE exe = GetModuleHandleW(nullptr))
-        patched += PatchXInputIat(exe, hook, &orig);
+    // Main executable first, then every other loaded module. Both functions matter:
+    // GetCapabilities makes CP2077 accept the virtual pad; GetState carries the controls.
+    auto patchModule = [&](HMODULE mod) {
+        statePatched += PatchXInputIat(mod, "XInputGetState", stateHook, &stateOrig);
+        capsPatched += PatchXInputIat(mod, "XInputGetCapabilities", capsHook, &capsOrig);
+    };
+    if (HMODULE exe = GetModuleHandleW(nullptr)) patchModule(exe);
 
     HMODULE mods[512];
     DWORD needed = 0;
     if (EnumProcessModules(GetCurrentProcess(), mods, sizeof(mods), &needed)) {
         const DWORD count = needed / sizeof(HMODULE);
         const DWORD n = count < 512 ? count : 512;
-        for (DWORD i = 0; i < n; ++i)
-            patched += PatchXInputIat(mods[i], hook, &orig);
+        for (DWORD i = 0; i < n; ++i) patchModule(mods[i]);
     }
 
-    if (patched > 0 && orig) {
-        g_realXInputGetState = reinterpret_cast<XInputGetState_t>(orig);
+    if (statePatched > 0 && stateOrig) {
+        g_realXInputGetState = reinterpret_cast<XInputGetState_t>(stateOrig);
         g_xinputHooked = true;
-        Log("XInput: IAT hook installed (%d slot(s) patched, real=%p)\n", patched, orig);
-        return true;
+    }
+    if (capsPatched > 0 && capsOrig) {
+        g_realXInputGetCapabilities = reinterpret_cast<XInputGetCapabilities_t>(capsOrig);
+        g_xinputCapabilitiesHooked = true;
     }
 
-    // No import slot found (game resolves XInput dynamically or by ordinal). Keep a
-    // real pointer so the shim could still chain if ever invoked, and fail soft --
-    // controller input is simply unavailable, the game is NOT patched, no crash.
+    // Keep real entry points for chaining even if an import is absent.
     if (xi && !g_realXInputGetState)
         g_realXInputGetState = reinterpret_cast<XInputGetState_t>(GetProcAddress(xi, "XInputGetState"));
-    Log("XInput: no XInputGetState import slot found (patched=%d) -- controller input unavailable\n", patched);
-    return false;
+    if (xi && !g_realXInputGetCapabilities)
+        g_realXInputGetCapabilities = reinterpret_cast<XInputGetCapabilities_t>(GetProcAddress(xi, "XInputGetCapabilities"));
+
+    Log("XInput: IAT hooks state=%d capabilities=%d realState=%p realCaps=%p\n",
+        statePatched, capsPatched, g_realXInputGetState, g_realXInputGetCapabilities);
+    // CP2077 2.31 imports only XInputGetState from XINPUT9_1_0.dll. A capabilities slot is
+    // therefore optional, not a failed installation; GetState returning ERROR_SUCCESS is the
+    // game's controller-presence signal on this build.
+    if (!g_xinputHooked) {
+        Log("XInput: virtual controller hook FAILED -- no XInputGetState import was patched.\n");
+        return false;
+    }
+    if (!g_xinputCapabilitiesHooked)
+        Log("XInput: no GetCapabilities import (expected on CP2077 2.31); state hook is active.\n");
+    return true;
 }
 
 // Boots the stereo module (sync_stereo). Defined further down inside the extern "C" block that

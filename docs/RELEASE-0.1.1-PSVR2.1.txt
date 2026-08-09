@@ -1,0 +1,48 @@
+CyberpunkVR Port 0.1.1-psvr2.1
+PS VR2 community-fork release based on upstream 0.1.1
+
+This release adds the tested PlayStation VR2 path through the PS VR2 PC adapter,
+SteamVR, and SteamVR's OpenXR runtime.
+
+Highlights
+==========
+
+* PlayStation VR2 launcher preset using the square VRCAM assets that are actually
+  present in the bundled archive: 1920, 2048, 2560, 3072, 3584, and 4096.
+* PS VR2 runtime/profile detection and one-time controller diagnostics.
+* Sense controls through SteamVR's Oculus Touch compatibility profile.
+* UEVR-style D-pad shifting: touch Triangle without clicking and move the right stick.
+* UEVR-style SystemButton timing: quick release emits XInput Start; hold for at least
+  500 ms emits XInput Back once and suppresses Start on release.
+* Triangle-touch + R3 provides the same menu timing when SteamVR omits Create/Menu.
+  Bare R3 remains crouch.
+* Correct XInput packet numbering for stick-only and held-input changes, and early
+  XInputGetState hook installation for Cyberpunk 2077 2.31.
+* Compatibility fix for CET 1.37.1 hotkey registration.
+* Documentation for SteamVR's manual left-Create binding and controller troubleshooting.
+
+Read PSVR2-CONTROLS.txt in the release archive for setup and the complete control map.
+
+Known limitations
+=================
+
+* SteamVR commonly recommends approximately 3400 x 3468 per eye for PS VR2. The
+  upstream archive does not contain an authored VRCAM component and dynamic texture at
+  that exact resolution, so this release offers the nearest safe square assets instead.
+* SteamVR's automatic Oculus-to-Sense conversion can omit Menu/System. Assign physical
+  left Create manually to the application's “Sense Create / Options” (`SystemButton`)
+  action, or use Triangle-touch + R3.
+* The application SystemButton controls Cyberpunk menus. SteamVR's dashboard is reserved
+  by SteamVR and cannot be exposed as an application action.
+* Sense tracking/contact loss visible in SteamVR Home is outside the mod's input path.
+
+Compatibility
+=============
+
+* Cyberpunk 2077 2.31
+* Cyber Engine Tweaks 1.37.1 tested
+* SteamVR as the active OpenXR runtime
+* PS VR2 PC adapter and PlayStation VR2 Sense controllers
+
+The release remains experimental. Back up saves and existing mod configuration before
+installing. Existing vrik_calibration.ini files should be preserved when updating.

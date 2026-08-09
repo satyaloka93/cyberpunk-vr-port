@@ -1523,16 +1523,16 @@ bool DrawLiveControls(LiveControlsUiState& state) {
             ImGui::BulletText("Left  Y      - weapon switch");
             ImGui::BulletText("Right trigger - fire    | Left trigger - aim");
             ImGui::BulletText("Right grip    - holster equip / unequip | Left grip - crouch (shoulder)");
-            ImGui::BulletText("Left  thumb click - sprint (L3) | Right thumb click - crouch (R3)");
-            ImGui::BulletText("Left  menu button - pause menu");
-            ImGui::BulletText("DPAD - Emulation");
-            ImGui::BulletText("Right GRIP + RightThum UP | DPAD UP");
-            ImGui::BulletText("Right GRIP + RightThum DOWN | DPAD DOWN");
-            ImGui::BulletText("Right GRIP + RightThum LEFT | DPAD LEFT");
-            ImGui::BulletText("Right GRIP + RightThum RIGHT | DPAD RIGHT");
+            ImGui::BulletText("Left thumb click - sprint (L3) | Right thumb click - crouch (R3)");
+            ImGui::BulletText("Menu/Create: tap = Start/pause | hold 0.5 s = Back/in-game menu");
+            ImGui::BulletText("PSVR2 menu fallback: Triangle touch + R3 (same tap/hold timing)");
+            ImGui::BulletText("DPAD - touch LEFT thumbrest + move RIGHT stick");
+            ImGui::BulletText("PSVR2 DPAD - touch Triangle + move RIGHT stick");
+            ImGui::BulletText("Fallback DPAD - hold L3 + move RIGHT stick");
 
-            ImGui::TextWrapped("Buttons follow each runtime's interaction profile (Touch / Index / "
-                               "Vive / WMR). Customize the actual key bindings in the game's "
+            ImGui::TextWrapped("Buttons follow each runtime's interaction profile (Touch / PSVR2 Sense via "
+                               "SteamVR / Index / Vive / WMR). Edit physical OpenXR bindings in SteamVR's "
+                               "Manage Controller Bindings; customize game actions in Cyberpunk's "
                                "in-engine \"Key Bindings -> Controller\" menu.");
 
             ImGui::EndTabItem();

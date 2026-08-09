@@ -3,7 +3,8 @@ CyberpunkVRPort
 An open-source 6-DoF VR mod for Cyberpunk 2077. It integrates OpenXR directly into the game
 engine as a RED4ext plugin - there is no dxgi.dll proxy any more.
 
-https://github.com/dariulone/cyberpunk-vr-port
+PS VR2 fork: https://github.com/satyaloka93/cyberpunk-vr-port
+Upstream:    https://github.com/dariulone/cyberpunk-vr-port
 
 
 ============================================================================
@@ -91,12 +92,18 @@ bindings apply.
   Right grip + reach to
   shoulder or hip               equip / unequip a weapon (hand-to-holster)
   Swing a melee weapon          native VR melee along the blade
+  PSVR2 Triangle touch + R3     tap = Start/system-pause; hold 0.5 s = Back/in-game menu
+                                fallback; a bare R3 stays crouch
+  PSVR2 left Create             manually bind in SteamVR to app SystemButton:
+                                tap = Start/system-pause; hold 0.5 s = Back/in-game menu
+  SteamVR dashboard             runtime-reserved; not an application action
 
-  D-pad chord                   hold the LEFT stick clicked in, then pick the direction
-                                with the RIGHT stick. The right stick is taken out of the
-                                camera while the chord is held, so choosing a direction
-                                cannot snap-turn you. Release without choosing and it emits
-                                the normal sprint click instead.
+  D-pad shifting                touch the LEFT thumbrest, then pick the direction with the
+                                RIGHT stick. On PSVR2 through SteamVR, Triangle capacitive
+                                touch is the modifier (UEVR LEFT_TOUCH behavior). The right
+                                stick is taken out of the camera while shifting. L3 remains
+                                a fallback modifier; release it without choosing and it
+                                emits the normal sprint click instead.
 
 Driving is untouched.
 
