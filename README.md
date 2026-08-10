@@ -12,7 +12,8 @@ Upstream project: <https://github.com/dariulone/cyberpunk-vr-port>
 
 > **PS VR2 fork.** The `psvr2-tweaks` branch and `0.1.1-psvr2.*` releases add the
 > tested SteamVR/OpenXR Sense-controller path, PS VR2 launcher presets, UEVR-style
-> Triangle D-pad shifting, and dual-role Create/menu handling. See
+> Triangle D-pad shifting, dual-role Create/menu handling, safe overlay pacing, and
+> expanded VR HUD alignment. Current release: [`0.1.1-psvr2.2`](https://github.com/satyaloka93/cyberpunk-vr-port/releases/tag/0.1.1-psvr2.2). See
 > [`docs/PSVR2-CONTROLS.txt`](docs/PSVR2-CONTROLS.txt).
 >
 > ⚠️ Experimental community mod. Not affiliated with CD PROJEKT RED. Use at your
@@ -70,8 +71,10 @@ actually built.
 - Visible Bullets (Projectile Restoration)
 - Equipment-EX
 - Nova Optics
+- [HUDitor v1.1.0](https://www.nexusmods.com/cyberpunk2077/mods/3315) — aligns and resizes supported standard HUD widgets for VR
+- [Input Loader](https://www.nexusmods.com/cyberpunk2077/mods/4575) — required by current HUDitor releases
 
-Install RED4ext, CET and redscript first (the usual Nexus dependencies).
+Install RED4ext, CET and redscript first (the usual Nexus dependencies). [Mod Settings](https://www.nexusmods.com/cyberpunk2077/mods/4885) is recommended for rebinding HUDitor and selecting press/hold behavior.
 
 ### Optional PS VR2 adaptive triggers and grip haptics
 
@@ -98,8 +101,9 @@ bin\x64\plugins\cyber_engine_tweaks\mods\CyberpunkVRPort_*\   # CET mods: Stereo
 r6\scripts\CyberpunkVRPort_*\                                 # redscript: HUD, Holster, Melee, NoAnims, WeaponUp, WorldMap
 ```
 
-Then **start your OpenXR runtime first**, and launch the game. When updating, preserve
-`red4ext\plugins\CyberpunkVR_Stereo\vrik_calibration.ini` if you have calibrated VRIK wrists.
+Then install and configure HUDitor using [`docs/HUDITOR-VR-SETUP.md`](docs/HUDITOR-VR-SETUP.md). HUDitor defaults to F7, which conflicts with this port's HMD recenter; rebind its editor before play.
+
+Finally, **start your OpenXR runtime first**, and launch the game. When updating, preserve `red4ext\plugins\CyberpunkVR_Stereo\vrik_calibration.ini`, HUDitor's `persistency.json`, and the VR HUD's `hud_layout.ini`.
 
 > There is no `dxgi.dll` any more — this is a RED4ext plugin. Anything else that
 > proxies dxgi (R.E.A.L. VR, for one) must be out of `bin\x64` or the two fight
@@ -146,13 +150,12 @@ VR controller input is merged into the native CP2077 gamepad, so the in-game
 with the **right stick** — up / down / left / right. On PSVR2 through SteamVR,
 **Triangle capacitive touch** is the left-thumbrest modifier, matching UEVR's
 PSVR2 `LEFT_TOUCH` behavior. The right stick is removed from camera/snap turn
-while shifting. A shifted left/right flick pans the quickhack chooser **and its separate
-right-side description panel** together: left pulls them left to reveal the right edge,
-and right moves them back. Recenter the stick between steps; reset both
-**F10 → HUD → Center overlays → X** and **Right center → X** to zero. The game's D-pad
-input is still emitted, but the final merged right-stick axes are suppressed for the whole
-shift hold so the external scanner target remains head-look controlled. Left-stick click remains a fallback modifier;
-release it without choosing a direction to emit normal L3/sprint.
+while shifting. The game's D-pad input is emitted, but the final merged
+right-stick axes are suppressed for the whole shift hold so the external scanner
+target remains head-look controlled. D-pad shifting does **not** move HUD
+elements. Use HUDitor for supported standard widgets and **F10 → HUD** for
+VR-specific groups and dynamic panels. Left-stick click remains a fallback
+modifier; release it without choosing a direction to emit normal L3/sprint.
 
 Buttons follow each runtime's interaction profile (Touch / PSVR2 Sense through
 SteamVR / Index / Vive / WMR). Edit physical OpenXR bindings in SteamVR under
@@ -172,6 +175,8 @@ Hotkeys:
 
 - `F7` — recenter HMD
 - `F10` / `Insert` — open the in-headset settings overlay
+- HUDitor editor — rebind its default F7 to another unused keyboard key; see
+  [`docs/HUDITOR-VR-SETUP.md`](docs/HUDITOR-VR-SETUP.md)
 
 ## In-headset overlay (F10)
 
@@ -188,8 +193,9 @@ Five tabs, live, and saved to `vrport.ini` — nothing here needs a restart.
   and reaching the headset.
 - **VRIK** — start/stop tracking, IK calibration (reach scale, height, elbow
   swing/pole, wrist offset), diagnostics.
-- **HUD** — per-element X / Y / scale for every HUD group, including a dedicated
+- **HUD** — per-element X / Y / scale for every VR HUD group, including a dedicated
   **Center overlays** row for scanner, quickhack, interaction, and game-info popups.
+  Use HUDitor first for supported standard-widget base placement.
 
 The launcher (before the game starts) picks the render resolution and carries a
 **DEBUG** tick-box that arms every diagnostic probe at once. Leave it off for
@@ -229,6 +235,15 @@ play: it is for diagnosis and it costs both frame time and a very large log.
 - GPU: NVIDIA RTX 5070 Ti
 - RAM: 32 GB DDR4
 - OS: Windows 11 Pro 25H2 (26200)
+
+## Credits and acknowledgements
+
+- [HUDitor](https://www.nexusmods.com/cyberpunk2077/mods/3315) provides the
+  standard-widget move/resize workflow used to align this tested VR HUD.
+- [nben/Cyberpunk-UI-mods-for-VR](https://github.com/nben/Cyberpunk-UI-mods-for-VR)
+  informed the quickhack/scanner controller and widget identification. Its mapping
+  led this port to target the complete `scannerDetailsGameController` panel;
+  explicit credit is retained here and in the HUD documentation.
 
 ## Donations
 

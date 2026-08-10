@@ -4,7 +4,7 @@ title: PSVR2 Sense adaptive triggers and grip haptics
 description: Optional integration of Enhanced DualSense Support gameplay profiles with the PSVR2Toolkit bridge.
 resource: https://github.com/satyaloka93/PSVR2Toolkit/releases/tag/cyberpunk-dsx-bridge-v0.2.0
 tags: [psvr2, sense, adaptive-triggers, haptics, cyberpunk, dependencies]
-timestamp: 2026-08-09T19:20:00+09:00
+timestamp: 2026-08-10T07:52:00+09:00
 ---
 
 # Dependency boundary
@@ -28,17 +28,23 @@ Enhanced DualSense Support's RED4ext process-launcher DLL is unnecessary. The in
 
 # Sense weapon-category overrides
 
-Enhanced DualSense Support's **Not Recommended** warning targets its normal DualSense use: category overrides replace per-model effects. On PSVR2 Sense, the complex defaults are not mechanically equivalent, and direct official presets tested as more nuanced. A deliberate category choice is required for consistent Sense nuance; users should treat the profile as a baseline and modify it to taste.
+Enhanced DualSense Support marks category overrides **Not Recommended** because, on a DualSense controller, they replace more detailed per-weapon effects. PSVR2 Sense interprets those effects differently, so the direct category presets produced the more usable result in testing. Treat the following mapping as a comfortable starting point, not a required profile:
 
-The baseline uses Very Soft for handguns and light/fast melee; Soft for revolvers and light blades; Choppy for automatic machine-gun families and chainswords; Medium for rifles and mid-weight melee; and Hard for precision/sniper rifles, shotguns, launchers, and heavy melee. It avoids Very Hard, Hardest, and Rigid by default due to Sense trigger fatigue.
+| Category | Starting preset |
+|---|---|
+| Handguns and light/fast melee | Very Soft |
+| Revolvers and light blades | Soft |
+| Automatic weapons and chainswords | Choppy |
+| Rifles and medium-weight melee | Medium |
+| Precision rifles, sniper rifles, shotguns, launchers, and heavy melee | Hard |
 
-These values live under `weaponsSettings` in `config/settings.json`; back up that file before broad calibration. They affect R2 mode while preserving the mod's state generation and L2 path.
+Very Hard, Hardest, and Rigid are avoided by default because they can fatigue the trigger finger. The mapping lives under `weaponsSettings` in `config/settings.json`; back up that file before tuning it. These overrides change the R2 effect while leaving L2 and the gameplay-state producer intact.
 
 # Trigger and haptic fidelity
 
-DualSense and Sense reuse custom effect IDs `0x22`, `0x23`, and `0x27` but use different parameter layouts. The initial direct mapping packed a normal DSX Bow strength pair of `4/4` into byte `0x1b`, which Sense interpreted as excessive force. The corrected bridge maps each weapon's start/end/strength semantics to a gradual official Sense slope and releases trigger resistance on the detected firing transition. Galloping and Machine use safe official trigger vibration while timing detail is carried in grip PCM.
+DualSense and Sense reuse custom effect IDs `0x22`, `0x23`, and `0x27`, but their parameter layouts differ. The first direct mapping sent a normal DSX Bow strength pair of `4/4`; Sense interpreted it as excessive resistance. The corrected bridge converts start, end, and strength into a gradual official Sense curve and briefly releases resistance when a shot is detected. Galloping and Machine modes use safe official trigger vibration, while detailed timing is sent through grip haptics.
 
-The bridge emits signed 8-bit PCM at 3000 Hz from two layers. Semantic profile transitions add explicit weapon recoil and automatic/charge timing; shotgun detection includes same-mode Bow breakpoint jumps that do not transition to Resistance. A full-game WASAPI loopback layer, gated on `Cyberpunk2077.exe`, extracts stereo 28–320 Hz energy and full-band transients from the Windows default output for explosions, impacts, vehicles, ambience, and other audible gameplay.
+The bridge emits signed 8-bit grip-haptic PCM at 3000 Hz from two sources. Gameplay-profile transitions provide weapon recoil, automatic-fire timing, charge timing, and shotgun detection. An optional WASAPI loopback layer, active only for `Cyberpunk2077.exe`, derives lower-frequency energy and transients from the Windows default audio output for explosions, impacts, vehicles, ambience, and other audible events.
 
 Enhanced DualSense Support does not expose Cyberpunk's original DualSense audio waveform, so exact console haptic reproduction remains outside this integration's data boundary. Audio-derived coverage is broader but depends on Cyberpunk using the Windows output endpoint captured when the bridge starts.
 
@@ -46,7 +52,7 @@ Enhanced DualSense Support does not expose Cyberpunk's original DualSense audio 
 
 The release's installer must run with SteamVR closed. It backs up `driver_playstation_vr2.dll` before installing the matching raw-trigger Toolkit driver. PlayStation VR2 App updates may restore Sony's driver; rerun the matching installer after such an update.
 
-Detailed user instructions and troubleshooting live in [`docs/PSVR2-ADAPTIVE-TRIGGERS.md`](https://github.com/satyaloka93/cyberpunk-vr-port/blob/psvr2-tweaks/docs/PSVR2-ADAPTIVE-TRIGGERS.md).
+Detailed user instructions and troubleshooting live in the repository's [PSVR2 adaptive-trigger setup](https://github.com/satyaloka93/cyberpunk-vr-port/blob/psvr2-tweaks/docs/PSVR2-ADAPTIVE-TRIGGERS.md).
 
 # Citations
 

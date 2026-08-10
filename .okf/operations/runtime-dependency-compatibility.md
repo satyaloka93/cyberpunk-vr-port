@@ -4,7 +4,7 @@ title: Runtime dependency compatibility gate
 description: Diagnose flat fallback, missing VRCAM/VRIK, and absent CET behavior before changing native rendering or OpenXR code.
 resource: https://github.com/maximegmd/CyberEngineTweaks/releases/tag/v1.37.1
 tags: [cyber-engine-tweaks, cet, cyberpunk-2.31, vrcam, vrik, troubleshooting]
-timestamp: 2026-08-08T03:55:00Z
+timestamp: 2026-08-10T07:52:00+09:00
 ---
 
 # Dependency gate
@@ -47,10 +47,6 @@ CET `1.37.0` added game 2.31 support. The installation was updated to official C
 
 # Rollback
 
-Before updating CET, archive only the package-owned files while preserving user mods/config separately. The 2026-08-08 local rollback archive is:
+Before updating CET, archive only package-owned files and preserve user mods and configuration separately. Local rollback archives are recovery evidence, not part of the published repository.
 
-```text
-build/backups/CET-pre-1.37.1-20260808-1252.tar.gz
-```
-
-Do not restore an old CET build onto Cyberpunk 2.31 as a functional configuration; use the backup only to recover files/settings.
+Do not restore a CET version that predates Cyberpunk 2.31 support as a working configuration. Use an old archive only to recover individual files or settings.

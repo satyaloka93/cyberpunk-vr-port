@@ -4,7 +4,7 @@ title: PlayStation VR2 through SteamVR/OpenXR
 description: Measured PSVR2 runtime geometry and controller-profile behavior for the CyberpunkVR port.
 resource: https://github.com/satyaloka93/cyberpunk-vr-port/tree/psvr2-tweaks
 tags: [psvr2, steamvr, openxr, controllers, resolution]
-timestamp: 2026-08-09T13:00:00+09:00
+timestamp: 2026-08-10T07:52:00+09:00
 ---
 
 # Runtime identity
@@ -74,10 +74,12 @@ The Oculus-emulated Sense grip pose tilted both avatar hands downward with the g
 
 The same `vrserver.txt` independently confirmed a driver/tracking failure, not a mod input failure: repeated `[CONT_L/R] Lost`, `The frame is stuck` for up to nine seconds, controller tracker drops reaching 1813 frames, and later controller `Boot` recovery events. Check charge, room lighting/occlusion, Bluetooth signal/interference, firmware, and USB/Bluetooth power management before debugging game mappings.
 
-# Related code
+# Related
 
-- [`src/vr/overlay/launcher_dialog.cpp`](https://github.com/satyaloka93/cyberpunk-vr-port/blob/psvr2-tweaks/src/vr/overlay/launcher_dialog.cpp)
-- [`src/vr/openxr/openxr_manager.cpp`](https://github.com/satyaloka93/cyberpunk-vr-port/blob/psvr2-tweaks/src/vr/openxr/openxr_manager.cpp)
+- [Launcher headset presets](../../src/vr/overlay/launcher_dialog.cpp)
+- [OpenXR runtime and device detection](../../src/vr/openxr/openxr_manager.cpp)
 - [Controller input pipeline](../architecture/controller-input-pipeline.md)
 - [PSVR2 Triangle-touch D-pad shifting](../fixes/psvr2-triangle-dpad.md)
+- [Waitable frame pacing](../fixes/overlay-middle-ground-pacing.md)
+- [Ray-tracing stereo limitations](../architecture/ray-tracing-stereo-limitations.md)
 - [Optional adaptive triggers and grip haptics](../operations/psvr2-adaptive-triggers.md)

@@ -1,0 +1,113 @@
+CyberpunkVR Port 0.1.1-psvr2.2
+PS VR2 community-fork release based on upstream 0.1.1
+
+This release replaces the overlay's per-frame GPU drain with the validated middle-ground
+pacing policy, expands the VR HUD controls, and documents HUDitor as the standard-widget
+alignment layer used by the tested PS VR2 layout.
+
+Highlights
+==========
+
+Overlay performance and stability
+---------------------------------
+
+* Replaced the old current-frame full GPU drain with overlay Mode 2: exact per-backbuffer
+  allocator fences, a separate Dear ImGui upload-ring fence, and a previous-overlay fence.
+* The next overlay submission waits for the immediately previous overlay submission instead
+  of draining all current game work. Resize, device replacement, and teardown retain the full
+  lifetime-transition drain.
+* Streamline Present workers are serialized around overlay recording and submission so they
+  cannot race the shared command list or bypass the one-overlay runahead boundary.
+* No DXGI frame-latency value or waitable-object wait is injected. Passive diagnostics report
+  `injectedDxgiWait=0 mode=previous-overlay-fence`.
+* A 100 ms fence timeout skips the overlay frame instead of reusing GPU-owned resources.
+* Added an F10 performance-overlay toggle showing Present, OpenXR, VRCAM, previous-overlay
+  wait, and resource-slot wait metrics. Present may include DLSS-generated frames; VRCAM is
+  the useful native stereo cadence measurement.
+
+The validated PS VR2 run reached 96% observed GPU utilization. Its 98 active VRCAM samples
+averaged 69.27 FPS, with a stable segment around 82 FPS. Previous-overlay waits averaged
+5.99 ms; allocator/upload-slot waits remained 0.00 ms. More than 37,800 OpenXR cycles
+completed without a fence timeout, device removal, DRED fault, or GPU crash.
+
+Rejected experiments are documented, not shipped as active pacing. Injected DXGI latency 1
+held gameplay around 38-45 FPS. Injected DXGI latency 2 reproduced
+DXGI_ERROR_DEVICE_HUNG (0x887A0006). Per-resource fencing without the previous-overlay
+boundary also reproduced a load-transition GPU hang.
+
+HUD layout
+==========
+
+* Expanded F10 HUD placement to 37 persisted X, Y, and Size values covering the named VR
+  regions and center overlays.
+* Added safe one-shot redscript wrappers for the complete scanner/quickhack details panel,
+  phone contacts and message popups, generic notifications, and tutorial cards.
+* Removed the ineffective shifted-D-pad HUD-panning experiment. Triangle-touch/L3 plus the
+  right stick still emits D-pad input, suppresses turning, and preserves bare R3 crouch.
+* Added HUDitor v1.1.0 and Input Loader as requirements for reproducing the tested
+  standard-widget VR layout. HUDitor remains a separate third-party download and is not
+  bundled in this archive.
+* Added HUDITOR-VR-SETUP.md with installation paths, keyboard/mouse controls, vehicle-widget
+  editing, reset behavior, F7 conflict resolution, troubleshooting, and backup instructions.
+* HUDitor defaults to F7, which this port reserves for HMD recenter. Rebind HUDitor to an
+  unused keyboard key before arranging widgets. Mod Settings is recommended for its UI.
+
+Preserve both user-owned layout files when updating:
+
+  bin\x64\plugins\cyber_engine_tweaks\mods\HUDitor\persistency.json
+  bin\x64\plugins\cyber_engine_tweaks\mods\CyberpunkVRPort_HUD\hud_layout.ini
+
+Credits
+-------
+
+* HUDitor provides the standard-widget move/resize workflow used by the tested VR layout:
+  https://www.nexusmods.com/cyberpunk2077/mods/3315
+* nben/Cyberpunk-UI-mods-for-VR informed the quickhack/scanner controller and widget
+  identification that led this port to target the complete scannerDetailsGameController panel:
+  https://github.com/nben/Cyberpunk-UI-mods-for-VR
+
+Documentation and diagnostics
+=============================
+
+* Added detailed OKF records for overlay pacing, rejected DXGI experiments, ray-tracing stereo
+  limitations, HUDitor operation, HUD ownership, and repository-safe OKF maintenance.
+* Added deterministic OKF link checking and repaired document-relative GitHub navigation.
+* Added passive swapchain/Present-thread pacing diagnostics and documented authoritative log
+  interpretation. fpsVR may observe a different Present boundary and report implausible
+  1-2 ms frame times for this injected stereo path.
+
+Requirements
+============
+
+* Cyberpunk 2077 2.31
+* SteamVR as the active OpenXR runtime for PS VR2
+* PS VR2 PC adapter and PlayStation VR2 Sense controllers
+* RED4ext, Cyber Engine Tweaks 1.37.1, redscript, TweakXL, ArchiveXL, and Codeware
+* HUDitor v1.1.0 and Input Loader for the tested HUD layout
+* Mod Settings is recommended for HUDitor configuration
+
+Known limitations
+=================
+
+* Exact 3400 x 3468 PS VR2 rendering still requires authored VRCAM assets and a repacked
+  cyberpunkvrport.archive. Use one of the supplied square presets; 3072 x 3072 is the tested
+  starting point.
+* Ray-traced Lighting and Ray-traced Reflections are not stereo-safe because Cyberpunk shares
+  or omits eye-specific temporal resources. Keep both disabled. RT Shadows may be tested
+  separately.
+* SteamVR may omit Create/Menu while converting the Oculus Touch profile to Sense. Bind left
+  Create manually to `SystemButton`, or use Triangle-touch + R3.
+* HUD placement remains resolution- and preference-specific. Back up both layout files before
+  updates and test contacts, messages, notifications, tutorials, health, stamina, minimap,
+  ammo, and vehicle widgets in their actual gameplay states.
+
+Update safety
+=============
+
+Back up saves and existing mod configuration before installation. In addition to the two HUD
+files above, preserve:
+
+  red4ext\plugins\CyberpunkVR_Stereo\vrik_calibration.ini
+
+Install HUDitor separately, read HUDITOR-VR-SETUP.md and PSVR2-CONTROLS.txt, start SteamVR
+first, and launch the unmodified bin\x64\Cyberpunk2077.exe.

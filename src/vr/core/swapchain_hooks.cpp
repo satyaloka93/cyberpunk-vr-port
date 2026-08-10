@@ -47,6 +47,62 @@ Microsoft::WRL::ComPtr<ID3D12Device> g_dredDevice;
 bool g_dredDumped = false;
 bool g_cursorClipped = false;
 
+// Mode 2 / middle ground deliberately does not alter or wait on DXGI's frame-latency object.
+// It paces only this plugin's shared-queue overlay submissions; see imgui_overlay.cpp. Keep a
+// passive snapshot of the swapchain contract so runtime logs prove no injected DXGI wait exists.
+std::mutex g_overlayPacingDiagMutex;
+std::unordered_set<IDXGISwapChain*> g_overlayPacingDiagnosedSwapchains;
+std::atomic<DWORD> g_presentThreadIds[16]{};
+
+void LogOverlayPacingSwapchainOnce(IDXGISwapChain* swapChain, const char* source) {
+    if (!swapChain) return;
+    {
+        std::lock_guard<std::mutex> lock(g_overlayPacingDiagMutex);
+        if (!g_overlayPacingDiagnosedSwapchains.insert(swapChain).second) return;
+    }
+
+    DXGI_SWAP_CHAIN_DESC desc{};
+    const HRESULT descHr = swapChain->GetDesc(&desc);
+    Microsoft::WRL::ComPtr<IDXGISwapChain2> swapChain2;
+    const HRESULT qiHr = swapChain->QueryInterface(IID_PPV_ARGS(&swapChain2));
+    UINT maximumLatency = 0;
+    const HRESULT latencyHr = (SUCCEEDED(qiHr) && swapChain2)
+        ? swapChain2->GetMaximumFrameLatency(&maximumLatency)
+        : E_NOINTERFACE;
+
+    Log("[OVERLAY-PACING] source=%s sc=%p tid=%lu descHr=0x%08X "
+        "size=%ux%u buffers=%u format=%u swapEffect=%u flags=0x%08X "
+        "waitableFlag=%d qiSwapChain2=0x%08X getMaxLatency=0x%08X maxLatency=%u "
+        "injectedDxgiWait=0 mode=previous-overlay-fence\n",
+        source ? source : "unknown",
+        swapChain,
+        static_cast<unsigned long>(GetCurrentThreadId()),
+        static_cast<unsigned>(descHr),
+        SUCCEEDED(descHr) ? desc.BufferDesc.Width : 0,
+        SUCCEEDED(descHr) ? desc.BufferDesc.Height : 0,
+        SUCCEEDED(descHr) ? desc.BufferCount : 0,
+        SUCCEEDED(descHr) ? static_cast<unsigned>(desc.BufferDesc.Format) : 0,
+        SUCCEEDED(descHr) ? static_cast<unsigned>(desc.SwapEffect) : 0,
+        SUCCEEDED(descHr) ? desc.Flags : 0,
+        SUCCEEDED(descHr) && (desc.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) != 0 ? 1 : 0,
+        static_cast<unsigned>(qiHr),
+        static_cast<unsigned>(latencyHr),
+        maximumLatency);
+}
+
+void LogPresentThreadOnce(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags) {
+    const DWORD tid = GetCurrentThreadId();
+    for (auto& slot : g_presentThreadIds) {
+        DWORD seen = slot.load(std::memory_order_acquire);
+        if (seen == tid) return;
+        if (seen == 0 && slot.compare_exchange_strong(seen, tid, std::memory_order_acq_rel)) {
+            Log("[OVERLAY-PACING-DIAG] Present thread first seen: tid=%lu sc=%p sync=%u flags=0x%08X\n",
+                static_cast<unsigned long>(tid), swapChain, syncInterval, flags);
+            return;
+        }
+    }
+}
+
 // [ECL-DIAG] Temporary tearing diagnostic. Hypothesis: the swapchain backbuffer
 // is rendered on a command queue different from the present queue (m_d3dQueue),
 // so our capture copy (issued on the present queue) races the game's render ->
@@ -1407,6 +1463,10 @@ HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT syncInte
         }
     }
 
+    // DXGI pacing is intentionally untouched. OverlayRender performs the bounded Mode-2 wait on
+    // the previous overlay submission before this frame's OpenXR work and Present.
+    LogPresentThreadOnce(swapChain, syncInterval, flags);
+
     // Bind the overlay to the game's window on first sight.
     //
     // As a proxy we learned the HWND from CreateSwapChain. A plugin never sees that call, so
@@ -1529,6 +1589,20 @@ HRESULT STDMETHODCALLTYPE HookedSetFullscreenState(IDXGISwapChain* swapChain, BO
     return originalFn ? originalFn(swapChain, FALSE, target) : DXGI_ERROR_INVALID_CALL;
 }
 
+UINT PreserveFrameLatencyResizeFlag(IDXGISwapChain* swapChain, UINT requestedFlags) {
+    DXGI_SWAP_CHAIN_DESC current{};
+    if (swapChain && SUCCEEDED(swapChain->GetDesc(&current)) &&
+        (current.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) != 0) {
+        const UINT preserved = requestedFlags | DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+        if (preserved != requestedFlags) {
+            Log("[OVERLAY-PACING] ResizeBuffers preserved FRAME_LATENCY_WAITABLE_OBJECT "
+                "(flags 0x%08X -> 0x%08X)\n", requestedFlags, preserved);
+        }
+        return preserved;
+    }
+    return requestedFlags;
+}
+
 // THE LAUNCHER'S SIZE, VERBATIM. Nothing is recomputed here.
 //
 // This used to take the width from the launcher and RE-DERIVE the height as
@@ -1565,7 +1639,8 @@ HRESULT STDMETHODCALLTYPE HookedResizeBuffers(IDXGISwapChain* swapChain, UINT bu
     void** vtable = *reinterpret_cast<void***>(swapChain);
     ResizeBuffersFn originalFn = GetOriginalMethod<ResizeBuffersFn>(vtable, 13);
     OverlayInvalidateSwapchainResources();
-    return originalFn ? originalFn(swapChain, bufferCount, outWidth, outHeight, newFormat, flags) : DXGI_ERROR_INVALID_CALL;
+    const UINT outFlags = PreserveFrameLatencyResizeFlag(swapChain, flags);
+    return originalFn ? originalFn(swapChain, bufferCount, outWidth, outHeight, newFormat, outFlags) : DXGI_ERROR_INVALID_CALL;
 }
 
 // Same rule as HookedResizeBuffers above, and for the same reasons: the launcher's size, verbatim.
@@ -1585,7 +1660,8 @@ HRESULT STDMETHODCALLTYPE HookedResizeBuffers1(IDXGISwapChain3* swapChain, UINT 
     void** vtable = *reinterpret_cast<void***>(swapChain);
     ResizeBuffers1Fn originalFn = GetOriginalMethod<ResizeBuffers1Fn>(vtable, 39);
     OverlayInvalidateSwapchainResources();
-    return originalFn ? originalFn(swapChain, bufferCount, outWidth, outHeight, format, flags, creationNodeMask, presentQueue) : DXGI_ERROR_INVALID_CALL;
+    const UINT outFlags = PreserveFrameLatencyResizeFlag(swapChain, flags);
+    return originalFn ? originalFn(swapChain, bufferCount, outWidth, outHeight, format, outFlags, creationNodeMask, presentQueue) : DXGI_ERROR_INVALID_CALL;
 }
 
 void InstallSwapchainHooks(IDXGISwapChain* swapChain) {
@@ -1731,6 +1807,7 @@ HRESULT STDMETHODCALLTYPE DXGIFactoryWrapper::CreateSwapChain(IUnknown* pDevice,
             if (swapDesc && swapDesc->OutputWindow) {
                 OverlaySetWindow(swapDesc->OutputWindow);
             }
+            LogOverlayPacingSwapchainOnce(*ppSwapChain, "DXGIFactoryWrapper::CreateSwapChain");
             InstallSwapchainHooks(*ppSwapChain);
             InstallOSHooks();
         }
@@ -1838,6 +1915,7 @@ static void PluginPostSwapchain(IDXGISwapChain* sc, HWND hwnd) {
         g_gameHwnd = hwnd;
         OverlaySetWindow(hwnd);
     }
+    LogOverlayPacingSwapchainOnce(sc, "PluginPostSwapchain");
     InstallSwapchainHooks(sc);
     InstallOSHooks();
     Log("PluginBootstrap: swapchain hooked, overlay bound to %p\n", hwnd);
@@ -2069,6 +2147,7 @@ HRESULT STDMETHODCALLTYPE DXGIFactoryWrapper::CreateSwapChainForHwnd(IUnknown* p
     if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
         if (!IsOurOwnWindow(hWnd)) {
             OverlaySetWindow(hWnd);
+            LogOverlayPacingSwapchainOnce(*ppSwapChain, "DXGIFactoryWrapper::CreateSwapChainForHwnd");
             InstallSwapchainHooks(*ppSwapChain);
             InstallOSHooks();
         }

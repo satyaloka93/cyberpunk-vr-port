@@ -13,7 +13,9 @@ INSTALLATION
 
 Disable OpenXR Toolkit, RivaTuner, NVIDIA overlays and any other overlay.
 
-1. Install all dependencies and start the game once before installing this mod.
+1. Install all dependencies and start the game once before installing this mod. Install
+   HUDitor and Input Loader for the tested VR HUD layout, then follow HUDITOR-VR-SETUP.md.
+   Rebind HUDitor's default F7 because this port reserves F7 for HMD recenter.
 
 2. In the game's graphics settings: set everything to Low and turn OFF the extras - Film
    Grain, Chromatic Aberration, Motion Blur, Lens Flare, Depth of Field and Frame
@@ -51,6 +53,7 @@ Disable OpenXR Toolkit, RivaTuner, NVIDIA overlays and any other overlay.
    launch the game.
 
 7. F10 - toggle the VR menu / settings.   F7 - recenter VR.
+   HUDitor editor - rebind its default F7 to another unused keyboard key.
 
 Calibration: stand in a T-pose.
 
@@ -70,8 +73,11 @@ DEPENDENCIES
   Visible Bullets (Projectile Restoration)
   Equipment-EX
   Nova Optics
+  HUDitor v1.1.0                 https://www.nexusmods.com/cyberpunk2077/mods/3315
+  Input Loader                   https://www.nexusmods.com/cyberpunk2077/mods/4575
 
-Install RED4ext, CET and redscript first - the usual Nexus dependency order.
+Install RED4ext, CET and redscript first - the usual Nexus dependency order. Mod Settings
+(https://www.nexusmods.com/cyberpunk2077/mods/4885) is recommended for rebinding HUDitor.
 
 Learn how Visual Holsters and Equipment-EX work; the hand-to-holster system reads them.
 
@@ -176,8 +182,9 @@ FEATURES
   - VR controller mapping merged into XInput: full-forward sprint, full-down crouch, snap
     or smooth turn, HMD or hand relative locomotion, D-pad chord.
 
-  - VR HUD with per-element placement and scale, world-map head-lock, CAS sharpening, and
-    DLSS / NGX handling - the second view gets its own upscaler viewport automatically.
+  - VR HUD with HUDitor standard-widget alignment, per-element F10 placement and scale,
+    world-map head-lock, CAS sharpening, and DLSS / NGX handling - the second view gets its
+    own upscaler viewport automatically.
 
   - In-headset F10 overlay, live and persisted, with five tabs:
       General    world scale, IPD, stereo separation, VR menu FOV and quad size,
@@ -243,6 +250,18 @@ TESTING CONFIGURATION
   RAM           32 GB DDR4
   OS            Windows 11 Pro 25H2 26200.8457
   Game          Cyberpunk 2077 2.31
+
+
+============================================================================
+CREDITS
+============================================================================
+
+  HUDitor provides the standard-widget move/resize workflow used for the tested VR layout:
+  https://www.nexusmods.com/cyberpunk2077/mods/3315
+
+  nben/Cyberpunk-UI-mods-for-VR informed the quickhack/scanner controller and widget
+  identification, including targeting the complete scannerDetailsGameController panel:
+  https://github.com/nben/Cyberpunk-UI-mods-for-VR
 
 
 ============================================================================

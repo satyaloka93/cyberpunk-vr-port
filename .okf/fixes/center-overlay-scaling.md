@@ -1,56 +1,67 @@
 ---
 type: Fix
-title: Dynamic center-overlay scaling
-description: Shrink and reposition scanner, quickhack, interaction, and game-information overlays that bypassed the named HUD-region map.
+title: VR HUD layout and one-shot widget adjustments
+description: Combine HUDitor standard-widget alignment with F10 regions and one-shot dynamic-controller adjustments.
 resource: https://github.com/satyaloka93/cyberpunk-vr-port/blob/psvr2-tweaks/mods/cet/CyberpunkVRPort_HUD/init.lua
-tags: [hud, psvr2, vr, scanner, quickhack, popups, cet]
-timestamp: 2026-08-09T15:16:00+09:00
+tags: [hud, psvr2, vr, scanner, quickhack, popups, cet, redscript]
+timestamp: 2026-08-10T09:08:00+09:00
 ---
 
 # Failure
 
-Named HUD roots such as `TopRightMain`, `BottomRightMain`, and `RightCenter` already receive the port's half-size VR transform. Dynamic scanner, quickhack, interaction, and game-information layers remained oversized and could extend beyond the headset's readable region.
+Cyberpunk does not place every HUD element under one stable controller or named region. Standard roots such as minimap, health, ammo, and quest widgets can be adjusted through the shared HUD tree, but scanner details, phone messages, notifications, and tutorials may initialize under separate controllers.
 
-The installed `hud_live_debug.log` showed why: many dynamic layers arrive as generic root children named `HUDMiddleWidget` with `inkEAnchor.Centered`. The region classifier ignored centered generic children, so their original `1.0` scale survived while mapped regions used `appliedRegionScale(1.0) == 0.5`.
+The original center-only scaling reduced oversized generic overlays but did not reliably move the complete quickhack information panel. A later D-pad panning experiment moved broad HUD roots without consistently moving the intended content and was removed.
 
-# Fix
+# Current layout system
 
-A new `Center overlays` X/Y/Size region covers:
-
-- centered `HUDMiddleWidget` roots;
-- `cursor_device`;
-- the generic `TopCenter` and `BottomCenter` roots.
-
-Shifted D-pad left/right pans both this region and the separate `RightCenter` quickhack-description root in synchronized `160`-pixel steps. Left moves the composition left to reveal information beyond its right lens edge; right moves it back. Each direction fires once until the stick recenters, and the normal XInput D-pad bit is preserved. The resulting X offsets are persisted and appear in the F10 `Center overlays` and `Right center` sliders. If an older test build moved only the center root, the first flick synchronizes the description panel to that existing offset rather than moving the chooser a second step.
-
-The raw `dpadShiftActive` state is also carried from the OpenXR frame snapshot into the XInput hook. During the full modifier hold, the hook zeros the final merged right-stick X/Y axes—not only the OpenXR sample—so a Steam virtual or physical XInput source cannot move the external scanner target. Head-look remains available for target movement.
-
-Its persisted keys are:
+The F10 HUD controls expose X, Y, and Size for ten named regions, including `Center overlays` and `Right center`, plus seven legacy single-axis offsets. These 37 values persist in:
 
 ```text
-xr_hud_center_overlay
-xr_hud_center_overlay_y
-xr_hud_center_overlay_scale
+plugins/cyber_engine_tweaks/mods/CyberpunkVRPort_HUD/hud_layout.ini
 ```
 
-The default Size is `1.0`, which follows existing HUD semantics and applies a `0.5` widget scale. It can be tuned live under **F10 → HUD → Center overlays**. Existing `hud_layout.ini` files remain valid: absent keys fall back to zero offsets and Size `1.0`.
+A Size value of `1.0` applies the established half-scale VR layout; `2.0` restores the original widget scale. Missing keys use safe defaults, so older layout files remain valid.
 
-# Test build
+The CET layer resolves the HUD root, records original widget metrics, and reapplies only regions whose values changed. Standard minimap, health, stamina, ammo, quest, radio, and corner layouts keep their independent controls.
 
-Deployed locally for retest:
+# HUDitor for standard widgets
 
-- `CyberpunkVR_Stereo.dll` SHA-256: `d32ce2f2d4f6c17a45b6a58cb8e772a3650c88d93c11eaa85233b228772c9b7c`
-- CET HUD script SHA-256: `5244fb1bc1160ff42c59e75867d9dad8bbc8abe03245bdf509b6107666e95046`
+The tested user installation also requires [HUDitor](https://www.nexusmods.com/cyberpunk2077/mods/3315) to align and resize supported standard HUD widgets. The persisted user state includes adjusted minimap, tracker, stamina, input hints, wanted level, weapon roster, crouch/D-pad elements, quest/item notifications, phone elements, and vehicle widgets.
 
-The deployment preserved both `vrik_calibration.ini` and the existing `hud_layout.ini` byte-for-byte.
+HUDitor and CyberpunkVR Port have separate ownership. HUDitor provides the base position/scale of supported widgets; F10 provides VR grouping and final headset-relative adjustment; one-shot wrappers cover dynamic controllers HUDitor does not expose. Apply HUDitor first and keep F10 offsets conservative to avoid compounded transforms. Follow the [HUDitor VR layout workflow](../operations/huditor-vr-layout.md), including its mandatory F7 hotkey conflict resolution and persistence rules.
+
+# Controller-specific adjustments
+
+Some widgets are safer to adjust once when their own controller initializes. Small redscript wrappers handle these cases without retaining widget references or polling asynchronously:
+
+| Controller | Purpose |
+|---|---|
+| `scannerDetailsGameController` | Moves the complete scanner/quickhack details panel toward the center |
+| `PhoneDialerLogicController` | Places the contacts/dialer UI in the readable area |
+| `PhoneMessagePopupGameController` | Places incoming message popups |
+| `GenericNotificationController` | Places generic notifications |
+| `TutorialPopupGameController` | Places tutorial cards |
+
+Controller and widget identification for the quickhack/scanner work was informed by and is explicitly credited to [nben/Cyberpunk-UI-mods-for-VR](https://github.com/nben/Cyberpunk-UI-mods-for-VR). Its controller/widget mapping led this port to target `scannerDetailsGameController` for the complete visible details panel rather than moving only a child text widget. The implementation uses local one-shot wrappers in [scanner UI](../../mods/redscript/CyberpunkVRPort_HUD/vrport_scanner_ui.reds) and [additional UI controllers](../../mods/redscript/CyberpunkVRPort_HUD/vrport_ui_extras.reds).
+
+# D-pad behavior
+
+Triangle-touch or L3 plus the right stick still emits XInput D-pad directions and suppresses turning for the duration of the modifier hold. It no longer pans HUD regions. HUD placement is changed only through F10 controls and persisted layout values.
+
+# Validation status
+
+- The complete quickhack details panel was confirmed correctly placed.
+- The expanded phone/notification/tutorial build was reported to look good in initial testing.
+- Standard HUD offsets remain intentionally conservative.
+- Continued checks are required for contacts, unread messages, notifications, tutorials, health, stamina, minimap, ammo, and auxiliary widgets across different gameplay states.
 
 # Regression checks
 
-1. Enter scanner mode and confirm the scanner information remains centered and readable.
-2. Open the quickhack chooser and confirm all entries fit in view.
-3. Trigger interaction and game-information popups and confirm they use the same size control.
-4. Verify crosshair/cursor behavior; these generic center roots intentionally share the region until individual controller identities are captured.
-5. Use shifted D-pad left/right and verify the chooser and right-side description move together, one pan step per recentered flick; confirm the game still receives D-pad left/right.
-6. While the shift modifier is held, move the right stick and confirm the external scanner target does not move; confirm head-look still moves it.
-7. Confirm F10 reflects both new X values and setting both back to zero re-centers the composition.
-8. Confirm named minimap, health, quest, and corner regions retain their prior settings.
+1. Open scanner mode and the quickhack chooser; verify both the list and complete information panel are readable.
+2. Open contacts and unread messages and trigger notification/tutorial popups.
+3. Verify health, stamina, minimap, ammo, quest, radio, and corner widgets retain their own F10 placement.
+4. Change `Center overlays` X/Y/Size, close F10, and confirm the values persist after restart.
+5. Use shifted D-pad directions and confirm the game receives them without turning or moving the HUD.
+6. Preserve the user's existing `hud_layout.ini` and HUDitor `persistency.json` during deployment or packaging.
+7. Confirm HUDitor uses a rebound editor key because F7 belongs to VR recenter.

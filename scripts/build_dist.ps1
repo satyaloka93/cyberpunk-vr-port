@@ -6,10 +6,10 @@
 #
 # Usage:
 #   pwsh scripts\build_dist.ps1
-#   pwsh scripts\build_dist.ps1 -Version 0.1.1 -Zip
+#   pwsh scripts\build_dist.ps1 -Version 0.1.1-psvr2.2 -Zip
 
 param(
-    [string]$Version = "0.1.0",
+    [string]$Version = "0.1.1-psvr2.2",
     [string]$BuildDir = "build",
     [switch]$Zip,
     [switch]$Force
@@ -116,6 +116,7 @@ foreach ($a in @("cyberpunkvrport.archive","VRCigarette.archive.xl")) {
 # ---- bundled user documentation ---------------------------------------------------------------
 Add-File (Need (Join-Path $RepoRoot "docs\PSVR2-CONTROLS.txt") "PSVR2 controls") "PSVR2-CONTROLS.txt"
 Add-File (Need (Join-Path $RepoRoot "docs\PSVR2-ADAPTIVE-TRIGGERS.md") "PSVR2 adaptive-trigger guide") "PSVR2-ADAPTIVE-TRIGGERS.md"
+Add-File (Need (Join-Path $RepoRoot "docs\HUDITOR-VR-SETUP.md") "HUDitor VR setup guide") "HUDITOR-VR-SETUP.md"
 $releaseNotes = Join-Path $RepoRoot "docs\RELEASE-$Version.txt"
 if (Test-Path -LiteralPath $releaseNotes) {
     Add-File $releaseNotes "RELEASE-NOTES.txt"
@@ -148,7 +149,12 @@ BEFORE YOU INSTALL -- READ THIS ONE
 REQUIREMENTS
     Cyberpunk 2077 2.31 (this build's engine offsets are matched to it)
     RED4ext, Cyber Engine Tweaks, redscript, TweakXL, ArchiveXL, Codeware
+    HUDitor v1.1.0 and Input Loader for the tested standard-widget VR HUD layout
     An OpenXR runtime, started BEFORE the game
+
+    HUDitor defaults to F7, which this port uses for HMD recenter. Rebind HUDitor to another
+    unused keyboard key. Read HUDITOR-VR-SETUP.md before arranging the HUD; Mod Settings is
+    recommended for the hotkey UI.
 
     Nothing else may proxy dxgi. If bin\x64\dxgi.dll exists (R.E.A.L. VR installs one), move it
     out of the folder -- two VR paths in one process fight over the same engine hooks.
@@ -180,8 +186,10 @@ PLAYSTATION VR2 QUICK START
     Fallback: touch Triangle without clicking and use R3 with the same quick/hold timing. Bare
     R3 remains crouch. For D-pad input, touch Triangle without clicking and move the RIGHT stick;
     turning is suppressed during the shift. Read PSVR2-CONTROLS.txt for the full control map,
-    binding steps, and troubleshooting. Read PSVR2-ADAPTIVE-TRIGGERS.md to add weapon/vehicle
-    trigger profiles and synthesized grip haptics through the PSVR2Toolkit bridge.
+    binding steps, and troubleshooting. Read HUDITOR-VR-SETUP.md to install HUDitor, resolve
+    its F7 conflict, align standard HUD widgets, and preserve the layout. Read
+    PSVR2-ADAPTIVE-TRIGGERS.md to add weapon/vehicle trigger profiles and synthesized grip
+    haptics through the PSVR2Toolkit bridge.
 
 WHAT LANDS WHERE
     red4ext\plugins\CyberpunkVR_Stereo\   the VR plugin, its shaders, the settings template

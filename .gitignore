@@ -33,6 +33,8 @@ package.json
 !scripts/revert_stereo.ps1
 !scripts/sync_assets.ps1
 !scripts/build_dist.ps1
+# and the OKF link checker, which keeps bundle links navigable on GitHub.
+!scripts/check_okf_links.py
 # and the asset generator, which authors the VRCAM components the launcher offers.
 !tools/gen_vrcam_assets.py
 # and the crash-dump reader, which is how a tester's .dmp gets turned into a stack.

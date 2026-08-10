@@ -4,7 +4,7 @@ title: PSVR2 Triangle-touch D-pad shifting
 description: UEVR-compatible left-touch shifting for PSVR2 Sense through SteamVR's Oculus Touch profile.
 resource: https://github.com/satyaloka93/cyberpunk-vr-port/blob/psvr2-tweaks/src/vr/openxr/openxr_frameloop.cpp
 tags: [psvr2, steamvr, openxr, input, dpad, bindings]
-timestamp: 2026-08-08T03:40:00Z
+timestamp: 2026-08-10T07:52:00+09:00
 ---
 
 # Expected control
@@ -23,9 +23,19 @@ SteamVR exposes Sense through `/interaction_profiles/oculus/touch_controller`, b
 
 The plugin therefore mirrors that action into the left D-pad-shift modifier only when the runtime system is [PSVR2](../hardware/psvr2-steamvr.md). Triangle click remains XInput Y/weapon switch.
 
-SteamVR's generated Oculus binding describes left Create as Menu and right Options as System, but the tested Oculus-to-`playstation_vr2_sense` auto-remapper omitted both paths. Separate actions did not deliver state. A single UEVR-style global `SystemButton` action made the application action manually assignable in SteamVR; mapping physical left Create to it successfully delivered state. UEVR itself has no separate OpenXR Start/Menu action: its one `/actions/default/in/SystemButton` accepts both wildcard `system/click` and `menu/click` paths, then translates a short release to XInput Start and a hold of at least 500 ms to XInput Back/Select. The Cyberpunk port now implements the same timing in the XInput hook, where the one-shot edge cannot fall between game polls. Triangle capacitive touch plus R3 feeds the same state machine as a binding-independent fallback. In both cases, tap opens Cyberpunk's system/pause menu and hold opens its Back/in-game menu; neither exposes SteamVR's reserved dashboard. Bare R3 remains XInput right-thumb/crouch.
+SteamVR's generated Oculus binding lists left Create as Menu and right Options as System, but the tested Oculus-to-`playstation_vr2_sense` auto-remapper omitted both. Separate application actions did not produce state.
 
-This follows the proven UEVR behavior recorded in `UEVR-AFW-PUBLISH/.okf/fixes/psvr2-triangle-dpad.md`: Triangle touch substitutes for `ThumbrestTouchLeft`, bypassing the Oculus touch-inactivity assumption, and suppresses turning while shifting.
+The working configuration uses one UEVR-style application action named `SystemButton`:
+
+- Physical left Create is assigned to it manually in SteamVR.
+- Release before 500 ms emits XInput Start.
+- Holding for at least 500 ms emits XInput Back once; release does not also emit Start.
+- Triangle capacitive touch plus R3 feeds the same timer as a binding-independent fallback.
+- Bare R3 remains XInput right-thumb/crouch.
+
+These events open Cyberpunk's menus; they do not expose SteamVR's reserved dashboard. Timing is handled in the XInput poll so the game receives a stable one-shot event.
+
+This matches the tested [UEVR PSVR2 input behavior](https://github.com/satyaloka93/UEVR-AFW-Compat/blob/afw-beta4-game-compat/.okf/fixes/psvr2-triangle-dpad.md): Triangle touch substitutes for `ThumbrestTouchLeft`, and right-stick turning is suppressed while the modifier is held.
 
 # OpenXR actions and editing
 

@@ -61,12 +61,6 @@ static const char* const kHudKeys[kHudFieldCount] = {
 };
 static float g_hudValues[kHudFieldCount];
 static SRWLOCK g_hudValuesLock = SRWLOCK_INIT;
-static constexpr int kHudRightCenterXIndex = static_cast<int>(
-    (offsetof(LiveControlsUiState, xrHudRightCenter) - offsetof(LiveControlsUiState, xrHudScale)) / sizeof(float));
-static constexpr int kHudCenterOverlayXIndex = static_cast<int>(
-    (offsetof(LiveControlsUiState, xrHudCenterOverlay) - offsetof(LiveControlsUiState, xrHudScale)) / sizeof(float));
-static_assert(kHudRightCenterXIndex == 24 && kHudCenterOverlayXIndex == 27,
-              "HUD key order must match LiveControlsUiState");
 static bool g_hudDefaultsInit = false;
 static bool g_hudLoaded = false;
 
@@ -357,35 +351,6 @@ static void EnsureHudLoaded() {
     DWORD attrs = GetFileAttributesA(g_hudLayoutPath);
     ReadHudLayoutFile();                                   // existing file -> g_hudValues
     if (attrs == INVALID_FILE_ATTRIBUTES) WriteHudLayoutFile(); // first run -> create it
-}
-
-// A horizontal shifted-D-pad flick pans the dynamic center-overlay group in fixed logical-UI
-// steps. This is intentionally persisted through the same bridge as the F10 HUD sliders so CET
-// can apply it without a new native/Lua ABI, and so F10 shows the resulting position next time it
-// opens. Call only on a direction EDGE -- it writes one tiny file per step.
-static float ClampHudOffset(float value) {
-    if (value < -1200.0f) return -1200.0f;
-    if (value > 1200.0f) return 1200.0f;
-    return value;
-}
-
-static void NudgeHudQuickhackPanelsX(float delta) {
-    EnsureHudLoaded();
-    AcquireSRWLockExclusive(&g_hudValuesLock);
-    // The quickhack chooser arrives in generic centered roots, but its description panel is a
-    // separate RightCenter root. Move both as one readable composition.
-    const float previousCenterX = g_hudValues[kHudCenterOverlayXIndex];
-    const float previousDetailsX = g_hudValues[kHudRightCenterXIndex];
-    // Older test builds moved only the center roots. On the first new flick, catch a mismatched
-    // details panel up to the existing center offset instead of moving the chooser a second step.
-    const bool needsSync = fabsf(previousCenterX - previousDetailsX) > 0.5f;
-    const float nextX = ClampHudOffset(previousCenterX + (needsSync ? 0.0f : delta));
-    g_hudValues[kHudCenterOverlayXIndex] = nextX;
-    g_hudValues[kHudRightCenterXIndex] = nextX;
-    WriteHudLayoutFile();
-    ReleaseSRWLockExclusive(&g_hudValuesLock);
-    Log("HUD: shifted-D-pad pan center/right-details X=%.0f%s.\n",
-        nextX, needsSync ? " (synchronized)" : "");
 }
 
 // Publish the mouse-Y flag for the CET VRIK mod (it reads this from its own folder).
@@ -6766,21 +6731,6 @@ static DWORD WINAPI HookedXInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState
 
     // Buttons: OR (so a physical pad can still augment, and vice versa).
     pState->Gamepad.wButtons |= vr.buttons;
-
-    // Shifted D-pad horizontal flicks also pan the dynamic center-overlay group, one 160px
-    // step per recentered flick. Keep the D-pad bit itself: the game still receives its normal
-    // left/right action, while the viewport can be pulled toward text that sits beyond a lens edge.
-    // Left moves the UI left (revealing its right side); right moves it back to the right.
-    {
-        LONG direction = 0;
-        const bool dpadLeft = (vr.buttons & XINPUT_GAMEPAD_DPAD_LEFT) != 0;
-        const bool dpadRight = (vr.buttons & XINPUT_GAMEPAD_DPAD_RIGHT) != 0;
-        if (dpadLeft != dpadRight) direction = dpadLeft ? -1 : 1;
-        static volatile LONG s_hudPanDirection = 0;
-        const LONG previous = InterlockedExchange(&s_hudPanDirection, direction);
-        if (direction != 0 && previous != direction)
-            NudgeHudQuickhackPanelsX(static_cast<float>(direction) * 160.0f);
-    }
 
     // Match UEVR's one-action pause/select split. A quick SystemButton press emits
     // XInput Start only when released; holding for at least 500 ms emits XInput Back

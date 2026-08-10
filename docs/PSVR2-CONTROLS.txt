@@ -70,15 +70,12 @@ D-PAD SHIFTING
         right stick up / down / left / right   D-pad up / down / left / right
 
     Turning is suppressed while Triangle touch is held. Triangle click still performs
-    weapon switch. A shifted LEFT/RIGHT flick also pans the quickhack chooser and its
-    separate right-side description panel together while preserving the game's D-pad input:
-    LEFT moves both panels left to reveal text on the right edge; RIGHT moves them back.
-    Recenter the stick before each additional step. Reset or fine-tune both positions with
-    F10 -> HUD -> Center overlays -> X and Right center -> X.
+    weapon switch. The final merged right-stick X/Y axes are forced to zero for the whole
+    shift hold, preventing the stick from moving the external scanner target; head-look
+    remains available for targeting.
 
-    The final merged right-stick X/Y axes are forced to zero for the whole shift hold. This
-    prevents the stick from moving the external scanner target; head-look remains available
-    for targeting.
+    D-pad shifting does not move HUD elements. Use HUDitor for supported standard widgets
+    and F10 -> HUD for VR-specific groups and dynamic panels.
 
     L3 can be used as a second D-pad modifier; releasing L3 without choosing a direction
     emits normal L3/sprint.
@@ -86,6 +83,16 @@ D-PAD SHIFTING
 HOTKEYS
     F7                                 recenter HMD
     F10 or Insert                      open the in-headset mod settings overlay
+    HUDitor editor                     rebind its default F7 to an unused keyboard key
+
+HUD ALIGNMENT
+    Install HUDitor v1.1.0 and Input Loader for the tested standard-widget VR layout.
+    Configure HUDitor with keyboard/mouse first, then use F10 for VR-specific groups and
+    the complete scanner/quickhack details panel. Preserve both HUDitor persistency.json
+    and CyberpunkVRPort_HUD hud_layout.ini when updating.
+
+        HUDITOR-VR-SETUP.md
+        https://www.nexusmods.com/cyberpunk2077/mods/3315
 
 OPTIONAL ADAPTIVE TRIGGERS AND GRIP HAPTICS
     Enhanced DualSense Support's gameplay profiles can drive the Sense controllers through
