@@ -1,0 +1,240 @@
+CyberpunkVR Port 0.1.1-psvr2.3
+PS VR2 community-fork release based on upstream 0.1.1
+
+This release fixes the GPU hangs that 0.1.1-psvr2.2's overlay pacing introduced, stops
+forward movement breaking crouch, adds melee swing and impact haptics, and adds a direct
+installer so the mod stack can be installed without Mod Organizer.
+
+If you are on 0.1.1-psvr2.2 and have seen the game die with "Gpu Crash for unknown
+reasons", this is the release you want.
+
+
+Highlights
+==========
+
+Overlay GPU hangs fixed
+-----------------------
+
+0.1.1-psvr2.2 removed the overlay's per-frame GPU drain to recover frame rate. That change
+was validated against a single clean run, and it was not safe: it went on to produce eight
+DXGI_ERROR_DEVICE_HUNG (0x887A0006) faults, every one stalling at the same barrier-flush
+marker, and most of them at a save load.
+
+An A/B on matched fresh boots settled the cause. The old drain ran clean for 6 minutes and
+4 loads; the new pacing hung after 87 seconds and 1 load. Two other suspects were tested
+and cleared: concurrent Present workers corrupting backbuffer barriers (instrumented -- the
+game serialises Present itself despite presenting from 16 threads), and a DLSS
+super-resolution/frame-generation version mismatch (reverting to a coherent stock set still
+hung).
+
+* The overlay now keeps middle-ground pacing during normal rendering and restores the full
+  drain for a bounded 5-second window whenever the game churns render resources. Each such
+  event refreshes the window, so a long transition stays covered.
+* Windows are opened by save loads, swapchain invalidation, VRCAM component re-binds, and
+  sight PSO substitution. Those triggers were chosen by measuring how often candidate
+  signals actually fire in captured logs, not by guessing which sounded load-like.
+* The drain is bounded at 1000 ms rather than waiting forever, so a genuinely dead GPU
+  cannot wedge a Present worker.
+
+Frame rate is not the price. Measured medians: 43.8 FPS on the old always-drain build,
+62.2 FPS on unguarded pacing, and 70.3 FPS with the guard -- the guard build is the fastest
+of the three, because the drain now costs only loading-screen frames. The guard occupies
+under 10% of runtime.
+
+Verified with an 8.8-minute session across 8 loads with zero fence timeouts, and a later
+20-minute session across 5 loads. Startup logs report
+`mode=previous-overlay-fence+load-guard`.
+
+Crouch no longer breaks when you move
+-------------------------------------
+
+Sprint was derived from how far the stick was pushed, and asserted continuously. On PS VR2
+Sense sticks full deflection is trivially easy to reach, so ordinary forward movement
+asserted sprint and stood a crouched player up.
+
+* Full stick tilt now means "as fast as this stance allows" and never changes the stance.
+  Crouched, you creep at full crouch speed. Upright, you sprint as before. Partial
+  deflection still walks.
+* Added "Crouch-sprint perk owned" to the F10 DLSS/Debug page, persisted as
+  `xr_crouch_sprint_perk`, default off. Tick it once you own the perk and full tilt will
+  crouch-sprint instead of holding the slower crouch pace.
+
+The perk is declared rather than detected: reading it from the game's tweak database would
+fail silently and indistinguishably from a bug if the record name were wrong, and the
+default behaviour is the stance-preserving one either way.
+
+Melee swing and impact haptics (needs the bridge, see below)
+------------------------------------------------------------
+
+Physical melee swings and impacts now produce haptics in the weapon hand. Confirmed on
+katana and machete. Swing strength scales with how fast you actually swing; impact is
+stronger and longer, so contact is distinguishable from the whoosh.
+
+Game audio cannot supply this. The melee whoosh sits outside the bridge's 28-320 Hz tactile
+band and is inaudible to it even at high gain, and because that layer is derived from stereo
+output it drives both grips rather than the hand holding the weapon.
+
+REQUIRES an updated PSVR2Toolkit Cyberpunk DSX bridge. The plugin publishes the events; a
+bridge without the VR motion watcher has nothing consuming them and you will feel nothing.
+Bridge release cyberpunk-dsx-bridge-v0.2.0 and earlier do NOT have it.
+
+Adaptive triggers: use the stock weapon effects
+-----------------------------------------------
+
+Earlier releases recommended a Sense weapon-category override profile (Very Soft handguns,
+Soft revolvers, Choppy automatics, Medium rifles, Hard heavy weapons). THAT ADVICE IS
+WITHDRAWN.
+
+It was measured while Enhanced DualSense Support's own UDP client was autostarting alongside
+the bridge, so two clients were driving the controller-effect path at once. The inconsistent,
+partly missing trigger effects the presets appeared to fix were caused by that conflict.
+Retested with only the bridge running, the overrides break haptics and make triggers
+inconsistent, while the stock effects behave correctly.
+
+* Set every weapon category back to Default if you applied the old profile.
+* The mod's UDP autostart defaults to ON, so its "reset to defaults" button silently
+  restores the conflict. `run_bridge.ps1` now turns it off on every launch, which also
+  survives updating the mod from Nexus.
+* Nothing except the bridge may drive the Sense actuators. An OpenXR vibration action inside
+  the VR plugin was tried and cost most of the game's gun haptics -- recoil and
+  automatic-fire rhythms went quiet and a sniper shot arrived in the wrong hand -- even
+  though every pulse was accepted by the runtime. That action ships disabled.
+
+
+Installing
+==========
+
+Two ways. The script is the recommended path; manual is the fallback and is what the script
+falls back to for files it cannot fetch.
+
+Either way, close Cyberpunk 2077, Mod Organizer 2 and REDlauncher first -- the files are
+locked while they run.
+
+Option 1: the installer script (recommended)
+--------------------------------------------
+
+1. Download the four Nexus mods by hand and put them in one folder, any filenames:
+
+     Visual Holsters      https://www.nexusmods.com/cyberpunk2077/mods/21936
+     Visible Bullets      https://www.nexusmods.com/cyberpunk2077/mods/22251
+     Nova Optics          https://www.nexusmods.com/cyberpunk2077/mods/29190
+     HUDitor              https://www.nexusmods.com/cyberpunk2077/mods/3315
+
+   Nexus cannot be automated: it issues direct download links only to premium accounts, and
+   its terms forbid redistributing the files. Filenames do not matter -- the installer
+   identifies them by SHA-256 and verifies each one.
+
+2. Double-click `scripts\Install-CyberpunkVRPort.cmd`, or drag the folder from step 1 onto
+   it to use that folder for downloads.
+
+   From a shell instead:
+     pwsh scripts\Install-CyberpunkVRPort.ps1 -DownloadDir "D:\my downloads"
+
+   Add `-WhatIf` first if you want to see exactly what it would do without changing
+   anything.
+
+3. Everything else is downloaded and hash-verified automatically, then extracted into the
+   game folder. Launch Cyberpunk normally from Steam.
+
+The installer resolves every source before writing a single file, so a missing download
+cannot leave a half-installed game. It rejects archive entries that try to escape the game
+folder, checks archive layout against the expected Cyberpunk directories, and discards any
+download whose hash does not match.
+
+Downloads use `curl.exe` (shipped with Windows 10 1803 and later) and fall back to
+PowerShell. If your machine blocks PowerShell from making outbound connections -- a common
+hardening rule -- curl still works, and the installer names the blocking firewall rule if
+neither can connect. If curl is missing, install it with:
+
+     winget install curl.cURL          (or https://curl.se/windows/)
+
+If a download cannot be made at all, the installer lists every missing file with its URL and
+SHA-256 and installs nothing. Fetch them in a browser, drop them in the same folder, and run
+it again.
+
+Option 2: manual install
+------------------------
+
+Extract each archive into the Cyberpunk 2077 folder, in this order. Every one of these is
+packaged to extract at the game root -- you should end up merging into `bin\`, `r6\`,
+`red4ext\`, `archive\` and `engine\`, not creating a subfolder.
+
+   1. RED4ext 1.30.0
+   2. Cyber Engine Tweaks 1.37.1
+   3. redscript 0.5.31
+   4. ArchiveXL 1.27.1
+   5. TweakXL 1.11.4
+   6. Codeware 1.20.3
+   7. Input Loader 0.2.3
+   8. Equipment-EX 1.2.9
+   9. Visual Holsters 1.2          (Nexus)
+  10. Visible Bullets 2.31         (Nexus)
+  11. Nova Optics 1.3.1            (Nexus)
+  12. HUDitor 1.1.0                (Nexus)
+  13. This release's zip
+
+Exact versions, URLs and SHA-256 hashes for all of them are in `wabbajack\manifest.json`.
+Verify a download with:
+
+     Get-FileHash .\file.zip -Algorithm SHA256
+
+Mod Organizer 2 is NOT used or needed. Do not install this through MO2 unless you intend to
+launch the game through MO2 as well -- MO2's virtual filesystem is what makes CET and RED4ext
+visible to the game, so a stack installed that way is invisible when the game is launched
+from Steam.
+
+Optional: adaptive triggers and grip haptics
+--------------------------------------------
+
+Only needed if you want Sense adaptive triggers, grip haptics, or the new melee swing and
+impact haptics. See `docs\PSVR2-ADAPTIVE-TRIGGERS.md` for the full procedure. In short:
+
+* Install Enhanced DualSense Support and Native Settings UI.
+* Leave every weapon category at Default.
+* Install the PSVR2Toolkit Cyberpunk DSX bridge and start it with `run_bridge.cmd` AFTER
+  SteamVR and BEFORE the game. It prints `VR motion haptics watcher enabled` when the melee
+  path is present.
+* Do not run DSX, the mod's bundled UDPClient.exe, or two bridges at once.
+
+Tune with `-AudioHapticsGain 0..3` for the game-audio layer and `-VRMotionGain 0..3` for
+melee pulses; `-VRMotionGain 0` disables melee haptics.
+
+
+Upgrading from 0.1.1-psvr2.2
+============================
+
+* Install over the top -- the installer replaces files in place, or extract this release's
+  zip into the game folder.
+* Set Enhanced DualSense Support's weapon categories back to Default if you applied the old
+  recommended profile.
+* Update the bridge if you want melee haptics.
+* Your F10 HUD layout, VRIK calibration and `vrport.ini` settings are preserved.
+  `xr_crouch_sprint_perk` is added on first save, defaulting to off.
+
+
+Known issues
+============
+
+* Opening HUDitor (F7) after a long session can stall a frame badly enough to hang the GPU.
+  The cause is understood -- the plugin's render-target tracking table saturates and a burst
+  of new UI render targets makes registration expensive -- and is a rare path, so the fix is
+  deferred to a later release rather than rushed in beside this one.
+* The overlay guard is validated over sessions of 9 and 20 minutes. It is a large improvement
+  over 0.1.1-psvr2.2's 87-second failures, but longer soak testing is still wanted. Report
+  any new "Gpu Crash for unknown reasons" with `bin\x64\cyberpunkvrport.log` and the newest
+  folder from `%LOCALAPPDATA%\REDEngine\ReportQueue\`.
+* Ray-traced reflections still appear in only one eye, and ray-traced lighting darkens the
+  other. Unchanged from previous releases.
+
+
+Reporting problems
+==================
+
+Run this and attach the output -- it captures hardware, XR runtime, game build, mod versions,
+every F10 setting and a summary of the last run, so two setups can be compared directly:
+
+     pwsh scripts\Collect-VRPortReport.ps1 -Hmd "your headset"
+
+For a crash, also attach `bin\x64\cyberpunkvrport.log`, the archived
+`cyberpunkvrport-<timestamp>.log` for the session that actually crashed, and the newest
+folder under `%LOCALAPPDATA%\REDEngine\ReportQueue\`.
