@@ -49,26 +49,66 @@ The bridge deliberately bypasses Enhanced DualSense Support's bundled `UDPClient
 
 The bridge writes `DSXData.json` next to `DualSenseXConfig.txt`, allowing the mod's status panel to see a connected bridge without its native client.
 
-## Recommended Sense weapon overrides
+## Sense weapon overrides — leave at Default
 
-Enhanced DualSense Support labels its weapon-category override page **Not Recommended** because overriding Default replaces some per-model DualSense effects with a category-wide preset. That trade-off is usually undesirable on DualSense, but its complex defaults do not transfer cleanly to PS VR2 Sense. A category choice should therefore be made for each weapon family to recover usable Sense nuance. The following is a conservative baseline, not a mandate; users should adjust every category to taste:
+**Leave every weapon category at `Default`.** Enhanced DualSense Support's stock per-weapon
+effects are the correct choice on PS VR2 Sense, and its **Not Recommended** label on the
+category-override page is accurate.
 
-| Weapon category | Baseline override |
+Earlier releases of this document recommended a category profile (Very Soft handguns, Soft
+revolvers, Choppy automatics, Medium rifles, Hard heavy weapons). **That advice was wrong and
+has been withdrawn.** It was measured while the mod's own UDP client was autostarting
+alongside the PSVR2Toolkit bridge, so two clients were driving the controller-effect path at
+once. The inconsistent, partly missing trigger effects that the presets appeared to fix were
+caused by that conflict, not by the stock effects.
+
+Retested with only the bridge running, the overrides make things worse: haptics break and
+trigger effects become inconsistent. If you applied the old profile, set every category back
+to `Default`.
+
+Stored values in `DualSense Support\config\settings.json` are `1=Default`, `3=Choppy`,
+`4=Very Soft`, `5=Soft`, `6=Medium`, `7=Hard`. Back the file up before changing anything.
+
+### UDP autostart re-enables itself
+
+The mod's built-in default for UDP autostart is **on**, so using its *reset to defaults* button
+— including while resetting weapon categories — silently restores the conflict. This is the
+single most important setting to keep off.
+
+This release locks it in the mod's own files: the default is changed to off, the Native
+Settings switch refuses to latch and snaps back, and the stored value is off. NativeSettings
+has no greyed-out control state, so snap-back is the closest equivalent. **Updating Enhanced
+DualSense Support from Nexus will overwrite these edits — reapply them afterwards.**
+
+## VR melee motion haptics
+
+Physical melee swings and impacts produce haptics in the weapon hand — confirmed on katana and
+machete. Swing strength scales with how fast you actually swing; impact is stronger and longer
+so contact is distinguishable from the whoosh.
+
+This needs a **bridge build containing the VR motion watcher**. The plugin publishes the
+events, but an older bridge has nothing consuming them and you will feel nothing.
+
+Game audio cannot provide this. The melee whoosh sits outside the bridge's 28-320 Hz tactile
+band and is inaudible to it even at `--audio-haptics-gain 2.5`, and because that layer is
+derived from stereo output it buzzes both grips rather than the hand holding the weapon.
+
+| Flag | Effect |
 |---|---|
-| Handguns | Very Soft |
-| Revolver | Soft |
-| Submachine / Light Machine / Heavy Machine Gun | Choppy |
-| Rifle | Medium |
-| Precision Rifle / Sniper Rifle | Hard |
-| Shotgun / Double-Barrel Shotgun | Hard |
-| Projectile Launch System | Hard |
-| Fists / Knife / Monowire | Very Soft |
-| Sword / Katana / Mantis Blades | Soft |
-| Machete / Axe / One-Handed Club / Gorilla Arms | Medium |
-| Two-Handed Club / Hammer | Hard |
-| Chainsword | Choppy |
+| `--vr-motion-gain 0..3` | scales melee pulses only, default `1.0` |
+| `--no-vr-motion-haptics` | disables them |
 
-Stored values are `3=Choppy`, `4=Very Soft`, `5=Soft`, `6=Medium`, and `7=Hard`; Default is `1`. These settings are intentional for the PSVR2 bridge and are not unsafe. They alter R2 while the mod continues to provide gameplay state and L2 behavior. Back up `DualSense Support\config\settings.json` before changing categories. Avoid Very Hard, Hardest, and Rigid as global defaults unless specifically desired, because they fatigue the shorter Sense trigger quickly.
+On startup the bridge prints `VR motion haptics watcher enabled at gain 1 (waits for
+Cyberpunk).` It attaches when the game launches, so bridge-first startup is still correct. Gun
+and vehicle haptics are unaffected — melee pulses are mixed into the same engine rather than
+bypassing it.
+
+### Nothing else may drive the actuators
+
+Only the bridge may produce controller haptics. Driving them from the VR plugin as well — for
+example an OpenXR vibration action — competes with Toolkit CAPI for the same Sense actuators
+and costs most of the game's gun feedback, even when every pulse is accepted by the runtime.
+
 
 ## Effect fidelity
 

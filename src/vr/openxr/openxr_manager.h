@@ -556,6 +556,17 @@ public:
     // Write a shared-mem slot (XInput merge publishes the melee power-trigger flag to [30]).
     void SetSharedSlot(int i, float v) { float* p = m_sharedHandsPtr; if (p && i >= 0 && i < 256) p[i] = v; }
 
+    // Queue a controller vibration. Callable from any thread -- the XInput merge runs on the
+    // game's input thread -- so it only records the request; the XR frame loop applies it next
+    // sync, where the action set is already current. Amplitude 0..1, duration in seconds.
+    void RequestHandHaptic(bool rightHand, float amplitude, float durationSec) {
+        if (amplitude <= 0.0f) return;
+        m_hapticAmp.store(amplitude > 1.0f ? 1.0f : amplitude, std::memory_order_relaxed);
+        m_hapticSec.store(durationSec, std::memory_order_relaxed);
+        m_hapticRight.store(rightHand, std::memory_order_relaxed);
+        m_hapticPending.store(true, std::memory_order_release);
+    }
+
     // Publish IK calibration to the plugin (see m_calib). Order matches the [33..47] slots.
     void SetVRHandCalib(float scaleR, float scaleL, float heightR, float heightL,
                         float swingR, float swingL, float poleR, float poleL,
@@ -745,6 +756,14 @@ private:
     XrAction m_secondaryButtonTouchAction = XR_NULL_HANDLE; // Bool, per hand (Y / B capacitive touch)
     XrAction m_thumbrestTouchAction = XR_NULL_HANDLE;    // Bool, per hand (Touch thumbrest)
     XrAction m_menuButtonAction = XR_NULL_HANDLE;        // Bool, left Menu/Create + right System/Options
+    // Vibration OUTPUT. The bridge's audio-derived grip PCM cannot reproduce a melee swing:
+    // the whoosh sits outside its 28-320 Hz tactile band and survived neither gain 1.35 nor
+    // 2.5. This is a direct channel for motion-driven feedback the audio layer cannot see.
+    XrAction m_hapticAction = XR_NULL_HANDLE;            // Vibration, per hand
+    std::atomic<bool>  m_hapticPending{false};
+    std::atomic<bool>  m_hapticRight{true};
+    std::atomic<float> m_hapticAmp{0.0f};
+    std::atomic<float> m_hapticSec{0.0f};
     XrPath m_handPaths[2] = { XR_NULL_PATH, XR_NULL_PATH };
     XrSpace m_handSpaces[2] = { XR_NULL_HANDLE, XR_NULL_HANDLE };
     // Latest controller snapshot, owned by the frame thread.

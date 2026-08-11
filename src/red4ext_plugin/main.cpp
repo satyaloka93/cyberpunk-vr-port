@@ -7088,6 +7088,45 @@ void GetVRSharedSlot(RED4ext::IScriptable*, RED4ext::CStackFrame* aFrame, float*
     int32_t idx = 0; RED4ext::GetParameter(aFrame, &idx); aFrame->code++;
     if (aOut) *aOut = (g_pSharedHands && idx >= 0 && idx < 256) ? g_pSharedHands[idx] : 0.0f;
 }
+// ---------------------------------------------------------------------------
+// Lua -> plugin signal bridge (slots [157..161])
+//
+// Lua can READ shared slots through GetVRSharedSlot but there is no writer, so anything the
+// CET mods detect and the VR runtime needs has to come through a purpose-built native. A
+// generic setter is deliberately NOT offered: the shared block carries seqlocks and pose data,
+// and a mod writing the wrong index is exactly how the smoking bridge once produced a lighter
+// that ignited itself (see the GRAVEYARD notes in shared_slots.h).
+//
+// [157] haptic sequence -- incremented LAST; the consumer triggers on the change
+// [158] haptic hand      0 = left, 1 = right
+// [159] haptic amplitude 0..1
+// [160] haptic duration  milliseconds
+// [161] crouched         0/1, published from the locomotion blackboard
+// ---------------------------------------------------------------------------
+void SetVRHapticPulse(RED4ext::IScriptable*, RED4ext::CStackFrame* aFrame, void*, int64_t) {
+    int32_t hand = 1; float amp = 0.0f; int32_t durMs = 0;
+    RED4ext::GetParameter(aFrame, &hand);
+    RED4ext::GetParameter(aFrame, &amp);
+    RED4ext::GetParameter(aFrame, &durMs);
+    aFrame->code++;
+    if (!g_pSharedHands) return;
+    if (amp < 0.0f) amp = 0.0f;
+    if (amp > 1.0f) amp = 1.0f;
+    if (durMs < 1)    durMs = 1;
+    if (durMs > 1000) durMs = 1000;
+    g_pSharedHands[158] = (hand != 0) ? 1.0f : 0.0f;
+    g_pSharedHands[159] = amp;
+    g_pSharedHands[160] = (float)durMs;
+    // Published LAST: the sequence is the trigger, so the payload is complete before the
+    // consumer can observe a change.
+    g_pSharedHands[157] = g_pSharedHands[157] + 1.0f;
+}
+
+void SetVRCrouched(RED4ext::IScriptable*, RED4ext::CStackFrame* aFrame, void*, int64_t) {
+    int32_t v = 0; RED4ext::GetParameter(aFrame, &v); aFrame->code++;
+    if (g_pSharedHands) g_pSharedHands[161] = (v != 0) ? 1.0f : 0.0f;
+}
+
 void GetVRProvDump(RED4ext::IScriptable*, RED4ext::CStackFrame* aFrame, float* aOut, int64_t) {
     int32_t idx = 0; RED4ext::GetParameter(aFrame, &idx); aFrame->code++;
     double v = 0.0;
@@ -7585,6 +7624,16 @@ RED4EXT_C_EXPORT void RED4EXT_CALL PostRegisterTypes() {
     auto fGetSlot = RED4ext::CGlobalFunction::Create("GetVRSharedSlot", "GetVRSharedSlot", &GetVRSharedSlot);
     fGetSlot->flags = flags; fGetSlot->AddParam("Int32", "idx"); fGetSlot->SetReturnType("Float");
     rtti->RegisterFunction(fGetSlot);
+
+    // Lua -> plugin signal bridge. See the SetVRHapticPulse comment for the slot map.
+    auto fHaptic = RED4ext::CGlobalFunction::Create("SetVRHapticPulse", "SetVRHapticPulse", &SetVRHapticPulse);
+    fHaptic->flags = flags;
+    fHaptic->AddParam("Int32", "hand"); fHaptic->AddParam("Float", "amplitude");
+    fHaptic->AddParam("Int32", "durationMs");
+    rtti->RegisterFunction(fHaptic);
+
+    auto fCrouch = RED4ext::CGlobalFunction::Create("SetVRCrouched", "SetVRCrouched", &SetVRCrouched);
+    fCrouch->flags = flags; fCrouch->AddParam("Int32", "crouched"); rtti->RegisterFunction(fCrouch);
 
     auto f61 = RED4ext::CGlobalFunction::Create("SetVRWeaponAim", "SetVRWeaponAim", &SetVRWeaponAim);
     f61->flags = flags; f61->SetReturnType("Int32");

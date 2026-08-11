@@ -21,6 +21,7 @@
 
 
 #include "swapchain_hooks.h"
+#include "../overlay/imgui_overlay.h"
 #include "../../common/log_throttle.h"
 
 static FILE* g_logFile = nullptr;
@@ -117,6 +118,7 @@ struct LiveControls {
     volatile int xrSnapTurnPulseMs; // duration of the discrete snap turn pulse pushed into the right stick (ms)
     volatile int xrMonoDepthCapture; // 1 (default) = mono scene-depth for XR_KHR_composition_layer_depth. The resolve reads the game depth as an SRV WITHOUT transitioning it (D3D12 state is global -> barriering the game's resource device-removes CP2077), on our own capture queue (FIFO before the submit's depth copy, no cross-queue Wait), and only once the scene depth has been a stable shader-readable resource with menus closed for a warmup window (skips the intro/menu-load transient). 0 = no depth in mono.
     volatile int xrSnapTurnYawIndex; // which float index in deltaHead[] gets the snap yaw. Default 1.
+    volatile int xrCrouchSprintPerk;  // 1 = crouch-sprint perk owned: full stick tilt may assert L3 while crouched
     volatile int xrImmersiveHolsters; // 1 = visual-holster equip (default), 0 = simple slot mapping (back=Slot1, R hip=Slot2, L hip=Slot3). Published to shared[23] for the CET Holster mod.
     volatile int xrPhysicalBodyRotation; // 1 = physical body rotation (avatar body follows HMD/aim heading). 0 (default) = classic stick/snap heading. Gates the aiming/weapon body-turn paths; vehicles unaffected.
 };
@@ -173,6 +175,7 @@ void InitRuntimePaths() {
 
     // Default: immersive holsters ON (current behaviour -- equip by visual holster).
     g_liveControls.xrImmersiveHolsters = 1;
+    g_liveControls.xrCrouchSprintPerk = 0;   // stance-preserving default
 
     // Default ON: VR controller -> XInput gamepad pipeline. Both the entry-point
     // detour (xrXInputInstall) and the gameplay action set (xrInputActions) are
@@ -389,6 +392,9 @@ static void PollVrikRecenterRequest() {
     if (counter != g_lastVrikRecenterCounter) {
         g_lastVrikRecenterCounter = counter;
         OpenXRManager::Get().RequestRecenter();
+        // Same signal marks the load transition for the overlay's pacing guard: all seven
+        // recorded DXGI_ERROR_DEVICE_HUNG faults occurred within a few frames of this point.
+        OverlayArmLoadGuard("save load");
         Log("VRIK recenter request (save load) -> recentering. counter=%d\n", counter);
     }
 }
@@ -478,6 +484,7 @@ static void PollLiveControls() {
     int xrMonoDepthCapture = g_liveControls.xrMonoDepthCapture;
     int xrSnapTurnYawIndex = g_liveControls.xrSnapTurnYawIndex >= 0 && g_liveControls.xrSnapTurnYawIndex <= 3 ? g_liveControls.xrSnapTurnYawIndex : 1;
     int xrImmersiveHolsters = g_liveControls.xrImmersiveHolsters;
+    int xrCrouchSprintPerk = g_liveControls.xrCrouchSprintPerk;
     int xrPhysicalBodyRotation = g_liveControls.xrPhysicalBodyRotation;
 
     FILE* file = _fsopen(g_liveControlPath, "r", _SH_DENYNO);
@@ -706,6 +713,11 @@ static void PollLiveControls() {
             xrSnapTurnYawIndex = intValue;
             continue;
         }
+        if (sscanf_s(line, "xr_crouch_sprint_perk=%d", &intValue) == 1 ||
+            sscanf_s(line, "xr_crouch_sprint_perk = %d", &intValue) == 1) {
+            xrCrouchSprintPerk = intValue;
+            continue;
+        }
         if (sscanf_s(line, "xr_immersive_holsters=%d", &intValue) == 1 ||
             sscanf_s(line, "xr_immersive_holsters = %d", &intValue) == 1) {
             xrImmersiveHolsters = intValue;
@@ -780,6 +792,7 @@ static void PollLiveControls() {
     g_liveControls.xrSnapTurnPulseMs = xrSnapTurnPulseMs > 0 ? xrSnapTurnPulseMs : 30;
     g_liveControls.xrMonoDepthCapture = xrMonoDepthCapture != 0 ? 1 : 0;
     g_liveControls.xrSnapTurnYawIndex = (xrSnapTurnYawIndex >= 0 && xrSnapTurnYawIndex <= 3) ? xrSnapTurnYawIndex : 1;
+    g_liveControls.xrCrouchSprintPerk = xrCrouchSprintPerk != 0 ? 1 : 0;
     g_liveControls.xrImmersiveHolsters = xrImmersiveHolsters != 0 ? 1 : 0;
     OpenXRManager::Get().SetImmersiveHolsters(g_liveControls.xrImmersiveHolsters);
     SetHmdTrackingSmooth(xrHmdSmooth);
@@ -842,6 +855,7 @@ static LiveControlsUiState MakeLiveControlsUiState() {
     state.xrMonoDepthCapture = g_liveControls.xrMonoDepthCapture;
     state.xrSnapTurnPulseMs = g_liveControls.xrSnapTurnPulseMs;
     state.xrImmersiveHolsters = g_liveControls.xrImmersiveHolsters;
+    state.xrCrouchSprintPerk = g_liveControls.xrCrouchSprintPerk;
     // HUD placement isn't stored in g_liveControls; pull the last overlay-set
     // values (loaded from hud_layout.ini) into the contiguous xrHud* block.
     EnsureHudLoaded();
@@ -896,6 +910,7 @@ static void PersistLiveControlsUiState(const LiveControlsUiState& state) {
     fprintf(file, "xr_mono_depth_capture=%d\n", state.xrMonoDepthCapture != 0 ? 1 : 0);
     fprintf(file, "xr_snap_turn_pulse_ms=%d\n", state.xrSnapTurnPulseMs > 0 ? state.xrSnapTurnPulseMs : 30);
     fprintf(file, "xr_immersive_holsters=%d\n", state.xrImmersiveHolsters != 0 ? 1 : 0);
+    fprintf(file, "xr_crouch_sprint_perk=%d\n", state.xrCrouchSprintPerk != 0 ? 1 : 0);
     fclose(file);
 
     WIN32_FILE_ATTRIBUTE_DATA fileData;
@@ -958,6 +973,7 @@ extern "C" void SetLiveControlsUiState(const LiveControlsUiState* state, int per
     g_liveControls.xrMonoXQueueWait = state->xrMonoXQueueWait != 0 ? 1 : 0;
     g_liveControls.xrMonoDepthCapture = state->xrMonoDepthCapture != 0 ? 1 : 0;
     g_liveControls.xrSnapTurnPulseMs = state->xrSnapTurnPulseMs > 0 ? state->xrSnapTurnPulseMs : 30;
+    g_liveControls.xrCrouchSprintPerk = state->xrCrouchSprintPerk != 0 ? 1 : 0;
     g_liveControls.xrImmersiveHolsters = state->xrImmersiveHolsters != 0 ? 1 : 0;
     OpenXRManager::Get().SetImmersiveHolsters(g_liveControls.xrImmersiveHolsters);
     WriteVrikSettingsFile(); // publish mouse-Y flag for the CET VRIK mod
@@ -1364,13 +1380,70 @@ extern "C" int GetSnapTurnYawIndex() {
 }
 
 
+// Relaunching after a crash used to destroy the evidence for that crash: the log opens "w" and
+// truncates. On 2026-08-10 a GPU hang was followed by a restart that overwrote its log, and the
+// bugcheck a minute later took the replacement with it. Archive the outgoing log under the time
+// it last wrote -- the moment the previous session died -- before truncating the stable name.
+static void ArchivePreviousLog(const char* dir, const char* logPath) {
+    WIN32_FILE_ATTRIBUTE_DATA info{};
+    if (!GetFileAttributesExA(logPath, GetFileExInfoStandard, &info)) return;
+    if (info.nFileSizeHigh == 0 && info.nFileSizeLow == 0) return;
+
+    SYSTEMTIME utc{};
+    SYSTEMTIME when{};
+    if (!FileTimeToSystemTime(&info.ftLastWriteTime, &utc)) return;
+    if (!SystemTimeToTzSpecificLocalTime(nullptr, &utc, &when)) when = utc;
+
+    char archived[MAX_PATH];
+    sprintf_s(archived, "%scyberpunkvrport-%04u%02u%02u-%02u%02u%02u.log",
+              dir, when.wYear, when.wMonth, when.wDay, when.wHour, when.wMinute, when.wSecond);
+    // A collision means this exact file was already archived, so replacing is correct.
+    MoveFileExA(logPath, archived, MOVEFILE_REPLACE_EXISTING);
+}
+
+// Crash work produces a lot of sessions; keep the game's bin\x64 bounded.
+static void PruneArchivedLogs(const char* dir, unsigned keep) {
+    char pattern[MAX_PATH];
+    sprintf_s(pattern, "%scyberpunkvrport-*.log", dir);
+
+    for (;;) {
+        WIN32_FIND_DATAA fd{};
+        HANDLE find = FindFirstFileA(pattern, &fd);
+        if (find == INVALID_HANDLE_VALUE) return;
+
+        unsigned count = 0;
+        char oldestName[MAX_PATH] = {};
+        FILETIME oldestTime{};
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            ++count;
+            if (oldestName[0] == 0 || CompareFileTime(&fd.ftLastWriteTime, &oldestTime) < 0) {
+                oldestTime = fd.ftLastWriteTime;
+                strcpy_s(oldestName, fd.cFileName);
+            }
+        } while (FindNextFileA(find, &fd));
+        FindClose(find);
+
+        if (count <= keep || oldestName[0] == 0) return;
+
+        char victim[MAX_PATH];
+        sprintf_s(victim, "%s%s", dir, oldestName);
+        if (!DeleteFileA(victim)) return;  // stop rather than spin on an undeletable file
+    }
+}
+
 void Log(const char* fmt, ...) {
     if (!g_logFile) {
-        char logPath[MAX_PATH];
-        GetModuleFileNameA(nullptr, logPath, MAX_PATH);
-        char* lastSlash = strrchr(logPath, '\\');
+        char dir[MAX_PATH];
+        GetModuleFileNameA(nullptr, dir, MAX_PATH);
+        char* lastSlash = strrchr(dir, '\\');
         if (lastSlash) *(lastSlash + 1) = 0;
-        strcat_s(logPath, "cyberpunkvrport.log");
+
+        char logPath[MAX_PATH];
+        sprintf_s(logPath, "%scyberpunkvrport.log", dir);
+        ArchivePreviousLog(dir, logPath);
+        PruneArchivedLogs(dir, 15);
+
         g_logFile = _fsopen(logPath, "w", _SH_DENYNO);
     }
     if (!g_logFile) return;
@@ -6836,7 +6909,28 @@ static DWORD WINAPI HookedXInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState
     // so the game enters its NATIVE melee-attack state (full native damage/combo/numbers/markers), then
     // count it down. Otherwise merge the physical trigger into RT normally (guns shooting / held attack).
     float meleeImpulse = OpenXRManager::Get().GetSharedSlot(29);
-    if (meleeImpulse > 0.5f) {
+    // HAPTIC QUEUE from the CET mods (slots [157..160]). An earlier attempt hooked shared[29]
+    // instead, on the strength of a comment calling it a per-swing melee impulse -- but nothing
+    // calls SetVRMeleeFire, so [29] is never raised and the pulse never fired. The signal now
+    // comes from the mod that actually detects the swing.
+    //
+    // Edge-triggered on the sequence, which the native publishes after the payload.
+    {
+        const float hapticSeq = OpenXRManager::Get().GetSharedSlot(157);
+        static float s_lastHapticSeq = -1.0f;
+        if (s_lastHapticSeq < 0.0f) {
+            s_lastHapticSeq = hapticSeq;   // adopt on first poll; do not fire for pre-existing state
+        } else if (hapticSeq != s_lastHapticSeq) {
+            s_lastHapticSeq = hapticSeq;
+            const bool  rightHand = OpenXRManager::Get().GetSharedSlot(158) > 0.5f;
+            const float amp       = OpenXRManager::Get().GetSharedSlot(159);
+            const float durMs     = OpenXRManager::Get().GetSharedSlot(160);
+            OpenXRManager::Get().RequestHandHaptic(rightHand, amp, durMs / 1000.0f);
+        }
+    }
+
+    const bool meleeImpulseActive = (meleeImpulse > 0.5f);
+    if (meleeImpulseActive) {
         pState->Gamepad.bRightTrigger = 255;
         OpenXRManager::Get().SetSharedSlot(29, meleeImpulse - 1.0f);
     } else {
@@ -6856,7 +6950,17 @@ static DWORD WINAPI HookedXInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState
     // -- no more clicking the stick. Level-triggered (held while past the threshold)
     // mirrors physically holding L3: correct for hold-to-sprint, and toggle-sprint
     // auto-cancels on slow-down so it stays in sync as well.
-    const bool wantSprint = (ly > 0.90f);
+    // Full tilt means "as fast as this stance allows", never "break the stance". Asserting L3
+    // while crouched stands the player up unless they own the crouch-sprint perk, so a crouched
+    // player gets full analog deflection and no L3 -- the fastest crouch movement the game has --
+    // while an upright player still sprints. With the perk, the toggle below re-enables L3 so the
+    // game can resolve it as a crouch-sprint.
+    //
+    // The perk itself is not queried: naming a TweakDB record that silently returns false would
+    // look identical to a bug. The safe default is the stance-preserving one.
+    const bool crouched = OpenXRManager::Get().GetSharedSlot(161) > 0.5f;
+    const bool sprintAllowed = !crouched || (g_liveControls.xrCrouchSprintPerk != 0);
+    const bool wantSprint = (ly > 0.90f) && sprintAllowed;
     // Published for the snap-event machinery: DURING SPRINT the game RATE-LIMITS heading
     // changes (sprint turns arc over several frames instead of jumping), so the instant
     // packet pre-rotation must be suppressed there (OnFootDeltaHeadCallback).

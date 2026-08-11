@@ -644,6 +644,32 @@ DWORD OpenXRManager::FrameThreadMain() {
                     Log("OpenXRManager[Hands]: syncRes=%d sessionState=%d\n", syncRes, (int)m_sessionState);
                 }
 
+                // Deliver any queued vibration. Requested from the XInput merge on the game's
+                // input thread; applied here where the action set has just been synced.
+                if (m_hapticPending.exchange(false, std::memory_order_acquire) &&
+                    m_hapticAction != XR_NULL_HANDLE && XR_SUCCEEDED(syncRes)) {
+                    XrHapticVibration vib{XR_TYPE_HAPTIC_VIBRATION};
+                    vib.amplitude = m_hapticAmp.load(std::memory_order_relaxed);
+                    vib.duration  = static_cast<XrDuration>(
+                        m_hapticSec.load(std::memory_order_relaxed) * 1e9);
+                    vib.frequency = XR_FREQUENCY_UNSPECIFIED;
+
+                    XrHapticActionInfo hi{XR_TYPE_HAPTIC_ACTION_INFO};
+                    hi.action = m_hapticAction;
+                    hi.subactionPath = m_hapticRight.load(std::memory_order_relaxed)
+                        ? m_handPaths[1] : m_handPaths[0];
+
+                    const XrResult hr = xrApplyHapticFeedback(
+                        m_session, &hi, reinterpret_cast<const XrHapticBaseHeader*>(&vib));
+                    static int s_hapticLogged = 0;
+                    if (s_hapticLogged < 3) {
+                        ++s_hapticLogged;
+                        Log("OpenXRManager[Haptic]: apply hand=%s amp=%.2f dur=%.0f ms -> %d\n",
+                            m_hapticRight.load(std::memory_order_relaxed) ? "right" : "left",
+                            vib.amplitude, vib.duration / 1e6, hr);
+                    }
+                }
+
                 // Build a fresh controller snapshot for the XInput merge. Only used
                 // when the gameplay-input kill switch is on; otherwise we stay byte-
                 // for-byte identical to the pre-Controls-tab behaviour.

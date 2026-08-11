@@ -4,6 +4,7 @@
 #include "logger.h"
 #include "vrcam_config.h"   // vrcam.json access + CName hashing, shared with the launcher
 #include "../render/color_blit.h"   // HUD debug overlay on the mirror image
+#include "../overlay/imgui_overlay.h"   // OverlayArmLoadGuard on VRCAM component churn
 
 #include <windows.h>
 #include <d3d12.h>
@@ -3591,6 +3592,13 @@ static HRESULT STDMETHODCALLTYPE Hook_CreateGraphicsPipelineState(
         if (SUCCEEDED(hr2)) {
             ++CyberpunkVR_DebugSightSwaps;
             log("[pso] sight PS substituted (graphics desc) pso=%p", out ? *out : nullptr);
+            // Pipeline-state creation is heavyweight D3D12 work and arrives in tight
+            // bursts. On 2026-08-11 a burst landed immediately before the seventh
+            // DEVICE_HUNG, while an earlier burst in the same session sat inside a
+            // guard window and passed. Measured 2-5 bursts per session, so arming
+            // here coalesces into a couple of extra windows rather than pinning the
+            // drain on. See build/investigations/2026-08-10-device-hung-overlay-pacing.md.
+            OverlayArmLoadGuard("sight PSO substitution");
             if (out && *out) pso_ids_record(*out, desc->PS, desc->VS);  // keep the ORIGINAL id
             ++CyberpunkVR_DebugPsoGfx;
             return hr2;
@@ -3712,6 +3720,13 @@ static HRESULT STDMETHODCALLTYPE Hook_CreatePipelineState(
                     ++CyberpunkVR_DebugSightSwaps;
                     ++CyberpunkVR_DebugPsoStream;
                     log("[pso] sight PS substituted (stream desc) pso=%p", out ? *out : nullptr);
+                    // Pipeline-state creation is heavyweight D3D12 work and arrives in tight
+                    // bursts. On 2026-08-11 a burst landed immediately before the seventh
+                    // DEVICE_HUNG, while an earlier burst in the same session sat inside a
+                    // guard window and passed. Measured 2-5 bursts per session, so arming
+                    // here coalesces into a couple of extra windows rather than pinning the
+                    // drain on. See build/investigations/2026-08-10-device-hung-overlay-pacing.md.
+                    OverlayArmLoadGuard("sight PSO substitution");
                     return hr2;
                 }
                 log("[pso] sight PS substitution REFUSED hr=0x%08X (stream) -- original kept",
@@ -3984,6 +3999,12 @@ static __int64 __fastcall Detour_RTTViewCreate(__int64 a1, __int64 a2) {
                     CyberpunkVR_DebugVrcamBaseFov = g_vrcam_base_fov;
                     log("[rtt] re-bound vrcam component %p -> %p (%ux%u)",
                         reinterpret_cast<void*>(cached), reinterpret_cast<void*>(a1), w, h);
+                    // A destroyed-and-recreated component means the game is churning render
+                    // resources, which is the window both recorded failure modes landed in.
+                    // The VRIK save-load signal misses menu-initiated loads entirely; this
+                    // fires on the churn itself, whatever started it. See
+                    // build/investigations/2026-08-10-device-hung-overlay-pacing.md.
+                    OverlayArmLoadGuard("vrcam component re-bind");
                 } else if (!cached) {
                     if (!dims_match) {
                         if ((CyberpunkVR_DebugRttCompRejects++ % 600) == 0)

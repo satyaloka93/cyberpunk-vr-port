@@ -7,6 +7,20 @@ tags: [performance, dxgi, d3d12, frame-pacing, overlay, openxr, steamvr]
 timestamp: 2026-08-10T09:08:00+09:00
 ---
 
+# Superseded by the load-transition guard
+
+Mode 2 as described here is **not safe on its own**. It was later found to produce
+`DXGI_ERROR_DEVICE_HUNG` eight times, always at a resource-churn transition, and an A/B
+against the pre-pacing drain on matched fresh boots confirmed the drain removal as the
+variable. The shipping configuration is Mode 2 pacing plus a bounded drain inside those
+windows — see [overlay load-transition guard](overlay-load-transition-guard.md).
+
+Everything below remains accurate about *why* the drain was removed and what the per-resource
+fences protect. The claim in **Validation evidence** that the successful run showed "no
+previous-overlay timeout, allocator fence failure, DRED fault, device removal, or new crash
+report" was true of that run and false of the configuration in general; a single clean session
+did not establish safety. The DXGI latency-2 experiment remains rejected.
+
 # Outcome
 
 The validated implementation is **Mode 2 / middle ground**:

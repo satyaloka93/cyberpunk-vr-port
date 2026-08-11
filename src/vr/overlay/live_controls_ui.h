@@ -111,6 +111,7 @@ struct LiveControlsUiState {
     // ignoring visual holsters: over-shoulder = EquipmentSlot1, right hip = Slot2,
     // left hip = Slot3. Read by the CET Holster mod via GetVRSharedSlot(23).
     int xrImmersiveHolsters;
+    int xrCrouchSprintPerk;   // 1 = own the crouch-sprint perk, so full tilt may assert L3 while crouched
     // Physical body rotation. 1 = the avatar body follows the HMD/aim heading
     // (continuous body-yaw tracking on foot; aiming / holding a weapon switches the
     // camera to full head-look + head-relative movement). 0 (default) = classic

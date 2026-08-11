@@ -120,6 +120,50 @@ bool g_overlaySubmissionDisabled = false;
 // this shared command list/backend; make that ownership explicit when the drain is removed.
 std::mutex g_overlayMutex;
 
+// [BBIDX-DIAG] Falsification test for the DEVICE_HUNG hypothesis in
+// build/investigations/2026-08-10-device-hung-overlay-pacing.md.
+//
+// g_overlayMutex serializes overlay *recording*, but HookedPresent calls the real Present after
+// OverlayRender returns and the lock is released -- with an OpenXR capture and an inline XR frame
+// pump in between. If two Present workers pass through that gap, both read the same
+// GetCurrentBackBufferIndex() and both record PRESENT<->RENDER_TARGET transitions for the same
+// backbuffer, with a real Present landing between them. The recorded barriers then no longer
+// describe the resource's actual state, which is what 0x887a0006 reports and where the game's
+// breadcrumbs stall (FinalFlushBarriers).
+//
+// This measures that directly and costs nothing when the race does not occur. If the counter stays
+// at zero across a save-load loop, the hypothesis is wrong and the barrier race is ruled out.
+// Overlay pacing arm. See build/investigations/2026-08-10-device-hung-overlay-pacing.md.
+//
+//   0 = Mode 0. Drain the queue after every overlay submission, as the build before
+//       2026-08-09 19:21 did. No GPU hang was ever recorded on it, but it costs roughly a
+//       third of the frame rate (43.8 fps median against 62-67 for Mode 2).
+//   2 = Mode 2. The shipped previous-overlay fence. Fast, but produced seven
+//       DXGI_ERROR_DEVICE_HUNG faults, every one at a save-load transition.
+//   3 = Mode 2 plus a load-transition guard: Mode 2 pacing in steady state, Mode 0's full
+//       drain for a bounded window after a save load. Loads are rare and already slow, so
+//       this keeps Mode 2's throughput while draining the one window in which every
+//       recorded hang occurred.
+//
+// Reported in the [OVERLAY-PACING] startup line and in every [PERF] line, so no log can be
+// misattributed to the wrong arm.
+constexpr int kOverlayPacingMode = 3;
+
+// How long to keep draining after a load transition. The observed hangs landed within a few
+// log lines of the recenter signal, but resource churn continues past it, so this is
+// deliberately generous -- it is spent on a loading screen either way.
+constexpr ULONGLONG kLoadGuardMs = 5000;
+std::atomic<ULONGLONG> g_loadGuardUntilMs{0};
+std::atomic<bool> g_loadGuardEngaged{false};
+
+constexpr UINT kNoBackBufferIndex = 0xFFFFFFFFu;
+std::atomic<uint64_t> g_presentsCompleted{0};
+std::atomic<uint64_t> g_overlayBackBufferReuse{0};
+// Written only under g_overlayMutex.
+UINT g_lastOverlayBackBufferIndex = kNoBackBufferIndex;
+uint64_t g_presentsAtLastOverlay = 0;
+DWORD g_lastOverlayThreadId = 0;
+
 HWND g_hwnd = nullptr;
 WNDPROC g_originalWndProc = nullptr;
 bool g_imguiInitialized = false;
@@ -185,11 +229,12 @@ void DrawPerformanceOverlay() {
         if (++g_perfMetrics.windowsSinceLog >= 10) {
             g_perfMetrics.windowsSinceLog = 0;
             Log("[PERF] present=%.1f fps (%.2f ms) xr=%.1f Hz vrcam=%.1f fps "
-                "overlayPacing=%d previousOverlayWait=%.2f ms overlaySlotWait=%.2f ms\n",
+                "mode=%s overlayPacing=%d previousOverlayWait=%.2f ms overlaySlotWait=%.2f ms\n",
                 g_perfMetrics.presentFps,
                 g_perfMetrics.presentFps > 0.01f ? 1000.0f / g_perfMetrics.presentFps : 0.0f,
                 g_perfMetrics.xrHz,
                 g_perfMetrics.vrcamFps,
+                OverlayPacingModeName(),
                 g_middleGroundPacingActive.load(std::memory_order_relaxed) ? 1 : 0,
                 g_previousOverlayWaitMs.load(std::memory_order_relaxed),
                 g_overlaySlotWaitMs.load(std::memory_order_relaxed));
@@ -1583,6 +1628,13 @@ bool DrawLiveControls(LiveControlsUiState& state) {
             ImGui::Separator();
             ImGui::TextUnformatted("Weapon holsters (reach + right grip)");
             changed |= CheckboxInt("Immersive holsters", &state.xrImmersiveHolsters);
+            changed |= CheckboxInt("Crouch-sprint perk owned", &state.xrCrouchSprintPerk);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Full stick tilt means 'as fast as this stance allows'.\n"
+                                  "Crouched, this withholds the sprint click so you creep at\n"
+                                  "full speed instead of standing up. Tick it once you own the\n"
+                                  "crouch-sprint perk and full tilt will crouch-sprint instead.");
+            }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip(
                     "ON  - equip is chosen by the VISUAL holster you reach for:\n"
@@ -1753,6 +1805,24 @@ bool WaitForPreviousOverlaySubmission() {
                                            &g_previousOverlayWaitMs);
     g_middleGroundPacingActive.store(ready, std::memory_order_relaxed);
     return ready;
+}
+
+// Whether this overlay submission must be followed by a full queue drain: always in Mode 0,
+// and in Mode 3 only while the load-transition guard is open. Logs the two edges rather than
+// once per frame.
+bool ShouldDrainThisFrame() {
+    if constexpr (kOverlayPacingMode == 0) {
+        return true;
+    } else if constexpr (kOverlayPacingMode == 3) {
+        const bool active = GetTickCount64() < g_loadGuardUntilMs.load(std::memory_order_relaxed);
+        if (active != g_loadGuardEngaged.exchange(active, std::memory_order_relaxed)) {
+            Log("Overlay load guard %s.\n",
+                active ? "engaged -- full drain" : "released -- back to previous-overlay pacing");
+        }
+        return active;
+    } else {
+        return false;
+    }
 }
 
 bool WaitForFrameSlot(const FrameContext& frame) {
@@ -2063,6 +2133,24 @@ void OverlayRender(IDXGISwapChain* swapChain) {
     if (!frame.renderTarget || !frame.allocator || !g_cmdList) return;
     if (!WaitForFrameSlot(frame)) return;
 
+    // [BBIDX-DIAG] Same backbuffer as the last overlay submission, with no Present completed in
+    // between, means a second Present worker reached here while the first was still between
+    // OverlayRender and its real Present. Both submissions transition the same backbuffer.
+    const uint64_t presentsNow = g_presentsCompleted.load(std::memory_order_acquire);
+    if (frameIndex == g_lastOverlayBackBufferIndex && presentsNow == g_presentsAtLastOverlay) {
+        const uint64_t count = g_overlayBackBufferReuse.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (count == 1 || (count % 60) == 0) {
+            Log("[BBIDX-DIAG] Overlay recorded backbuffer %u twice with no Present between "
+                "(previousTid=%lu thisTid=%lu presents=%llu count=%llu). Concurrent Present "
+                "workers are invalidating the overlay's PRESENT<->RENDER_TARGET barriers.\n",
+                frameIndex,
+                static_cast<unsigned long>(g_lastOverlayThreadId),
+                static_cast<unsigned long>(GetCurrentThreadId()),
+                static_cast<unsigned long long>(presentsNow),
+                static_cast<unsigned long long>(count));
+        }
+    }
+
     if (FAILED(frame.allocator->Reset()) || FAILED(g_cmdList->Reset(frame.allocator, nullptr))) {
         g_overlaySubmissionDisabled = true;
         Log("Overlay command allocator/list reset failed; overlay disabled.\n");
@@ -2164,6 +2252,25 @@ void OverlayRender(IDXGISwapChain* swapChain) {
         if (!g_imguiFrameFenceValues.empty()) g_imguiFrameFenceValues[imguiSlot] = submissionFence;
         g_previousOverlayFenceValue = submissionFence;
         g_middleGroundPacingActive.store(true, std::memory_order_relaxed);
+        // [BBIDX-DIAG] Publish what this submission targeted so the next one can spot a reuse.
+        g_lastOverlayBackBufferIndex = frameIndex;
+        g_presentsAtLastOverlay = presentsNow;
+        g_lastOverlayThreadId = GetCurrentThreadId();
+
+        // Mode 0 drains every frame; Mode 3 only inside the load-transition window. Block
+        // until this submission -- and so all earlier shared-queue work -- has completed. A
+        // queue signal completes only after everything ahead of it, so this waits out
+        // Cyberpunk's frame too. That breadth is the point, and it is why Mode 0 costs the
+        // throughput Mode 2 was built to recover. Bounded rather than the original INFINITE so
+        // a genuinely dead GPU cannot wedge a Present worker permanently; in a healthy frame
+        // the two are equivalent.
+        if (ShouldDrainThisFrame()) {
+            if (!WaitForOverlayFence(submissionFence, 1000, "overlay full drain",
+                                     &g_previousOverlayWaitMs)) {
+                Log("Overlay full drain did not complete within 1000 ms (target=%llu).\n",
+                    static_cast<unsigned long long>(submissionFence));
+            }
+        }
     } else {
         g_overlaySubmissionDisabled = true;
         Log("Overlay submission fence signal failed (hr=0x%08X); overlay disabled.\n",
@@ -2171,9 +2278,41 @@ void OverlayRender(IDXGISwapChain* swapChain) {
     }
 }
 
+const char* OverlayPacingModeName() {
+    switch (kOverlayPacingMode) {
+        case 0:  return "mode0-full-drain";
+        case 3:  return "previous-overlay-fence+load-guard";
+        default: return "previous-overlay-fence";
+    }
+}
+
+void OverlayArmLoadGuard(const char* reason) {
+    // Every recorded DEVICE_HUNG landed at a save-load transition, so open a bounded
+    // window in which the overlay reverts to Mode 0's full drain. Cheap: loads are rare
+    // and the frames it slows are loading-screen frames.
+    g_loadGuardUntilMs.store(GetTickCount64() + kLoadGuardMs, std::memory_order_relaxed);
+    if constexpr (kOverlayPacingMode == 3) {
+        Log("Overlay load guard armed for %llu ms (%s).\n",
+            static_cast<unsigned long long>(kLoadGuardMs), reason ? reason : "unspecified");
+    }
+}
+
+void OverlayNotifyPresentCompleted() {
+    // Deliberately lock-free: this runs on every Present worker, outside g_overlayMutex, and must
+    // not add contention to the path being measured.
+    g_presentsCompleted.fetch_add(1, std::memory_order_release);
+}
+
 void OverlayInvalidateSwapchainResources() {
+    // Backbuffers are being torn down, so the same churn window applies once the overlay
+    // rebuilds. ReleaseRenderTargets drains one time; this keeps the guard closed over the
+    // frames that follow.
+    OverlayArmLoadGuard("swapchain invalidate");
     std::lock_guard<std::mutex> lock(g_overlayMutex);
     ReleaseRenderTargets();
+    // [BBIDX-DIAG] Backbuffers are gone; a reuse comparison across the rebuild is meaningless.
+    g_lastOverlayBackBufferIndex = kNoBackBufferIndex;
+    g_lastOverlayThreadId = 0;
 }
 
 bool OverlayIsVisible() {

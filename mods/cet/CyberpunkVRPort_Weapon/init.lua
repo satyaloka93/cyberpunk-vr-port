@@ -62,6 +62,17 @@ local MELEE_BOX = 0.22         -- blade hit radius (m) — tight to NPC body sil
 -- speed alternates spike/zero and any "N consecutive frames" gate can never latch. The window
 -- integrates across that. Teleports (snap turn rotates the whole rig -> rel jumps once) are cut
 -- by the single-frame discontinuity check, which resets the window instead of whooshing.
+-- Motion haptics. Fired straight at the OpenXR runtime through SetVRHapticPulse, on the weapon
+-- hand only -- the bridge's audio layer buzzes both grips and cannot hear the whoosh at all.
+local HAPTIC_HAND        = 1     -- 1 = right (weapon hand), 0 = left
+local HAPTIC_SWING_MIN   = 0.45  -- amplitude at the swing threshold
+local HAPTIC_SWING_MAX   = 0.85  -- amplitude at ~3 m/s over the threshold
+local HAPTIC_SWING_MS    = 45
+local HAPTIC_HIT_AMP     = 1.00  -- contact must read as clearly stronger than the whoosh
+local HAPTIC_HIT_MS      = 90
+local HAPTIC_HIT_MIN_GAP = 0.12  -- s; the hit branch is per-frame, not edge-detected
+local hapticHitLast      = -1.0
+
 local WHOOSH_SWING_SPEED = 3.0  -- m/s over the window: a REAL swing (hit gate 2.5 is contact-gated)
 local WHOOSH_REARM_SPEED = 1.0  -- m/s: below this the swing is over -> re-arm
 local WHOOSH_FAST_SPEED  = 4.2  -- m/s: at/above this play the fast whoosh variant
@@ -223,7 +234,49 @@ registerForEvent('onInit', function()
     logf("weapon-aim init")
 end)
 
+-- Publish crouch state so the XInput merge can decide whether full stick tilt may assert L3.
+-- Sprinting while crouched stands the player up unless they own the crouch-sprint perk, so the
+-- merge withholds the sprint click while crouched and lets full deflection give the fastest
+-- movement the stance allows. Only pushed on change -- this is a per-frame callback.
+local crouchLast   = -1
+local crouchDiagged = false
+local crouchSeen   = {}
+local function publishCrouch()
+    local st, err = -1, nil
+    local ok = pcall(function()
+        -- PlayerStateMachine is a LOCAL INSTANCED blackboard keyed on the player entity, not a
+        -- global one. The first attempt used GetBlackboardSystem():Get(), which returns nil for
+        -- it, so every read failed and the crouch gate never engaged -- and the diagnostic
+        -- returned before logging, which hid it.
+        local d  = Game.GetAllBlackboardDefs()
+        local pl = Game.GetPlayer()
+        local bb = Game.GetBlackboardSystem():GetLocalInstanced(pl:GetEntityID(), d.PlayerStateMachine)
+        st = bb:GetInt(d.PlayerStateMachine.Locomotion)
+    end)
+    if not ok or st == nil or st < 0 then
+        if not crouchDiagged then
+            crouchDiagged = true
+            logf('crouch: locomotion blackboard unreadable (ok=%s st=%s) -- crouch gate inactive',
+                 tostring(ok), tostring(st))
+        end
+        return
+    end
+    -- Log each DISTINCT state once. The crouch constant is asserted, not verified: stand, crouch
+    -- and crouch-sprint in turn and the values identify themselves.
+    if not crouchSeen[st] then
+        crouchSeen[st] = true
+        logf('crouch: locomotion state %d observed', st)
+    end
+    -- gamePSMLocomotionStates on 2.x: 1 = crouch, 4 = crouchSprint.
+    local crouched = (st == 1 or st == 4) and 1 or 0
+    if crouched ~= crouchLast then
+        crouchLast = crouched
+        pcall(function() SetVRCrouched(crouched) end)
+    end
+end
+
 registerForEvent('onUpdate', function(dt)
+    publishCrouch()
     -- install the GetOrientation VMT instrument + override hooks once, after RTTI is ready
     if not installed then
         installTimer = installTimer + (dt or 0.016)
@@ -397,11 +450,28 @@ registerForEvent('onUpdate', function(dt)
             local strongW = false
             if type(GetVRMeleeTrigger) == 'function' then strongW = (GetVRMeleeTrigger() == 1) end
             pcall(function() pl:VRMeleeWhoosh(wpn, wSpeed >= WHOOSH_FAST_SPEED, strongW) end)
+            -- SWING HAPTIC. The bridge's audio-derived grip PCM cannot reproduce this: the whoosh
+            -- sits outside its 28-320 Hz tactile band and was absent even at gain 2.5, and it
+            -- buzzes both grips because it has no notion of which hand swung. This routes a
+            -- weapon-hand pulse straight to the runtime instead, scaled by swing speed.
+            pcall(function()
+                local a = HAPTIC_SWING_MIN
+                    + (HAPTIC_SWING_MAX - HAPTIC_SWING_MIN)
+                    * math.min(1.0, math.max(0.0, (wSpeed - WHOOSH_SWING_SPEED) / 3.0))
+                SetVRHapticPulse(HAPTIC_HAND, a, HAPTIC_SWING_MS)
+            end)
         end
         if speed >= MELEE_SWING_SPEED then
             local strong = false
             if type(GetVRMeleeTrigger) == 'function' then strong = (GetVRMeleeTrigger() == 1) end
             pcall(function() pl:VRMeleeBladeHit(wpn, wp, fwd, MELEE_BOX, strong) end)
+            -- IMPACT HAPTIC: harder and longer than the swing so contact is distinguishable from
+            -- the whoosh. Rate-limited because this branch runs per frame while the stick is past
+            -- the speed gate, unlike the whoosh which is edge-detected.
+            if (guardClock - hapticHitLast) >= HAPTIC_HIT_MIN_GAP then
+                hapticHitLast = guardClock
+                pcall(function() SetVRHapticPulse(HAPTIC_HAND, HAPTIC_HIT_AMP, HAPTIC_HIT_MS) end)
+            end
         end
     end)
 end)

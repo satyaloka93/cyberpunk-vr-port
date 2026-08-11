@@ -33,8 +33,15 @@ package.json
 !scripts/revert_stereo.ps1
 !scripts/sync_assets.ps1
 !scripts/build_dist.ps1
+# Wabbajack authoring/validation helpers are shipped with the modlist definition.
+!wabbajack/*.ps1
 # and the OKF link checker, which keeps bundle links navigable on GitHub.
 !scripts/check_okf_links.py
+# the environment report collector, which is how two testers on different headsets, GPUs and
+# runtimes produce comparable spec sheets. docs/ENVIRONMENT-REPORT.md documents its output.
+!scripts/Collect-VRPortReport.ps1
+# and the minidump reader, which turns a GPU-crash .dmp into per-thread state without WinDbg.
+!scripts/analyze_crash_dump.py
 # and the asset generator, which authors the VRCAM components the launcher offers.
 !tools/gen_vrcam_assets.py
 # and the crash-dump reader, which is how a tester's .dmp gets turned into a stack.

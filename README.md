@@ -120,6 +120,16 @@ cmake --build build --config Release --target cyberpunkvrport_stereo
 pwsh scripts\deploy_stereo.ps1 -GameRoot "<game root>"
 ```
 
+### Experimental Wabbajack automation
+
+The [`wabbajack/`](wabbajack/) definition builds a portable Mod Organizer 2
+profile from 11 pinned direct sources and four pinned Nexus files. The complete
+list compiled, downloaded from an empty cache, installed with zero verification
+errors, and opened as a recognized Cyberpunk profile under Wabbajack 4.2.1.4.
+The current artifact remains a validation build until a real MO2-launched VR
+regression test and GUI metadata build are complete; see
+[`wabbajack/README.md`](wabbajack/README.md).
+
 ## Controls
 
 For PS VR2 installation, SteamVR binding steps, the complete Sense control map,

@@ -54,6 +54,10 @@ std::mutex g_overlayPacingDiagMutex;
 std::unordered_set<IDXGISwapChain*> g_overlayPacingDiagnosedSwapchains;
 std::atomic<DWORD> g_presentThreadIds[16]{};
 
+// [BBIDX-DIAG] Concurrency inside the overlay-record -> real-Present gap. See HookedPresent.
+std::atomic<int> g_presentGapInFlight{0};
+std::atomic<int> g_presentGapMax{0};
+
 void LogOverlayPacingSwapchainOnce(IDXGISwapChain* swapChain, const char* source) {
     if (!swapChain) return;
     {
@@ -73,7 +77,7 @@ void LogOverlayPacingSwapchainOnce(IDXGISwapChain* swapChain, const char* source
     Log("[OVERLAY-PACING] source=%s sc=%p tid=%lu descHr=0x%08X "
         "size=%ux%u buffers=%u format=%u swapEffect=%u flags=0x%08X "
         "waitableFlag=%d qiSwapChain2=0x%08X getMaxLatency=0x%08X maxLatency=%u "
-        "injectedDxgiWait=0 mode=previous-overlay-fence\n",
+        "injectedDxgiWait=0 mode=%s\n",
         source ? source : "unknown",
         swapChain,
         static_cast<unsigned long>(GetCurrentThreadId()),
@@ -87,7 +91,8 @@ void LogOverlayPacingSwapchainOnce(IDXGISwapChain* swapChain, const char* source
         SUCCEEDED(descHr) && (desc.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) != 0 ? 1 : 0,
         static_cast<unsigned>(qiHr),
         static_cast<unsigned>(latencyHr),
-        maximumLatency);
+        maximumLatency,
+        OverlayPacingModeName());
 }
 
 void LogPresentThreadOnce(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags) {
@@ -1519,6 +1524,23 @@ HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT syncInte
         g_sceneDepthArea.store(0, std::memory_order_relaxed);
     }
 
+    // [BBIDX-DIAG] Measure how many Present workers are inside the overlay-record -> real-Present
+    // gap at once. Mode 0's full drain held this at 1 as a side effect; Mode 2 does not, and the
+    // gap now also contains the OpenXR capture and the inline XR frame pump. See
+    // build/investigations/2026-08-10-device-hung-overlay-pacing.md.
+    const int presentGapDepth = g_presentGapInFlight.fetch_add(1, std::memory_order_acq_rel) + 1;
+    int observedMax = g_presentGapMax.load(std::memory_order_relaxed);
+    while (presentGapDepth > observedMax &&
+           !g_presentGapMax.compare_exchange_weak(observedMax, presentGapDepth,
+                                                  std::memory_order_acq_rel,
+                                                  std::memory_order_relaxed)) {
+    }
+    if (presentGapDepth > observedMax) {
+        Log("[BBIDX-DIAG] Present gap concurrency reached %d (tid=%lu). Depth >1 means another "
+            "worker can record the overlay against a backbuffer this thread has not presented "
+            "yet.\n", presentGapDepth, static_cast<unsigned long>(GetCurrentThreadId()));
+    }
+
     OverlayRender(swapChain);
     OpenXRManager::Get().OnPresent(swapChain);
     // Drive one XR frame inline on the Present thread to avoid the old
@@ -1527,6 +1549,8 @@ HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT syncInte
     void** vtable = *reinterpret_cast<void***>(swapChain);
     PresentFn originalFn = GetOriginalMethod<PresentFn>(vtable, 8);
     const HRESULT hr = originalFn ? originalFn(swapChain, syncInterval, flags) : DXGI_ERROR_INVALID_CALL;
+    OverlayNotifyPresentCompleted();
+    g_presentGapInFlight.fetch_sub(1, std::memory_order_acq_rel);
     if (FAILED(hr)) {
         Log("[DRED] Present failure observed. hr=0x%08X removed=%d swapChain=%p\n",
             static_cast<unsigned>(hr),

@@ -620,6 +620,21 @@ bool OpenXRManager::Init() {
             // left Menu/Create and right System/Options into this action; separate actions
             // generated correct-looking JSON but neither delivered a runtime state.
             makeAction(m_menuButtonAction,           XR_ACTION_TYPE_BOOLEAN_INPUT, "systembutton",           "Sense Create / Options",     false);
+            // DISABLED 2026-08-11. Creating this action cost the user most of their gun
+            // haptics: the PSVR2Toolkit bridge drives the Sense actuators through Toolkit
+            // CAPI, and an OpenXR vibration output action on the same controllers competes
+            // for them. Recoil, automatic-fire rhythms and machine-gun feedback went quiet,
+            // and a tech sniper shot arrived in the wrong hand. The OKF runbook already says
+            // only the bridge may own the controller-effect path; this broke that boundary.
+            //
+            // The pulses themselves worked -- xrApplyHapticFeedback returned 0 and the
+            // runtime accepted them -- so the channel is viable in isolation. It is simply
+            // not shareable with the bridge. Motion haptics need to go through the bridge's
+            // semantic-effect layer instead. Leave this off until that exists.
+            constexpr bool kEnableXrHaptics = false;
+            if (kEnableXrHaptics) {
+                makeAction(m_hapticAction,           XR_ACTION_TYPE_VIBRATION_OUTPUT, "hand_haptic",        "Hand Haptic",                true);
+            }
         }
         Log("OpenXRManager[Input]: gameplay action set %s (xr_input_actions=%d)\n",
             inputActionsEnabled ? "ENABLED" : "DISABLED (pose-only)", (int)inputActionsEnabled);
@@ -635,6 +650,18 @@ bool OpenXRManager::Init() {
                 XrPath p = XR_NULL_PATH;
                 if (XR_SUCCEEDED(xrStringToPath(m_instance, b.path, &p))) {
                     v.push_back({ b.action, p });
+                }
+            }
+            // Haptic output goes on every profile, appended here rather than written into each
+            // list: xrSuggestInteractionProfileBindings REPLACES a profile's whole binding set,
+            // so a second call per profile would silently discard the input bindings above.
+            if (m_hapticAction != XR_NULL_HANDLE) {
+                for (const char* hp : { "/user/hand/left/output/haptic",
+                                        "/user/hand/right/output/haptic" }) {
+                    XrPath p = XR_NULL_PATH;
+                    if (XR_SUCCEEDED(xrStringToPath(m_instance, hp, &p))) {
+                        v.push_back({ m_hapticAction, p });
+                    }
                 }
             }
             XrInteractionProfileSuggestedBinding sb{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
