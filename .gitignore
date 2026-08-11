@@ -37,6 +37,9 @@ package.json
 !wabbajack/*.ps1
 # and the OKF link checker, which keeps bundle links navigable on GitHub.
 !scripts/check_okf_links.py
+# the direct installer, which installs the whole stack into the game folder so the game can be
+# launched from Steam rather than through Mod Organizer's virtual filesystem.
+!scripts/Install-CyberpunkVRPort.ps1
 # the environment report collector, which is how two testers on different headsets, GPUs and
 # runtimes produce comparable spec sheets. docs/ENVIRONMENT-REPORT.md documents its output.
 !scripts/Collect-VRPortReport.ps1
