@@ -3201,6 +3201,12 @@ static void sight_ps_dump(const void*, size_t, const char*);
 extern "C" __declspec(dllexport) uint64_t CyberpunkVR_SightPsHash;
 extern "C" __declspec(dllexport) int32_t  CyberpunkVR_SightPsDump;
 
+// [EI-DIAG] counters, declared here because both the ExecuteIndirect hook and the VRCAM
+// re-bind correlation log read them, and the re-bind site comes first in this file.
+static std::atomic<uint64_t> g_eiNoEntry{0};
+static std::atomic<uint64_t> g_eiFaults{0};
+static std::atomic<uint64_t> g_eiNullArgs{0};
+
 struct CommandListVtableHook {
     void** vtable = nullptr;
     PFN_OMSetRenderTargets original = nullptr;          // slot 46 (hooked)
@@ -4005,6 +4011,14 @@ static __int64 __fastcall Detour_RTTViewCreate(__int64 a1, __int64 a2) {
                     // fires on the churn itself, whatever started it. See
                     // build/investigations/2026-08-10-device-hung-overlay-pacing.md.
                     OverlayArmLoadGuard("vrcam component re-bind");
+                    // [EI-DIAG] Both ExecuteIndirect faults landed within a few lines of this
+                    // point. Record the command-list hook table state here so the log shows
+                    // whether it is churning or saturated when the crash window opens.
+                    log("[EI-DIAG] at re-bind: clHookEntries=%u eiNoEntry=%llu eiFaults=%llu nullArgs=%llu",
+                        g_command_list_vtable_hook_count.load(std::memory_order_acquire),
+                        (unsigned long long)g_eiNoEntry.load(std::memory_order_relaxed),
+                        (unsigned long long)g_eiFaults.load(std::memory_order_relaxed),
+                        (unsigned long long)g_eiNullArgs.load(std::memory_order_relaxed));
                 } else if (!cached) {
                     if (!dims_match) {
                         if ((CyberpunkVR_DebugRttCompRejects++ % 600) == 0)
@@ -12112,12 +12126,86 @@ static void STDMETHODCALLTYPE hk_DrawIndexedInstanced(ID3D12GraphicsCommandList*
     if (CyberpunkVR_DrawCensus) draw_census_note(t_vrcam_node_active);
 }
 
+// [EI-DIAG] Two EXCEPTION_ACCESS_VIOLATIONs reading null+0xF0 inside
+// D3D12Core!CGraphicsCommandList::ExecuteIndirect, both while loading a DIFFERENT save from the
+// menu, both immediately after a VRCAM component re-bind, and the second one with the overlay
+// load guard armed and draining -- so it is not GPU pacing and not the guard's coverage. The
+// symbolised stack puts this hook one frame below the fault.
+//
+// This hook only forwards the game's own arguments, so it may well be a BYSTANDER rather than
+// the cause. That is exactly what these probes decide:
+//
+//   * a missing table entry silently DROPS the draw (the early return below). That is a real
+//     defect independent of the crash, and it has never been counted.
+//   * the fault is caught rather than fatal, and the arguments are logged. A null or freed
+//     signature/argument buffer says the game handed us bad state; valid-looking pointers say
+//     the problem is ours.
+//
+// SEH costs nothing on x64 until something throws, so this is safe to leave always-on: the whole
+// point is to catch a rare crash without losing the session.
+// SEH cannot coexist with C++ object unwinding in one function (C2712), and the census below
+// takes a lock_guard -- so the guarded forward lives here on its own.
+static bool ei_forward_guarded(const CommandListVtableHook* e, ID3D12GraphicsCommandList* self,
+        ID3D12CommandSignature* sig, UINT maxCount, ID3D12Resource* args, UINT64 argOff,
+        ID3D12Resource* cnt, UINT64 cntOff, unsigned* outCode) {
+    __try {
+        e->indirect_original(self, sig, maxCount, args, argOff, cnt, cntOff);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (outCode) *outCode = static_cast<unsigned>(GetExceptionCode());
+        return false;
+    }
+}
+
 static void STDMETHODCALLTYPE hk_ExecuteIndirect(ID3D12GraphicsCommandList* self,
         ID3D12CommandSignature* sig, UINT maxCount, ID3D12Resource* args, UINT64 argOff,
         ID3D12Resource* cnt, UINT64 cntOff) {
     const CommandListVtableHook* e = command_list_hook_entry(self);
-    if (!e || !e->indirect_original) return;
-    e->indirect_original(self, sig, maxCount, args, argOff, cnt, cntOff);
+    if (!e || !e->indirect_original) {
+        // Returning here does not just skip our census -- it never issues the game's draw.
+        const uint64_t n = g_eiNoEntry.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (n == 1 || (n % 1000) == 0) {
+            log("[EI-DIAG] ExecuteIndirect with no hook entry -- DRAW DROPPED "
+                "(list=%p vtable=%p count=%llu)", (void*)self,
+                self ? *reinterpret_cast<void**>(self) : nullptr, (unsigned long long)n);
+        }
+        return;
+    }
+    // A null argument buffer cannot be executed: D3D12 dereferences it at +0xF0 and the process
+    // dies. Measured during a save load -- eight calls on one command list and signature,
+    // maxCount=1, argOff marching 0,20,40..140, args=NULL on every one, and vrcamNode=1 on every
+    // one. So this is the SECOND EYE replaying a frame-graph node whose argument resource has not
+    // been rebuilt yet; the main view never does it.
+    //
+    // Skipping is correct rather than merely defensive: an indirect draw with no argument buffer
+    // has nothing to execute, so the only choices are "skip" or "crash". The plugin does not
+    // supply this pointer -- it forwards the caller's -- so this is a guard, not a fix. Why the
+    // VRCAM replay reaches a node with no arguments during a load is still open.
+    if (!args) {
+        const uint64_t n = g_eiNullArgs.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (n == 1 || (n % 500) == 0) {
+            log("[EI-DIAG] skipped ExecuteIndirect with NULL argument buffer "
+                "(list=%p sig=%p maxCount=%u argOff=%llu vrcamNode=%d count=%llu)",
+                (void*)self, (void*)sig, maxCount, (unsigned long long)argOff,
+                t_vrcam_node_active ? 1 : 0, (unsigned long long)n);
+        }
+        return;
+    }
+
+    unsigned faultCode = 0;
+    if (!ei_forward_guarded(e, self, sig, maxCount, args, argOff, cnt, cntOff, &faultCode)) {
+        const uint64_t n = g_eiFaults.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (n <= 8) {
+            // Pointer values are the evidence: 0 or an unreadable signature means the caller
+            // handed us dead state. All-valid pointers point back at this plugin.
+            log("[EI-DIAG] ExecuteIndirect FAULTED (#%llu) code=0x%08X | list=%p sig=%p "
+                "maxCount=%u args=%p argOff=%llu cnt=%p cntOff=%llu | vrcamNode=%d",
+                (unsigned long long)n, faultCode, (void*)self, (void*)sig,
+                maxCount, (void*)args, (unsigned long long)argOff, (void*)cnt,
+                (unsigned long long)cntOff, t_vrcam_node_active ? 1 : 0);
+        }
+        return;   // survive: a dropped indirect draw beats losing the session
+    }
     if (!CyberpunkVR_IndirectCensus || !g_exe_base) return;
     const uintptr_t base = reinterpret_cast<uintptr_t>(g_exe_base);
     const uintptr_t work = t_current_node_work;
