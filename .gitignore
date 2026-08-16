@@ -92,3 +92,5 @@ mods/cet/**/vrik_recenter.ini
 
 # Stereo-plugin build output
 /build-stereo/
+# Installer download cache -- 40 MB of third-party archives, nothing redistributable
+dist/installer-cache/

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "name": "CyberpunkVR Port - PS VR2",
   "wabbajackVersion": "0.1.1.2",
-  "releaseTag": "0.1.1-psvr2.2",
+  "releaseTag": "0.1.1-psvr2.3.1",
   "targetGameVersion": "2.31",
   "tools": [
     {
@@ -154,11 +154,11 @@
     {
       "id": "cyberpunk-vr-port",
       "priority": 200,
-      "name": "CyberpunkVR Port 0.1.1-psvr2.2",
-      "version": "0.1.1-psvr2.2",
-      "fileName": "CyberpunkVRPort-0.1.1-psvr2.2.zip",
-      "url": "https://github.com/satyaloka93/cyberpunk-vr-port/releases/download/0.1.1-psvr2.2/CyberpunkVRPort-0.1.1-psvr2.2.zip",
-      "sha256": "2c5eef73315e754dd33fde1e31beb23d9a2892bae0d9cff94b10a7a7ac46b820"
+      "name": "CyberpunkVR Port 0.1.1-psvr2.3.1",
+      "version": "0.1.1-psvr2.3.1",
+      "fileName": "CyberpunkVRPort-0.1.1-psvr2.3.1.zip",
+      "url": "https://github.com/satyaloka93/cyberpunk-vr-port/releases/download/0.1.1-psvr2.3.1/CyberpunkVRPort-0.1.1-psvr2.3.1.zip",
+      "sha256": "dd2b353e650bc722b712ef6b72d99257ddff7a5539f2a892e7683416953d5174"
     }
   ]
 }

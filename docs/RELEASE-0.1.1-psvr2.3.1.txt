@@ -1,0 +1,159 @@
+CyberpunkVR Port 0.1.1-psvr2.3.1
+PS VR2 community-fork patch release
+
+A single crash fix on top of 0.1.1-psvr2.3, plus a packaging fix that matters if you tried
+to use the installer script.
+
+For what the release actually does -- stereo rendering, controls, adaptive triggers, melee
+haptics -- see the 0.1.1-psvr2.3 notes. They still apply in full. Read the INSTALLING
+section below instead of the one in those notes, which was wrong.
+
+
+INSTALLING -- corrected
+=======================
+
+There is ONE download: CyberpunkVRPort-0.1.1-psvr2.3.1.zip. The installer script is inside
+it.
+
+The 0.1.1-psvr2.3 notes told you to run scripts\Install-CyberpunkVRPort.cmd, but NO RELEASE
+EVER CONTAINED THAT SCRIPT -- it existed only in the git repository, so anyone following the
+recommended path found no scripts folder and no way to proceed. Apologies; that was our
+error and it is fixed here.
+
+Worse, the installer's manifest still pointed at 0.1.1-psvr2.2, so even someone who fetched
+the script from the repository would have installed 0.1.1-psvr2.2 while reading the
+0.1.1-psvr2.3 notes. Also fixed.
+
+Option 1 -- the installer script (recommended)
+----------------------------------------------
+
+1. Download the four Nexus mods by hand into one folder, any filenames:
+
+     Visual Holsters      https://www.nexusmods.com/cyberpunk2077/mods/21936
+     Visible Bullets      https://www.nexusmods.com/cyberpunk2077/mods/22251
+     Nova Optics          https://www.nexusmods.com/cyberpunk2077/mods/29190
+     HUDitor              https://www.nexusmods.com/cyberpunk2077/mods/3315
+
+   Nexus cannot be automated -- it issues direct links only to premium accounts, and its
+   terms forbid redistributing the files. Filenames do not matter; the installer identifies
+   them by SHA-256.
+
+2. Extract CyberpunkVRPort-0.1.1-psvr2.3.1.zip ANYWHERE -- a Downloads folder is fine. Do
+   NOT extract it into the game folder for this route.
+
+3. Double-click scripts\Install-CyberpunkVRPort.cmd, or drag the folder from step 1 onto
+   it. From a shell instead:
+
+     pwsh scripts\Install-CyberpunkVRPort.ps1 -DownloadDir "D:\my downloads"
+
+   Add -WhatIf first to see exactly what it would do without changing anything.
+
+The eight prerequisites (RED4ext, CET, redscript, ArchiveXL, TweakXL, Codeware, Input
+Loader, Equipment-EX) are downloaded and hash-verified automatically. The port itself is
+NOT downloaded -- its files are sitting beside the script in what you just extracted, and
+the installer copies them straight into the game. It prints
+
+     source   : this folder (the port's files are here -- nothing to download)
+
+when it takes that path. Only bin, r6, red4ext, archive and engine are copied, so scripts\
+and wabbajack\ do not end up in your game folder.
+
+Option 2 -- by hand
+-------------------
+
+Extract the same zip directly into the Cyberpunk 2077 folder, over the top of an existing
+0.1.1-psvr2.3 install. scripts\ and wabbajack\ land there too and are harmless; delete them
+if you like. For a first-time install, the full prerequisite list and order is in the
+0.1.1-psvr2.3 notes under "Option 2: manual install" -- that part of those notes is still
+correct.
+
+
+The fix
+=======
+
+Crash when loading a save from the menu
+---------------------------------------
+
+Three crashes shared one signature: an access violation reading 0xF0 inside
+D3D12Core!CGraphicsCommandList::ExecuteIndirect, every one of them while loading a
+DIFFERENT save from the main menu, and every one immediately after a VRCAM component
+re-bind. The VR plugin's ExecuteIndirect hook sat one frame below the fault, forwarding
+the game's own arguments.
+
+On that path the game hands the hook a NULL argument buffer, and D3D12 dereferences it at
++0xF0. The hook now skips the call instead of forwarding a pointer the runtime cannot
+survive -- a draw with no argument buffer has nothing to draw, so nothing is lost.
+
+Two hardening changes came with it:
+
+* The forward runs inside a structured-exception guard, so a fault there costs a single
+  draw rather than the session.
+* A pre-existing silent early return -- when a command list has no hook entry, the draw was
+  dropped and never counted -- is now counted and logged. That path is unchanged in
+  behaviour; it simply stops being invisible.
+
+Logging on all three paths is rate-limited to the first occurrence and then every 500-1000,
+and only fires on abnormal paths, so it is safe to leave on permanently.
+
+Honest scope: three crashes with an identical signature, then no recurrence in roughly a
+day of play. The mechanism is understood and the guard is strictly defensive, but that is
+the actual amount of testing behind it.
+
+
+HUDitor set up for VR
+=====================
+
+Two things about HUDitor are wrong in a headset, and the installer now fixes both in the
+copy it just installed. Nothing of HUDitor's is redistributed -- its own files are edited
+in place, so this keeps working against whatever version you downloaded.
+
+* The editor moves from F7 to DELETE. F7 is HMD recenter in this port, so the two fought.
+* The unlock gate is removed. Stock HUDitor refuses to open until the quest fact
+  unlock_car_hud_dpad is set, and says so by borrowing the combat-restriction toast -- a
+  two-second message that reads as unrelated and is easy to miss entirely in VR. On a save
+  that predates the unlock, HUDitor simply looks broken. It works fine without the gate.
+* A HUD layout arranged for VR is included, replacing HUDitor's flat-screen default. It is a
+  STARTING POINT, not a prescription -- one person's arrangement on one headset at one FOV.
+  Press Delete in game and drag anything you like; HUDitor saves your changes straight back
+  and they survive until the next time you install over the top.
+
+  If you have already arranged your own layout, copy
+  bin\x64\plugins\cyber_engine_tweaks\mods\HUDitor\persistency.json somewhere safe before
+  installing -- this release overwrites it. Putting that file back afterwards restores your
+  arrangement exactly.
+
+The installer prints "HUDitor patched for VR" when it does this. If the patch fails it says
+so and leaves HUDitor stock rather than aborting the install.
+
+
+Also in this build
+==================
+
+The CyberpunkVR_Hands plugin is now compiled Release rather than RelWithDebInfo. Same
+source, same behaviour -- it is simply built without debug information, which is why the
+file is about 450 KB smaller than in 0.1.1-psvr2.3.
+
+The packaging script previously read the two plugins from two DIFFERENT build
+configurations, which made it possible to ship one of them stale without any error. It now
+uses one configuration for both and refuses to package a plugin older than its own sources.
+
+
+Upgrading from 0.1.1-psvr2.3
+============================
+
+Install over the top -- run the installer script again, or extract this zip into the game
+folder. No settings are touched. Your F10 page, VRIK calibration, HUD layout and
+vrport.ini all carry over untouched, and no bridge update is needed.
+
+
+Reporting problems
+==================
+
+     pwsh scripts\Collect-VRPortReport.ps1 -Hmd "your headset"
+
+For a crash, also attach bin\x64\cyberpunkvrport.log, the archived
+cyberpunkvrport-<timestamp>.log for the session that actually crashed, and the newest
+folder under %LOCALAPPDATA%\REDEngine\ReportQueue\.
+
+If you see a line beginning "[EI-DIAG] skipped ExecuteIndirect with NULL argument buffer",
+that is this fix doing its job -- please include it, as the count is useful.
