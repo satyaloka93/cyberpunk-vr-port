@@ -122,9 +122,10 @@ foreach ($a in @("cyberpunkvrport.archive","VRCigarette.archive.xl","vrport_bask
 }
 
 # ---- HUDitor: the port's setup, on the paths the mod actually uses ----------------------------
-# HUD placement is not the port's job -- its own HUD mod was removed on 2026-08-20 because it
-# scaled the shared HUD root around screen centre and fought a real editor. What ships instead is
-# the port's HUDitor setup: the editor moved off F7 to F11, and a layout tuned in VR.
+# Standard HUD placement is HUDitor's job -- the old polling/root-scaling HUD mod was removed on
+# 2026-08-20 because it fought a real editor. The one-shot redscript scanner-details wrapper is a
+# separate narrow exception for a dynamic controller HUDitor does not expose; it is copied above
+# with the other redscript mods. This block packages HUDitor's F11 binding and VR-tuned layout.
 #
 # The binding lives in r6\input\ because that is the only place it works: the game merges
 # r6\input\*.xml into r6\cache\inputUserMappings.xml every launch and reads the merged
@@ -153,8 +154,9 @@ CyberpunkVRPort $Version
 WHAT THIS IS
     A VR mod for Cyberpunk 2077: stereo rendering through OpenXR, 6DoF head tracking, motion
     controllers merged into the game's own gamepad input, VRIK arms, and a set of gameplay mods
-    (holsters, physical reload, melee, weapon handling, smoking). HUD placement is HUDitor's job
-    now, and this package carries the port's HUDitor setup -- see WHAT LANDS WHERE.
+    (holsters, physical reload, melee, weapon handling, smoking). HUDitor places the standard HUD,
+    while a one-shot redscript adjustment moves the complete scanner/quickhack details panel into
+    the VR-visible area. This package carries both -- see WHAT LANDS WHERE.
 
 BEFORE YOU INSTALL -- READ THIS ONE
     The first time the plugin starts it REPLACES your Cyberpunk settings with the ones this mod
@@ -186,8 +188,9 @@ REQUIREMENTS
     the port's HUDitor setup (the editor on F11, and a VR layout), and input_loader is the plugin
     that merges r6\input\*.xml, so without it the F11 binding is inert. Note that
     persistency.json REPLACES any HUDitor layout you already have -- back yours up first if you
-    care about it. The port needs neither: with no HUD editor the flat-screen HUD is used
-    unchanged, and the port still composites it into the second eye either way.
+    care about it. HUDitor remains optional: without it the standard flat-screen HUD is used, while
+    the packaged scanner-details redscript adjustment still moves that dynamic panel into view.
+    The port composites the HUD into the second eye either way.
 
     Nothing else may proxy dxgi. If bin\x64\dxgi.dll exists (R.E.A.L. VR installs one), move it
     out of the folder -- two VR paths in one process fight over the same engine hooks.

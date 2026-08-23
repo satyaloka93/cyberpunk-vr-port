@@ -96,14 +96,16 @@ Repository: <https://github.com/dariulone/cyberpunk-vr-port>
   view gets its own upscaler viewport automatically).
 - **13 headsets, 60 resolutions**, every ladder reaching 6000 px, picked before
   launch — PlayStation VR2 and the Bigscreen Beyond 2/2e included.
-- **HUD placement is HUDitor**, which moves and scales each
-  widget individually. The port shipped its own HUD mod until 2026-08-20 and it
-  is gone: it scaled the shared HUD root around screen centre, which is too
-  blunt to be comfortable and actively fights a real HUD editor. What the port
-  still does for the HUD is the part only it can do -- compositing the engine's
-  own HUD into the SECOND eye. The port's own HUDitor setup -- the editor moved
-  to **F11**, plus a VR-tuned layout for all 26 widgets -- is saved in
-  `mods\config\huditor\`, opt-in rather than installed for you.
+- **Standard HUD placement is HUDitor**, which moves and scales each widget
+  individually. The old polling HUD mod remains gone because scaling broad HUD
+  roots fights a real editor. HUDitor does not expose the complete dynamic
+  scanner/quickhack details panel, so the port keeps the PSVR2-tweaks one-shot
+  `scannerDetailsGameController` adjustment: its whole root moves 500 virtual
+  pixels toward the center when it initializes, keeping all of its children
+  together. The port also composites the engine's HUD into the SECOND eye. Its
+  HUDitor setup -- the editor moved to **F11**, plus a VR-tuned layout for all
+  26 standard widgets -- is saved in `mods\config\huditor\`, opt-in rather
+  than installed for you.
 - **The cascade shadow rows are hidden** from *Graphics → Advanced*. The atlas is
   shared between the two views, so raising them gives you artefacts the port
   cannot fix from its side.
@@ -128,8 +130,9 @@ Repository: <https://github.com/dariulone/cyberpunk-vr-port>
 - HUDitor
 
 Recommended but not required: **HUDitor**, **Visible Bullets**, for HUD placement — the port ships a
-VR-tuned layout for it in `mods\config\huditor\` and no longer moves HUD widgets
-itself.
+VR-tuned layout for it in `mods\config\huditor\`. The port does not reposition
+standard HUDitor widgets itself; its one-shot scanner-details wrapper only covers
+the dynamic panel HUDitor does not expose.
 
 Install RED4ext, CET and redscript first (the usual Nexus dependencies).
 

@@ -304,12 +304,13 @@ FEATURES
   - World-map head-lock and DLSS / NGX handling - the second view gets its own upscaler
     viewport automatically.
 
-  - HUD placement is HUDitor's job, not this mod's. The mod shipped its own HUD mod until
-    2026-08-20 and it is gone: it scaled the shared HUD root around screen centre, which is
-    too blunt to be comfortable and actively fights a real HUD editor. What the mod still
-    does for the HUD is the part only it can do - compositing the engine's own HUD into the
-    SECOND eye. Its HUDitor setup ships as opt-in config: the editor on F11 plus a VR-tuned
-    layout for all 26 widgets.
+  - Standard HUD placement is HUDitor's job. The old polling HUD mod remains gone because
+    scaling broad roots fights a real editor. HUDitor does not expose the complete dynamic
+    scanner/quickhack details panel, so this build restores the PSVR2-tweaks one-shot
+    scannerDetailsGameController adjustment: its whole root moves 500 virtual pixels toward
+    the centre when it initializes, keeping all child elements together. The mod also
+    composites the engine's HUD into the SECOND eye. Its HUDitor setup ships as opt-in config:
+    the editor on F11 plus a VR-tuned layout for all 26 standard widgets.
 
   - In-headset F10 overlay, live and persisted, with four tabs:
       General    world scale, IPD, stereo separation, VR menu FOV and quad size, motion
