@@ -4,7 +4,7 @@ title: Mounted vehicle interaction pipeline
 description: How vehicle classification, seated VRIK, manual steering, gun controls, and car/bike offsets cooperate in the upstream 0.1.3 PSVR2 port.
 resource: https://github.com/satyaloka93/cyberpunk-vr-port/blob/upstream-0.1.3-psvr2/src/Anim/WheelGrab.cpp
 tags: [vehicles, vrik, steering, psvr2, input]
-timestamp: 2026-08-23T17:20:00+09:00
+timestamp: 2026-08-23T17:34:00+09:00
 ---
 
 # State and classification
@@ -57,6 +57,9 @@ With a weapon drawn in the driver seat, the right trigger fires through vehicle-
 4. Confirm left grip never opens scanner while mounted.
 5. Draw a weapon while steering: the vehicle must not pull immediately, the right arm must release, and the left hand must retain steering.
 6. Confirm RT fires, R3 toggles throttle off/on, Circle exits, and Square horns.
-7. Watch gun and hand rendering in both eyes. Intermittent flashing remains under investigation; do not attribute it to VRCAM, pacing, or the skeleton without a matched reproduction. The observed run had no GPU fault or stale-VRCAM event and the symptom varied between unchanged launches.
+7. Watch gun and hand rendering in both eyes. The 17:22 Quest session reproduced hand+weapon disappearance/reappearance after drawing a gun in both `vehicleArmedCarBaseObject` and ordinary `vehicleCarBaseObject`. The body position and general driving were good. Stereo remained healthy (`28798/28800` submissions, two startup misses), VRCAM continued producing, and every sampled render mask retained `GeometrySkinned=MV` and `WeaponPlane=MV`; no GPU/device error appeared. This narrows the trigger to the mounted weapon/arm path rather than whole-view pacing, stale VRCAM, a particular car, or the removed low-spec INI, but it does not yet distinguish animation visibility/state from moved-mesh culling.
+8. During active flashing, use `F10 → VRIK → Start VR hand tracking` as a live A/B without leaving the vehicle. If disabling tracking immediately stops the flashing while Cyberpunk's authored one-handed vehicle pose remains visible, investigate the arms-only solve, arm bounds, and per-pass pose ownership. If flashing continues unchanged, investigate the game's mounted weapon/arm visibility and render path instead. Re-enable tracking after observing the result; do not remove steering or arms-only body ownership based on this test.
+
+The preserved session is under `%LOCALAPPDATA%\CyberpunkVRPort\diagnostics\20260823-173244-quest-vehicle-gun-flash` (`cyberpunkvrport.log` SHA-256 `de695ff4…`).
 
 See the [controller input pipeline](controller-input-pipeline.md) and [PSVR2 SteamVR profile](../hardware/psvr2-steamvr.md).
