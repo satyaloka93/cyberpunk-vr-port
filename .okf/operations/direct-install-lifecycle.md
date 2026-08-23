@@ -4,7 +4,7 @@ title: Direct installation and clean port replacement
 description: Install or replace the VR port in the game folder without deleting shared dependencies or user-adjustable state.
 resource: https://github.com/satyaloka93/cyberpunk-vr-port/blob/psvr2-tweaks/scripts/Install-CyberpunkVRPort.ps1
 tags: [installation, uninstall, upgrade, backup, psvr2]
-timestamp: 2026-08-23T09:08:00+09:00
+timestamp: 2026-08-23T11:58:00+09:00
 ---
 
 # Ownership boundary
@@ -26,6 +26,8 @@ Protected paths include VRIK calibration/settings/recenter state, the fork HUD l
 The newest `UserSettings.pre-vr-*.json` is not restored automatically during a port-to-port transition because both builds expect VR-tuned settings. Interactive uninstall offers restoration, and `-RestoreGameSettings` requests it explicitly.
 
 The VR-tuned `UserSettings.json` must not impose the developer's locale. The original 0.1.1 PSVR2 capture accidentally carried `ru-ru` in VoiceOver, Subtitles, OnScreen, and Platform. The corrected template defaults to `en-us`, and the direct installer copies all four values and their list indices from the player's active settings into the deployed template before the native first-launch replacement. This preserves non-English installations as well as English ones.
+
+A clean port-to-port uninstall removes `vrport.ini`, so installing the replacement recreates `first_launch=1`. Without another guard, the next native startup treats that as a genuinely fresh VR install and overwrites the complete active graphics profile with the packaged tuning—observed as lower quality and DLSS Balanced. `ApplyFirstLaunchGameSettings` now treats any existing `UserSettings.pre-vr-*.json` as durable evidence that VR first-launch setup already happened: it preserves the active `UserSettings.json`, consumes the recreated flag by writing `first_launch=0`, and logs the decision. The one-shot packaged profile remains available only on the first VR installation.
 
 These ownership rules complement the external-state policy in [Wabbajack installation automation](wabbajack-automation.md) and the two independent layouts described by [HUDitor VR layout workflow](huditor-vr-layout.md).
 
@@ -51,3 +53,4 @@ For a replacement test:
 4. Keep the required dependency stack installed.
 5. Install the replacement build.
 6. Start the OpenXR runtime before Cyberpunk and collect a fresh log.
+7. On a VR-to-VR transition, confirm the log says the prior backup was found and active game settings were preserved; compare the active settings hash with the pre-launch value.

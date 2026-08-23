@@ -78,6 +78,18 @@ static bool WriteFirstLaunchFlag(int value) {
     return got == want;
 }
 
+static bool HasPriorVrSettingsBackup(const char* localAppData) {
+    if (!localAppData || !*localAppData) return false;
+    char pattern[MAX_PATH] = {};
+    _snprintf_s(pattern, sizeof(pattern), _TRUNCATE,
+                "%s\\CD Projekt Red\\Cyberpunk 2077\\UserSettings.pre-vr-*.json", localAppData);
+    WIN32_FIND_DATAA found{};
+    const HANDLE search = FindFirstFileA(pattern, &found);
+    if (search == INVALID_HANDLE_VALUE) return false;
+    FindClose(search);
+    return true;
+}
+
 // ---- FIRST LAUNCH: install the game settings this port was tuned against ----------------------
 //
 // Cyberpunk's own settings do not live in the game folder. They are a single JSON under
@@ -136,6 +148,21 @@ extern "C" void ApplyFirstLaunchGameSettings() {
     // guessing at a layout we have not seen. Say so and try again next launch.
     if (GetFileAttributesA(dst) == INVALID_FILE_ATTRIBUTES) {
         Log("FirstLaunch: %s does not exist yet -- run the game once, then this applies\n", dst);
+        return;
+    }
+
+    // A clean port-to-port uninstall removes vrport.ini, so the replacement package recreates it
+    // with first_launch=1. That is not a genuinely fresh VR install: applying the shipped JSON again
+    // silently replaces graphics the player already tuned (including DLSS and quality presets).
+    // The timestamped backup is the durable proof that this machine has already completed a VR first
+    // launch. Preserve the ACTIVE file on every later port generation and consume the recreated flag.
+    if (HasPriorVrSettingsBackup(local)) {
+        g_liveControls.xrFirstLaunch = 0;
+        const bool flagged = WriteFirstLaunchFlag(0);
+        Log("FirstLaunch: prior UserSettings.pre-vr backup found -- preserving active game settings\n"
+            "             at   %s\n"
+            "             first_launch=0 %s\n",
+            dst, flagged ? "written to vrport.ini" : "COULD NOT BE WRITTEN (will retry)");
         return;
     }
 
