@@ -4,7 +4,7 @@ title: Mounted vehicle interaction pipeline
 description: How vehicle classification, seated VRIK, manual steering, gun controls, and car/bike offsets cooperate in the upstream 0.1.3 PSVR2 port.
 resource: https://github.com/satyaloka93/cyberpunk-vr-port/blob/upstream-0.1.3-psvr2/src/Anim/WheelGrab.cpp
 tags: [vehicles, vrik, steering, psvr2, input]
-timestamp: 2026-08-23T11:40:00+09:00
+timestamp: 2026-08-23T17:20:00+09:00
 ---
 
 # State and classification
@@ -17,13 +17,15 @@ The camera path selects independent live offsets:
 - Motorcycles use `xr_bike_head_offset_x/y/z`.
 - All seated offsets are ignored immediately on foot.
 
-The local test profile starts motorcycle Z at `+0.050 m`; packaged defaults remain zero until a value is validated broadly.
+Packaged defaults remain zero. These values currently live in one shared `vrport.ini`; they are not headset-scoped. Switching between Quest/VDXR and PSVR2/SteamVR therefore retains the same car and motorcycle offsets, so preserve the current profile before calibrating a different headset.
 
 # Seated skeleton ownership
 
 While mounted, VRIK is **arms-only**. Cyberpunk's authored vehicle animation owns the torso, hips, spine, legs, and seated camera relationship. Letting the full-body solver place the body under the HMD fought that authored pose and caused incorrect vehicle-body placement.
 
 Do not apply a fixed 90° or 180° skeleton rotation. Heading diagnostics compare untouched animated-body forward against both the game camera and final render view four times after entry. A value near `1` is aligned, `0` is sideways, and `-1` is backwards. Tests have shown both transient entry disagreement and later alignment, so correction must be based on settled samples rather than one transition frame.
+
+A Quest 3/VDXR car test confirmed `mounted=1`, `bike=0`, and the arms-only branch. Final-view heading settled positive (`1.000`, `0.987`, `0.923`, `0.919`), so that run does not show the old full-body ownership regression or a backwards body. A complaint about bad **position** should first record whether the body is left/right, ahead/behind, or high/low and A/B the saved car offsets against zero; heading evidence alone cannot diagnose translation.
 
 # Wheel and handlebar ownership
 
