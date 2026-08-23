@@ -411,6 +411,10 @@ CREDITS
   the deadzone and lock-angle controls, the horn on the wheel hub, and shooting while you
   drive are all his work.   https://github.com/iPowerTech
 
+  nben/Cyberpunk-UI-mods-for-VR informed the quickhack/scanner controller and widget
+  identification that led this port to target the complete scannerDetailsGameController panel:
+  https://github.com/nben/Cyberpunk-UI-mods-for-VR
+
 
 ============================================================================
 TESTING CONFIGURATION

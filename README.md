@@ -18,7 +18,9 @@ Repository: <https://github.com/dariulone/cyberpunk-vr-port>
   wheel with your own hands, the steering geometry, the deadzone and lock-angle
   controls, the horn on the wheel hub, and shooting while you drive are all his
   work, from [his fork](https://github.com/iPowerTech/cyberpunk-vr-port).
-  
+- **[nben/Cyberpunk-UI-mods-for-VR](https://github.com/nben/Cyberpunk-UI-mods-for-VR)**
+  informed the quickhack/scanner controller and widget identification that led
+  this port to target the complete `scannerDetailsGameController` panel.
 
 ## Features
 

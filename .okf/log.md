@@ -1,6 +1,7 @@
 # Update Log
 
 ## 2026-08-23
+* **Credit**: Restored explicit public README and release-description attribution to [nben/Cyberpunk-UI-mods-for-VR](https://github.com/nben/Cyberpunk-UI-mods-for-VR) for the quickhack/scanner controller and widget identification that led to targeting the complete `scannerDetailsGameController` panel.
 * **Fix**: Prevented clean VR-build transitions from reapplying the packaged graphics profile. Removing `vrport.ini` recreated `first_launch=1`, and the next startup copied the entire shipped `UserSettings.json`, explaining the observed lower settings and DLSS Balanced. A prior `UserSettings.pre-vr-*.json` now proves setup already occurred, so native first-launch preserves the active profile and clears the recreated flag. See [direct installation and clean port replacement](operations/direct-install-lifecycle.md).
 * **Decision**: Retained the two-hand-to-one-hand steering continuity after a repeat run made the gun/hand flashing much less pronounced without a code change. The prepared rollback was never deployed; preserve the working steering, grip-toggle, R3 throttle, vehicle-classification, and offset features while gathering more evidence.
 * **Fix**: Replaced gun-mode left-stick throttle trimming with an R3 idle/restore toggle. Drawing a weapon still latches the current throttle; each right-stick click toggles it off/on, is consumed before the inverse-camera binding, and is withheld from physical reload. Left-stick Y remains free.
