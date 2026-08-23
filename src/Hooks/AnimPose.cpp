@@ -659,6 +659,58 @@ if (g_VRRecordFK) {
                         float camModelPairedRot[4] = {0,0,0,1};
                         bool camModelValid = VRIK_ComputeCamModel(
                             camModelPos, camModelRot, camModelEntityQuat, camModelPairedRot);
+
+                        // Diagnose the reported vehicle-only backwards body without changing the
+                        // skeleton. bodyFwd comes from the untouched seated animation above;
+                        // camModelRot is the camera in the same model space. A horizontal dot near
+                        // -1 proves the animation and view face opposite directions, while a positive
+                        // value points to an arm/mesh issue rather than a body-heading issue.
+                        static int s_vehicleHeadingLogs = 0;
+                        static ULONGLONG s_vehicleHeadingNextLogMs = 0;
+                        const ULONGLONG vehicleHeadingNowMs = GetTickCount64();
+                        if (!vrikInVehicle) {
+                            s_vehicleHeadingLogs = 0;
+                            s_vehicleHeadingNextLogMs = 0;
+                        } else if (camModelValid && s_vehicleHeadingLogs < 4 &&
+                                   (s_vehicleHeadingLogs == 0 || vehicleHeadingNowMs >= s_vehicleHeadingNextLogMs)) {
+                            float camForward[3] = { 0.0f, 1.0f, 0.0f };
+                            float camForwardModel[3];
+                            VRIK_QuatRotateVec(camModelRot, camForward, camForwardModel);
+                            float bfX = bodyFwd[0], bfY = bodyFwd[1];
+                            float cfX = camForwardModel[0], cfY = camForwardModel[1];
+                            const float bfLen = std::sqrt(bfX * bfX + bfY * bfY);
+                            const float cfLen = std::sqrt(cfX * cfX + cfY * cfY);
+                            const float cameraDot = (bfLen > 1e-4f && cfLen > 1e-4f)
+                                ? (bfX * cfX + bfY * cfY) / (bfLen * cfLen) : 2.0f;
+
+                            // Also compare against the FINAL render-view yaw. The pushed game camera
+                            // can agree with the body while a later VR view composition faces the
+                            // opposite way; cameraDot alone cannot distinguish that case.
+                            float viewDot = 2.0f;
+                            if (g_viewPktValid) {
+                                float bodyForwardWorld[3];
+                                VRIK_QuatRotateVec(camModelEntityQuat, bodyFwd, bodyForwardWorld);
+                                const float halfYaw = g_viewPkt[8] * 0.5f;
+                                const float viewYawQ[4] = { 0.0f, 0.0f, std::sin(halfYaw), std::cos(halfYaw) };
+                                const float viewForward[3] = { 0.0f, 1.0f, 0.0f };
+                                float viewForwardWorld[3];
+                                VRIK_QuatRotateVec(viewYawQ, viewForward, viewForwardWorld);
+                                const float bwLen = std::sqrt(bodyForwardWorld[0] * bodyForwardWorld[0] +
+                                                              bodyForwardWorld[1] * bodyForwardWorld[1]);
+                                const float vwLen = std::sqrt(viewForwardWorld[0] * viewForwardWorld[0] +
+                                                              viewForwardWorld[1] * viewForwardWorld[1]);
+                                if (bwLen > 1e-4f && vwLen > 1e-4f) {
+                                    viewDot = (bodyForwardWorld[0] * viewForwardWorld[0] +
+                                               bodyForwardWorld[1] * viewForwardWorld[1]) / (bwLen * vwLen);
+                                }
+                            }
+                            Log("[VRIK][vehicle] arms-only active; heading sample %d/4: "
+                                "animated-body forward dot gameCamera=%.3f finalView=%.3f "
+                                "(0=sideways, -1=backwards)\n",
+                                s_vehicleHeadingLogs + 1, cameraDot, viewDot);
+                            ++s_vehicleHeadingLogs;
+                            s_vehicleHeadingNextLogMs = vehicleHeadingNowMs + 1000;
+                        }
                         // A fresh XR head is correct for the head bone, but the controller packet's
                         // existing composition expects the stable pushed camera base. Rotating that
                         // packet by the fresh head leaves head motion between the instants on the arm.

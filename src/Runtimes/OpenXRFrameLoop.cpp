@@ -1390,10 +1390,12 @@ DWORD OpenXRManager::FrameThreadMain() {
                 // for-byte identical to the pre-Controls-tab behaviour.
                 const bool gameplayInputActive = (GetInputActionsEnabled() != 0) && (m_thumbstickAction != XR_NULL_HANDLE);
                 VRControllerState ctrl{};
-                // D-PAD chord state (left hand is processed first, right second):
-                // HOLD the LEFT stick click, pick the direction with the RIGHT stick.
-                bool leftStickClicked  = false;
-                bool dpadUsedThisFrame = false;
+                // D-PAD shift state (left hand is processed first, right second):
+                // Triangle touch on PSVR2 is primary; L3 remains the fallback modifier.
+                bool leftStickClicked      = false;
+                bool rightStickClicked     = false;
+                bool leftDpadTouchModifier = false;
+                bool dpadUsedThisFrame     = false;
 
                 std::lock_guard<std::mutex> handLock(m_handMutex);
                 // ONE INSTANT: the head position that goes with these controller poses, plus the
@@ -1609,9 +1611,20 @@ DWORD OpenXRManager::FrameThreadMain() {
                     const float grip = getFloat(m_gripAction);
                     float sx = 0.0f, sy = 0.0f;
                     getVec2(m_thumbstickAction, sx, sy);
-                    const bool sclick = getBool(m_thumbstickClickAction);
-                    const bool prim   = getBool(m_primaryButtonAction);
-                    const bool sec    = getBool(m_secondaryButtonAction);
+                    const bool sclick        = getBool(m_thumbstickClickAction);
+                    const bool prim          = getBool(m_primaryButtonAction);
+                    const bool sec           = getBool(m_secondaryButtonAction);
+                    const bool secondaryTouch = getBool(m_secondaryButtonTouchAction);
+                    const bool thumbrestTouch = getBool(m_thumbrestTouchAction);
+
+                    static bool s_psvr2InputConfirmed = false;
+                    if (!s_psvr2InputConfirmed && IsRuntimePsvr2() &&
+                        (fabsf(trig) > 0.01f || fabsf(grip) > 0.01f || fabsf(sx) > 0.01f ||
+                         fabsf(sy) > 0.01f || sclick || prim || sec || secondaryTouch || thumbrestTouch)) {
+                        s_psvr2InputConfirmed = true;
+                        Log("OpenXRManager[PSVR2]: Sense controller actions confirmed (hand=%s).\n",
+                            i == 0 ? "left" : "right");
+                    }
 
                     // XInput-compatible button bits so the hook can OR them into
                     // XINPUT_GAMEPAD.wButtons directly (XINPUT_GAMEPAD_*).
@@ -1636,30 +1649,52 @@ DWORD OpenXRManager::FrameThreadMain() {
                         ctrl.leftThumbY  = sy;
                         if (prim)   ctrl.buttons |= XB_X;
                         if (sec)    ctrl.buttons |= XB_Y;
-                        // NOT mapped to LB here any more. In gameplay LB is the SCANNER, and the left grip is
-                        // the hand that grabs a magazine, so every reach for the mag popped the scanner open.
-                        // LB is now emitted menu-only, in vr_core's XInput merge, exactly the way the right
-                        // grip's RB already is and for the same reason: menus run no gameplay actions, so a tab
-                        // navigation there is safe while a gameplay binding is not.
 
-                        // LEFT stick click = D-Pad modifier (direction picked with the
-                        // RIGHT stick, see the right-hand branch). The vanilla L3
-                        // (sprint) is emitted DEFERRED, after the loop: only when the
-                        // click is released without a D-Pad direction having been used.
+                        // Preserve the established PSVR2 control contract: left grip is LB, the
+                        // game's scanner/quickhack hold. Other headsets retain upstream's physical-
+                        // reload semantics where the grip is reserved for the magazine.
+                        const bool mounted = GetSharedSlot(31) > 0.5f;
+                        const bool leftGripHeld = grip >= 0.7f;
+                        static ULONGLONG s_leftGripDownSinceMs = 0;
+                        const ULONGLONG gripNowMs = GetTickCount64();
+                        if (!leftGripHeld) s_leftGripDownSinceMs = 0;
+                        else if (s_leftGripDownSinceMs == 0) s_leftGripDownSinceMs = gripNowMs;
+
+                        // Dual-role without the ear gesture: the raw grip reaches physical reload
+                        // immediately. Only a sustained hold becomes scanner, and only when the
+                        // reload has not claimed the left wrist. This keeps a magazine squeeze from
+                        // opening scanner while preserving a normal scanner hold anywhere else.
+                        const float reloadOwner = GetSharedSlot(vrshared::kReloadOwnedHand);
+                        const bool reloadOwnsLeft = reloadOwner > -0.5f && reloadOwner < 0.5f;
+                        const bool scannerHold = leftGripHeld && s_leftGripDownSinceMs != 0 &&
+                            gripNowMs - s_leftGripDownSinceMs >= 180;
+                        if (IsRuntimePsvr2() && scannerHold && !mounted && !reloadOwnsLeft) {
+                            ctrl.buttons |= XB_LEFT_SHOULDER;
+                        } else if (IsRuntimePsvr2() && leftGripHeld && mounted) {
+                            static bool s_leftGripVehicleLogged = false;
+                            if (!s_leftGripVehicleLogged) {
+                                s_leftGripVehicleLogged = true;
+                                Log("OpenXRManager[PSVR2]: left-grip scanner suppressed while mounted; grip remains available to wheel steering.\n");
+                            }
+                        }
+
+                        // PSVR2's Triangle capacitive channel substitutes for Touch's missing
+                        // left-thumbrest path. Triangle CLICK remains Y/weapon switch.
+                        leftDpadTouchModifier = thumbrestTouch || (IsRuntimePsvr2() && secondaryTouch);
                         leftStickClicked = sclick;
                     } else {
                         ctrl.rightTrigger = trig;
                         ctrl.rightGrip    = grip;
                         ctrl.rightThumbX  = sx;
                         ctrl.rightThumbY  = sy;
+                        rightStickClicked = sclick;
                         if (sclick) ctrl.buttons |= XB_RIGHT_THUMB;
                         if (prim)   ctrl.buttons |= XB_A;
                         if (sec)    ctrl.buttons |= XB_B;
 
-                        // D-PAD CHORD: while the LEFT stick click is held, the RIGHT
-                        // stick picks the D-Pad direction. The right axes are zeroed for
-                        // the whole hold so snap-turn/camera cannot fire during selection.
-                        if (leftStickClicked) {
+                        // D-PAD SHIFT: Triangle touch/thumbrest or fallback L3 plus RIGHT stick.
+                        // The axes are consumed for the complete modifier hold.
+                        if (leftDpadTouchModifier || leftStickClicked) {
                             constexpr float threshold = 0.5f;
                             if (sy > threshold)  { ctrl.buttons |= XB_DPAD_UP;    dpadUsedThisFrame = true; }
                             if (sy < -threshold) { ctrl.buttons |= XB_DPAD_DOWN;  dpadUsedThisFrame = true; }
@@ -1697,15 +1732,24 @@ DWORD OpenXRManager::FrameThreadMain() {
                 }
 
                 if (gameplayInputActive) {
-                    // Menu button is single (no per-hand binding) on Touch/Index/Vive/WMR.
+                    ctrl.dpadShiftActive = leftDpadTouchModifier || leftStickClicked;
+
+                    // SteamVR may reserve both auxiliary Sense buttons. Keep the real application
+                    // action, and provide the proven Triangle-touch + R3 fallback. Publish a raw
+                    // level: XInput applies the tap=Start / hold=Back timing on actual game polls.
+                    bool senseMenuPressed = IsRuntimePsvr2() && leftDpadTouchModifier && rightStickClicked;
+                    if (senseMenuPressed) {
+                        ctrl.buttons &= static_cast<uint16_t>(~0x0080u); // no crouch/slide release
+                    }
                     if (m_menuButtonAction != XR_NULL_HANDLE) {
                         XrActionStateGetInfo gi{XR_TYPE_ACTION_STATE_GET_INFO};
                         gi.action = m_menuButtonAction;
                         gi.subactionPath = XR_NULL_PATH;
                         XrActionStateBoolean st{XR_TYPE_ACTION_STATE_BOOLEAN};
-                        if (XR_SUCCEEDED(xrGetActionStateBoolean(m_session, &gi, &st)) && st.isActive && st.currentState)
-                            ctrl.buttons |= 0x0010; // XINPUT_GAMEPAD_START
+                        if (XR_SUCCEEDED(xrGetActionStateBoolean(m_session, &gi, &st)) && st.isActive)
+                            senseMenuPressed = senseMenuPressed || (st.currentState != XR_FALSE);
                     }
+                    ctrl.pauseSelectPressed = senseMenuPressed;
 
                     // Publish the snapshot for the XInput hook.
                     std::lock_guard<std::mutex> inLock(m_inputMutex);

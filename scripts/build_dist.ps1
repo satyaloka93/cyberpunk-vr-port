@@ -93,7 +93,7 @@ foreach ($g in (Get-ChildItem (Join-Path $RepoRoot "mods\config") -Filter "Cyber
     Add-File $g.FullName "bin\x64\$($g.Name)"
 }
 
-# ---- engine-side tuning + the OpenVR shim ------------------------------------------------------
+# ---- engine-side tuning + SteamVR OpenXR manifest-discovery helper -----------------------------
 Add-File (Need (Join-Path $RepoRoot "mods\config\vrcam_cpu_tweaks.ini") "vrcam_cpu_tweaks.ini") "engine\config\platform\pc\vrcam_cpu_tweaks.ini"
 Add-File (Need (Join-Path $RepoRoot "mods\config\openvr_api.dll") "openvr_api.dll") "bin\x64\openvr_api.dll"
 

@@ -84,12 +84,12 @@ Repository: <https://github.com/dariulone/cyberpunk-vr-port>
   stick deflection, sprint on a held detent, dash and crouch on the right stick,
   the scanner as a one-hand gesture, snap or smooth turn, HMD/hand-relative
   locomotion, and a D-pad chord. See **Controls** below.
-- **VR driving** — squeeze a grip with your hand where the driving animation
-  holds the wheel and that arm is handed back to the animation; the tilt of the
+- **VR driving** — click a grip with your hand where the driving animation
+  holds the wheel to toggle that hand on/off and that arm is handed back to the animation; the tilt of the
   line through your controllers is the steering, one-handed or two, with
   adjustable deadzone and lock angle. A hand on the hub sounds the horn, and
   drawing a weapon turns the right trigger into the gun while the throttle
-  latches so the car keeps rolling.
+  latches so the vehicle keeps rolling; right-stick click toggles it off/on.
 - **World-map head-lock** — DLSS/NGX handling (the second
   view gets its own upscaler viewport automatically).
 - **13 headsets, 60 resolutions**, every ladder reaching 6000 px, picked before
@@ -106,7 +106,7 @@ Repository: <https://github.com/dariulone/cyberpunk-vr-port>
   shared between the two views, so raising them gives you artefacts the port
   cannot fix from its side.
 - **In-headset F10 overlay** with tabbed, live, persisted settings.
-- SteamVR (OpenVR) runtime supported alongside OpenXR; pre-launch resolution
+- Selectable OpenXR providers (SteamVR or the system default); pre-launch resolution
   selector; quiet-by-default logging with a DEBUG toggle in the launcher.
 
 ## Requirements
@@ -182,10 +182,10 @@ VR controller input is merged into the native CP2077 gamepad, so the in-game
 | Right stick **fully up** | **Dash** (dodge, direction from the left stick) — once per push |
 | Right stick **fully down** | **Crouch** (R3) |
 | Right thumb **click** | **Slide release** — racks the weapon (physical reload) |
-| Left hand to your **left ear** + **left grip** | **Scanner**, held as long as the gesture is |
+| PSVR2 left grip, held 0.18 s | **Scanner** anywhere; disabled while mounted and while physical reload owns the hand |
 | Right trigger / Left trigger | Fire / Aim (left trigger is also melee block) |
 | Right grip | Hand-to-holster equip / unequip; melee power modifier |
-| Left grip | **Grab the magazine** during a reload (at the ear it is the scanner) |
+| Left grip at a reload part | **Grab and hold the magazine/slide** immediately; this takes priority over scanner |
 | A | Jump (double jump and charge jump unchanged) |
 | B, **weapon in hand** | **Drop the magazine** (physical reload) — not dodge |
 | B, **holstered** | The game's own B again — close the phone, back out |
@@ -202,25 +202,21 @@ While **driving**, the same controllers do something else:
 
 | Input | Action |
 |---|---|
-| Grip, hand at the wheel / handlebars | Grab it — that arm goes back to the driving animation |
+| Grip click, hand at wheel / handlebars | Toggle that hand on/off the wheel; no continuous hold required, and left-grip scanner is suppressed |
 | Tilt of the line through both controllers | Steering (one hand: that controller against the wheel centre) |
 | Hand on the **middle of the wheel** | **Horn** — no grip needed; a hand that is grabbing never honks |
 | Right trigger / Left trigger | Throttle / Brake |
 | Right trigger **with a weapon drawn** | **Fire.** The throttle latches at the speed it had |
-| Left stick forward / back, weapon drawn | Trim the latched throttle |
-| **X, held** | **Get out.** B is never the exit in a car, so no stray press can eject you |
+| Right-stick click, weapon drawn | Toggle the latched throttle between idle and its remembered level |
+| **B / Sense Circle** | **Get out** (the game's native vehicle binding) |
+| **X / Sense Square** | Horn |
 
 Each hand is independent, so you can hold the wheel with one and keep the other on
 a gun. With a weapon equipped the right hand shoots and cannot grab the wheel;
 holster it and the wheel is its again — and since reaching for a holster is how you
-draw in the first place, that hand is already off the wheel by then. A grip that is
-holding the wheel does nothing else: no holster equip, no magazine grab. Nothing
+draw in the first place, that hand is already off the wheel by then. A hand toggled onto the wheel consumes that grip's clicks: no scanner, holster equip, or magazine grab. Nothing
 here needs to know which vehicle you are in, because the reference pose is the
 game's own driving animation — bikes included.
-
-The exit is a HOLD rather than a tap on purpose. The game's `ExitVehicle_Button`
-carries no hold of its own, so the vehicle acts on the first frame it sees the
-action — and at speed acting on it means throwing you out of the car.
 
 **D-pad chord.** Hold the **left stick clicked in**, then pick the direction with
 the **right stick** — up / down / left / right. While the chord is held the right
@@ -243,7 +239,7 @@ Hotkeys:
 Four tabs, live, and saved to `vrport.ini` — nothing here needs a restart. The
 **driving** block sits under Controls: wheel grab and its grab radius, steering
 deadzone and full-lock angle, horn on/off with its hub radius,
-trigger-fires-the-gun with its throttle trim rate — plus a live read-out of what
+trigger-fires-the-gun with its R3-from-idle throttle level — plus a live read-out of what
 is grabbed, what the steering is doing and whether the horn is being pressed.
 
 - **General** — world scale, IPD scale, stereo separation, VR menu FOV and quad

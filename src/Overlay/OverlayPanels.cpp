@@ -636,23 +636,24 @@ bool DrawLiveControls(LiveControlsUiState& state) {
         changed |= ImGui::SliderFloat("Head Z up", &state.xrHeadOffsetZ, -0.50f, 0.50f, "%.3f m");
 
         ImGui::Separator();
-        ImGui::TextUnformatted("In a vehicle only (added on top of the Head sliders)");
+        ImGui::TextUnformatted("Seated view offsets (added on top of the Head sliders)");
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip(
-                "The three sliders above are a STANDING calibration. Seated, the game's own\n"
-                "vehicle camera is already where it should be -- which is why the port drops\n"
-                "its two automatic bakes in a vehicle -- so a standing offset carries the view\n"
-                "off the seat instead of correcting it.\n\n"
-                "These three are added to the Head sliders while you are in a vehicle and\n"
-                "ignored the moment you step out, so the car and the street can be tuned\n"
-                "separately. Zero = the car keeps exactly the offset it has today.");
+                "Cars and motorcycles use different authored cameras and seated poses. Their\n"
+                "offsets are independent so correcting a bike cannot move the car view.\n"
+                "All six are ignored immediately when you step out.");
         }
         changed |= ImGui::SliderFloat("Car Head X right", &state.xrVehHeadOffsetX, -0.50f, 0.50f, "%.3f m");
         changed |= ImGui::SliderFloat("Car Head Y forward", &state.xrVehHeadOffsetY, -0.50f, 0.50f, "%.3f m");
         changed |= ImGui::SliderFloat("Car Head Z up", &state.xrVehHeadOffsetZ, -0.50f, 0.50f, "%.3f m");
+        changed |= ImGui::SliderFloat("Bike Head X right", &state.xrBikeHeadOffsetX, -0.50f, 0.50f, "%.3f m");
+        changed |= ImGui::SliderFloat("Bike Head Y forward", &state.xrBikeHeadOffsetY, -0.50f, 0.50f, "%.3f m");
+        changed |= ImGui::SliderFloat("Bike Head Z up", &state.xrBikeHeadOffsetZ, -0.50f, 0.50f, "%.3f m");
         {   // Live, so a slider that is doing nothing says so instead of being blamed.
-            ImGui::TextDisabled(g_isInVehicle ? "   (in a vehicle: these are live)"
-                                              : "   (on foot: these are ignored)");
+            const bool onBike = g_isOnBike.load(std::memory_order_relaxed);
+            ImGui::TextDisabled(!g_isInVehicle ? "   (on foot: all seated offsets are ignored)"
+                                : onBike ? "   (motorcycle: Bike offsets are live)"
+                                         : "   (car/non-bike: Car offsets are live)");
         }
             }
 
@@ -725,17 +726,16 @@ bool DrawLiveControls(LiveControlsUiState& state) {
 
             ImGui::Separator();
             ImGui::TextUnformatted("Driving -- hands on the wheel");
-            changed |= CheckboxInt("Grab the wheel with the grips", &state.xrWheelGrab);
+            changed |= CheckboxInt("Toggle wheel hold with grip clicks", &state.xrWheelGrab);
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip(
                     "While DRIVING, bring a hand to where the driving animation holds the\n"
-                    "wheel (or the handlebars) and squeeze that grip: the arm is handed back\n"
-                    "to the game's own animation -- hand on the wheel, fingers wrapped around\n"
-                    "it -- instead of following the controller. Release the grip and it goes\n"
-                    "back to your hand.\n\n"
-                    "Each hand is independent: hold the wheel with one and keep the other on\n"
-                    "a gun. While a hand is at the wheel that grip does nothing else (no\n"
-                    "holster equip, no magazine grab).");
+                    "wheel (or handlebars) and CLICK that grip: the arm is handed back to\n"
+                    "the game's animation -- hand on the wheel, fingers wrapped around it.\n"
+                    "Release the physical button; the hand stays attached. Click again to\n"
+                    "release the wheel and return the arm to the controller.\n\n"
+                    "Each hand toggles independently. While toggled onto the wheel that grip\n"
+                    "does nothing else (no scanner, holster equip or magazine grab).");
             }
             {
                 float r = state.xrWheelRadius > 0.0f ? state.xrWheelRadius : 0.28f;
@@ -799,20 +799,20 @@ bool DrawLiveControls(LiveControlsUiState& state) {
                         "throttle and becomes the gun: drive with the left hand on the wheel and\n"
                         "shoot with the right.\n\n"
                         "The throttle LATCHES at whatever it was when the weapon came out, so the\n"
-                        "car keeps rolling, and the LEFT STICK forward/back trims that speed while\n"
-                        "you shoot. Holster the weapon and the trigger is the throttle again.\n\n"
-                        "While the weapon is out the left stick's forward/back is taken by the\n"
-                        "trim: no lean / rock and no autodrive gesture until you holster.");
+                        "vehicle keeps its speed. Click the RIGHT STICK to toggle between idle and\n"
+                        "that saved throttle; R3 is consumed so it cannot flip the vehicle camera.\n"
+                        "Holster the weapon and the trigger becomes the throttle again.\n\n"
+                        "Left-stick forward/back is no longer consumed by gun-mode throttle.");
                 }
                 float tt = state.xrVehicleThrottleTrim > 0.0f ? state.xrVehicleThrottleTrim : 0.5f;
-                if (ImGui::SliderFloat("Throttle trim rate (/s)", &tt, 0.05f, 3.0f, "%.2f")) {
+                if (ImGui::SliderFloat("R3 throttle from idle", &tt, 0.10f, 1.0f, "%.2f")) {
                     state.xrVehicleThrottleTrim = tt;
                     changed = true;
                 }
                 if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("How much of the throttle's full travel the left stick adds or\n"
-                                      "removes per second while a weapon is out.\n"
-                                      "0.5 = two seconds held to go from idle to floored.");
+                    ImGui::SetTooltip("Throttle restored by the first R3 click if the weapon was drawn\n"
+                                      "while already at idle. When drawn while moving, R3 remembers and\n"
+                                      "restores the actual throttle that was latched instead.");
                 }
 
                 // LIVE STATE, so "it did not grab" and "it steers the wrong way" are both answerable
@@ -878,8 +878,8 @@ bool DrawLiveControls(LiveControlsUiState& state) {
             ImGui::BulletText("Left  Y       - weapon switch");
             ImGui::BulletText("Right trigger - fire | Left trigger - aim / melee block");
             ImGui::BulletText("Right grip    - holster equip / unequip (reach to the holster first)");
-            ImGui::BulletText("Left  grip    - grab the magazine during a reload");
-            ImGui::BulletText("Left  grip at the LEFT EAR - scanner, held as long as the gesture is");
+            ImGui::BulletText("Left  grip at reload part - grab and hold magazine/slide immediately");
+            ImGui::BulletText("PSVR2 left grip, held 0.18 s - scanner anywhere (not while mounted)");
             ImGui::BulletText("Left  menu button - pause menu");
             ImGui::Spacing();
             ImGui::TextUnformatted("D-Pad, as a chord: HOLD the LEFT stick click, pick with the RIGHT stick");
@@ -887,8 +887,10 @@ bool DrawLiveControls(LiveControlsUiState& state) {
             ImGui::BulletText("Released with no direction = the vanilla left stick click (L3)");
             ImGui::Spacing();
             ImGui::TextUnformatted("In a vehicle (the gestures above do not apply):");
-            ImGui::BulletText("HOLD X        - get out. B is never the exit here, so no stray press ejects you");
-            ImGui::BulletText("Left trigger  - brake | Right trigger - throttle (see the Vehicle section)");
+            ImGui::BulletText("Right B / Sense Circle - get out (native vehicle binding)");
+            ImGui::BulletText("Left X / Sense Square  - horn");
+            ImGui::BulletText("Left trigger - brake | Right trigger - throttle");
+            ImGui::BulletText("Weapon drawn: Right trigger - fire | Right-stick click - throttle off/on");
 
             ImGui::TextWrapped("Buttons follow each runtime's interaction profile (Touch / Index / "
                                "Vive / WMR). Customize the actual key bindings in the game's "

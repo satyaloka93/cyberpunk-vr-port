@@ -264,13 +264,15 @@ static const HmdPreset kHmdPresets[] = {
 };
 
 struct RuntimeOption {
-    int mode; // matches xr_runtime: 0 = OpenXR default, 1 = SteamVR
+    int mode; // matches xr_runtime: 0 = system-default OpenXR provider, 1 = force SteamVR OpenXR
     const wchar_t* label;
 };
 
+// Both choices use the OpenXR API. This selects the OpenXR runtime provider; it is not an
+// OpenVR-vs-OpenXR switch. openvr_api.dll is used only to discover SteamVR's OpenXR manifest.
 static const RuntimeOption kRuntimeOptions[] = {
-    {1, L"OpenVR  (SteamVR)"},
-    {0, L"OpenXR  (VDXR, PimaxOpenXR)"},
+    {1, L"OpenXR via SteamVR"},
+    {0, L"System-default OpenXR runtime"},
 };
 
 static HFONT g_fontHeader = nullptr;
@@ -310,6 +312,29 @@ static HWND MakeCombo(HWND parent, int id, int x, int y, int w) {
 }
 
 // --- NUOVA FUNZIONE: popola la combo risoluzioni in base all'HMD selezionato ---
+static int FindRuntimeOptionIndex(int mode) {
+    for (int i = 0; i < static_cast<int>(std::size(kRuntimeOptions)); ++i) {
+        if (kRuntimeOptions[i].mode == mode) return i;
+    }
+    return 0;
+}
+
+static bool IsPlayStationVr2Index(int hmdIndex) {
+    return hmdIndex >= 0 && hmdIndex < static_cast<int>(std::size(kHmdPresets)) &&
+           kHmdPresets[hmdIndex].mhdType == 11;
+}
+
+static void UpdateRuntimeForHmd(int hmdIndex) {
+    if (!g_hRuntime) return;
+    const bool isPsvr2 = IsPlayStationVr2Index(hmdIndex);
+    if (isPsvr2) {
+        // Sony's PC adapter exposes PSVR2 through SteamVR. The plugin still speaks OpenXR;
+        // there is no separate OpenVR renderer and no useful alternate provider for this HMD.
+        SendMessageW(g_hRuntime, CB_SETCURSEL, FindRuntimeOptionIndex(1), 0);
+    }
+    EnableWindow(g_hRuntime, isPsvr2 ? FALSE : TRUE);
+}
+
 static void PopulateResolutionCombo(int hmdIndex) {
     if (!g_hRes) return;
     SendMessageW(g_hRes, CB_RESETCONTENT, 0, 0);
@@ -372,8 +397,8 @@ LRESULT CALLBACK LauncherWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         SendMessageW(g_hHmd, CB_SETCURSEL, hmdSel, 0);
         y += 50;
 
-        // --- VR Runtime ---
-        MakeLabel(hwnd, L"VR Runtime", kMargin, y, kFieldW, 24, g_fontBody);
+        // --- OpenXR runtime provider ---
+        MakeLabel(hwnd, L"OpenXR Runtime Provider", kMargin, y, kFieldW, 24, g_fontBody);
         y += 26;
         g_hRuntime = MakeCombo(hwnd, ID_COMBO_RUNTIME, kMargin, y, kFieldW);
         const int currentRuntime = GetXrRuntimeMode();
@@ -385,6 +410,7 @@ LRESULT CALLBACK LauncherWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             }
         }
         SendMessageW(g_hRuntime, CB_SETCURSEL, runtimeSel, 0);
+        UpdateRuntimeForHmd(hmdSel);
         y += 50;
 
         // -- Render Resolution ---
@@ -437,6 +463,7 @@ LRESULT CALLBACK LauncherWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         if (id == ID_COMBO_HMD && notif == CBN_SELCHANGE) {
             const int hmdIdx = (int)SendMessageW(g_hHmd, CB_GETCURSEL, 0, 0);
             PopulateResolutionCombo(hmdIdx);
+            UpdateRuntimeForHmd(hmdIdx);
             break;
         }
 

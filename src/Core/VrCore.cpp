@@ -132,7 +132,7 @@ extern "C" int GetCurrentHmdType() {
     return g_launcherHmdType;
 }
 
-// Persist the VR runtime choice (0 = OpenXR default runtime, 1 = SteamVR/OpenVR)
+// Persist the OpenXR provider choice (0 = system default, 1 = force SteamVR OpenXR)
 // into vrport.ini. Applied on the next OpenXR init, which happens AFTER the
 // launcher closes — so picking it here takes effect for this launch.
 extern "C" void SetRuntimeModeAndPersist(int mode) {
@@ -996,6 +996,7 @@ void InitializeMountedVehicleCache() {
 
 uint64_t g_locateCameraHits = 0;
 bool g_isInVehicle = false;
+std::atomic<bool> g_isOnBike{false};
 std::atomic<bool> g_isDriving{false};
 std::atomic<int> g_sceneTier{0};
 bool g_isAiming = false;

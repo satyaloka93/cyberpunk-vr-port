@@ -50,7 +50,7 @@ Disable OpenXR Toolkit, RivaTuner, NVIDIA overlays and any other overlay.
      red4ext\plugins\CyberpunkVR_Stereo\      the ONE plugin: OpenXR, stereo, overlay, the
                                               VR avatar and hands, weapon aim, sight
                                               shaders, the settings template
-     bin\x64\openvr_api.dll                   for the SteamVR (OpenVR) runtime path
+     bin\x64\openvr_api.dll                   locates SteamVR's OpenXR runtime manifest
      bin\x64\CyberpunkVR_*Grip*.ini           captured hand poses - the smoking and lighter
                                               grips, the resting left hand, and one
                                               two-handed hold per weapon
@@ -145,9 +145,8 @@ ON FOOT
   X / Y                         reload, interact / weapon switch
   Right grip + reach to
   shoulder or hip               equip / unequip a weapon (hand-to-holster)
-  Left grip                     grab the magazine during a reload
-  Left hand to your LEFT EAR
-  + left grip                   scanner, held as long as the gesture is
+  Left grip at reload part      grab and hold the magazine/slide immediately
+  PSVR2 left grip, held 0.18 s  scanner anywhere, unless mounted or reload owns the hand
   Swing a melee weapon          native VR melee along the blade
 
   D-pad chord                   hold the LEFT stick clicked in, then pick the direction
@@ -162,8 +161,9 @@ close normally.
 
 DRIVING
 
-  Grip, hand at the wheel
-  or handlebars                 grab it - that arm goes back to the driving animation
+  Grip CLICK, hand at wheel
+  or handlebars                 toggle that hand on/off the driving animation; no continuous
+                                hold required, and left-grip scanner is suppressed
   Tilt of the line through
   both controllers              steering. One hand: that controller against the wheel
                                 centre. Adjustable deadzone and full-lock angle.
@@ -174,10 +174,10 @@ DRIVING
   Right trigger, weapon
   drawn                         FIRE. The throttle latches at the speed it had, so the car
                                 keeps rolling.
-  Left stick fwd / back,
-  weapon drawn                  trim the latched throttle
-  X, HELD                       get out. B is never the exit in a car, so no stray press
-                                can eject you at speed.
+  Right-stick CLICK,
+  weapon drawn                  toggle throttle between idle and its remembered level
+  B / Sense Circle               get out (the game's native vehicle binding)
+  X / Sense Square               horn
 
 Each hand is independent, so you can hold the wheel with one and keep the other on a gun.
 Nothing here needs to know which vehicle you are in - the reference pose is the game's own
@@ -293,7 +293,8 @@ FEATURES
 
   - VR driving - grab the actual wheel with your own hands and steer by the tilt of the
     line through your controllers, one-handed or two. A palm on the hub is the horn, and
-    drawing a weapon turns the right trigger into the gun while the throttle latches.
+    drawing a weapon turns the right trigger into the gun while the throttle latches;
+    right-stick click toggles that throttle between idle and its remembered level.
     Ported from iPowerTech's work.
 
   - VR controller mapping merged into XInput: one movement speed whatever the stick
@@ -321,9 +322,10 @@ FEATURES
       VRIK       start / stop tracking, physical body rotation and its free-look cone, the
                  cutscene-suspend tier, IK calibration, diagnostics
 
-  - SteamVR (OpenVR) runtime selectable alongside OpenXR. On canted headsets (Pimax, Index)
-    prefer the headset's own OpenXR runtime - PimaxXR is clean, SteamVR is not, and the fix
-    for that is still to come.
+  - Selectable OpenXR runtime provider: force SteamVR OpenXR or use the system default.
+    PlayStation VR2 requires SteamVR and the launcher locks that provider automatically.
+    On canted headsets (Pimax, Index), prefer the headset's own OpenXR runtime - PimaxXR
+    is clean, SteamVR is not, and the fix for that is still to come.
 
   - Pre-launch render-resolution selector: 13 headsets, 60 resolutions, every ladder
     reaching 6000 px. PlayStation VR2 and the Bigscreen Beyond 2/2e are new here.

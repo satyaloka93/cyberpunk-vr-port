@@ -226,10 +226,23 @@ extern "C" void __fastcall OnLocateCameraCallback(float* rbxPtr, float xmm0_val)
             RED4ext::Handle<RED4ext::IScriptable> playerHandle;
             RED4ext::ExecuteGlobalFunction("GetPlayer;GameInstance", &playerHandle, gameInstance);
 
+            bool onBike = false;
+            const char* mountedTypeName = "<none>";
             if (playerHandle && g_mountedVehicleProp) {
                 auto mountedVehicle = g_mountedVehicleProp->GetValue<RED4ext::WeakHandle<RED4ext::IScriptable>>(playerHandle.instance);
                 g_isInVehicle = (mountedVehicle.instance != nullptr);
+                if (mountedVehicle.instance) {
+                    RED4ext::CClass* mountedType = mountedVehicle.instance->GetType();
+                    mountedTypeName = mountedType ? mountedType->name.ToString() : "<unknown>";
+                    const RED4ext::CName bikeClass("vehicleBikeBaseObject");
+                    for (RED4ext::CClass* cls = mountedType; cls; cls = cls->parent) {
+                        if (cls->name == bikeClass) { onBike = true; break; }
+                    }
+                }
+            } else {
+                g_isInVehicle = false;
             }
+            g_isOnBike.store(onBike, std::memory_order_relaxed);
 
             // DRIVER SEAT, not just mounted. Only the driver has a wheel (or handlebars) in front
             // of them, and the wheel grab hands the arms back to the driving animation -- which is
@@ -251,6 +264,24 @@ extern "C" void __fastcall OnLocateCameraCallback(float* rbxPtr, float xmm0_val)
                 }
             }
             g_isDriving.store(driving, std::memory_order_relaxed);
+
+            // Vehicle/VRIK transition evidence. This is intentionally change-only: it proves that
+            // the arms-only mounted path actually engaged without turning ordinary logs verbose.
+            static bool s_vehicleStateKnown = false;
+            static bool s_lastMounted = false;
+            static bool s_lastDriving = false;
+            static bool s_lastBike = false;
+            if (!s_vehicleStateKnown || s_lastMounted != g_isInVehicle ||
+                s_lastDriving != driving || s_lastBike != onBike) {
+                Log("[VR][vehicle] mounted=%d driving=%d bike=%d type=%s mountedVehicleProperty=%s -> VRIK %s\n",
+                    g_isInVehicle ? 1 : 0, driving ? 1 : 0, onBike ? 1 : 0,
+                    mountedTypeName, g_mountedVehicleProp ? "resolved" : "MISSING",
+                    g_isInVehicle ? "arms-only" : "full-body");
+                s_vehicleStateKnown = true;
+                s_lastMounted = g_isInVehicle;
+                s_lastDriving = driving;
+                s_lastBike = onBike;
+            }
 
             if (playerHandle && g_isAimingProp) {
                 g_isAiming = g_isAimingProp->GetValue<bool>(playerHandle.instance);
@@ -710,9 +741,15 @@ extern "C" void __fastcall OnLocateCameraCallback(float* rbxPtr, float xmm0_val)
         // consistent with) sees one number and they cannot drift apart.
         float vehOff[3] = { 0.0f, 0.0f, 0.0f };
         if (allowGameCameraTranslation && g_isInVehicle) {
-            vehOff[0] = g_liveControls.xrVehHeadOffsetX;
-            vehOff[1] = g_liveControls.xrVehHeadOffsetY;
-            vehOff[2] = g_liveControls.xrVehHeadOffsetZ;
+            if (g_isOnBike.load(std::memory_order_relaxed)) {
+                vehOff[0] = g_liveControls.xrBikeHeadOffsetX;
+                vehOff[1] = g_liveControls.xrBikeHeadOffsetY;
+                vehOff[2] = g_liveControls.xrBikeHeadOffsetZ;
+            } else {
+                vehOff[0] = g_liveControls.xrVehHeadOffsetX;
+                vehOff[1] = g_liveControls.xrVehHeadOffsetY;
+                vehOff[2] = g_liveControls.xrVehHeadOffsetZ;
+            }
         }
         // EYE-VIEW offset ("bake to eyes"): view-only, no feedback into the body solve.
         float eyeBake[3] = { 0.0f, 0.0f, 0.0f };

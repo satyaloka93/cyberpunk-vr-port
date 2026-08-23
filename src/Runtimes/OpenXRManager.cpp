@@ -668,6 +668,12 @@ bool OpenXRManager::Init() {
     XrSystemProperties systemProps{XR_TYPE_SYSTEM_PROPERTIES};
     if (XR_SUCCEEDED(xrGetSystemProperties(m_instance, m_systemId, &systemProps))) {
         strncpy_s(m_systemName, systemProps.systemName, _TRUNCATE);
+        const bool isPsvr2 = strstr(systemProps.systemName, "playstation_vr2") != nullptr ||
+                             strstr(systemProps.systemName, "PS VR2") != nullptr;
+        m_runtimeIsPsvr2.store(isPsvr2, std::memory_order_relaxed);
+        if (isPsvr2) {
+            Log("OpenXRManager[PSVR2]: headset detected; SteamVR exposes Sense as Oculus Touch.\n");
+        }
         Log("OpenXRManager: OpenXR system vendorId=0x%X systemName=\"%s\" maxSwapchain=%ux%u maxLayerCount=%u positionTracking=%d orientationTracking=%d\n",
             systemProps.vendorId,
             systemProps.systemName,
@@ -733,9 +739,13 @@ bool OpenXRManager::Init() {
             makeAction(m_triggerAction,         XR_ACTION_TYPE_FLOAT_INPUT,    "trigger",          "Trigger",              true);
             makeAction(m_gripAction,            XR_ACTION_TYPE_FLOAT_INPUT,    "grip",             "Grip",                 true);
             makeAction(m_thumbstickClickAction, XR_ACTION_TYPE_BOOLEAN_INPUT,  "thumbstick_click", "Thumbstick Click",     true);
-            makeAction(m_primaryButtonAction,   XR_ACTION_TYPE_BOOLEAN_INPUT,  "primary_button",   "Primary Button (A/X)", true);
-            makeAction(m_secondaryButtonAction, XR_ACTION_TYPE_BOOLEAN_INPUT,  "secondary_button", "Secondary Button (B/Y)", true);
-            makeAction(m_menuButtonAction,      XR_ACTION_TYPE_BOOLEAN_INPUT,  "menu",             "Menu Button",          false);
+            makeAction(m_primaryButtonAction,        XR_ACTION_TYPE_BOOLEAN_INPUT, "primary_button",         "Primary Button (A/X)",       true);
+            makeAction(m_secondaryButtonAction,      XR_ACTION_TYPE_BOOLEAN_INPUT, "secondary_button",       "Secondary Button (B/Y)",     true);
+            makeAction(m_secondaryButtonTouchAction, XR_ACTION_TYPE_BOOLEAN_INPUT, "secondary_button_touch", "Secondary Button Touch",     true);
+            makeAction(m_thumbrestTouchAction,       XR_ACTION_TYPE_BOOLEAN_INPUT, "thumbrest_touch",        "D-pad Shift Thumbrest Touch", true);
+            // UEVR's proven PSVR2 route uses one global action for both auxiliary Sense paths.
+            // SteamVR may reserve/drop them; Triangle-touch + R3 is retained as a fallback.
+            makeAction(m_menuButtonAction,           XR_ACTION_TYPE_BOOLEAN_INPUT, "systembutton",           "Sense Create / Options",     false);
         }
         Log("OpenXRManager[Input]: gameplay action set %s (xr_input_actions=%d)\n",
             inputActionsEnabled ? "ENABLED" : "DISABLED (pose-only)", (int)inputActionsEnabled);
@@ -795,9 +805,15 @@ bool OpenXRManager::Init() {
             { m_gripAction,            "/user/hand/right/input/squeeze/value" },
             { m_primaryButtonAction,   "/user/hand/left/input/x/click" },
             { m_primaryButtonAction,   "/user/hand/right/input/a/click" },
-            { m_secondaryButtonAction, "/user/hand/left/input/y/click" },
-            { m_secondaryButtonAction, "/user/hand/right/input/b/click" },
-            { m_menuButtonAction,      "/user/hand/left/input/menu/click" },
+            { m_secondaryButtonAction,      "/user/hand/left/input/y/click" },
+            { m_secondaryButtonAction,      "/user/hand/right/input/b/click" },
+            // On PSVR2, Triangle touch survives SteamVR's Oculus remap as y/touch.
+            { m_secondaryButtonTouchAction, "/user/hand/left/input/y/touch" },
+            { m_secondaryButtonTouchAction, "/user/hand/right/input/b/touch" },
+            { m_thumbrestTouchAction,       "/user/hand/left/input/thumbrest/touch" },
+            { m_thumbrestTouchAction,       "/user/hand/right/input/thumbrest/touch" },
+            { m_menuButtonAction,           "/user/hand/left/input/menu/click" },
+            { m_menuButtonAction,           "/user/hand/right/input/system/click" },
         });
 
         // -- Valve Index: A/B on both hands, system as menu --

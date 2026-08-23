@@ -42,6 +42,12 @@ struct VRControllerState {
     float    rightThumbY  = 0.0f;
     float    leftGrip     = 0.0f;
     float    rightGrip    = 0.0f;
+    // Raw application SystemButton state. XInput owns tap/hold timing so the
+    // one-poll Start/Back edge cannot fall between the XR and game loops.
+    bool     pauseSelectPressed = false;
+    // Triangle-touch/thumbrest/L3 shift hold. The XInput merge uses this to
+    // clear any physical or Steam-input right-stick axes as well as OpenXR's.
+    bool     dpadShiftActive = false;
     bool     leftHandValid  = false;
     bool     rightHandValid = false;
 };
@@ -766,6 +772,7 @@ public:
     float GetRuntimeHorizontalFovDeg() const { return m_runtimeHorizontalFovDeg.load(std::memory_order_relaxed); }
     const char* GetSystemName() const { return m_systemName; }
     bool IsRuntimeSteamVR() const { return m_runtimeIsSteamVR.load(std::memory_order_relaxed); }
+    bool IsRuntimePsvr2() const { return m_runtimeIsPsvr2.load(std::memory_order_relaxed); }
     bool IsRuntimeVirtualDesktop() const { return m_runtimeIsVirtualDesktop.load(std::memory_order_relaxed); }
     float GetRuntimeVerticalFovDeg() const { return m_runtimeVerticalFovDeg.load(std::memory_order_relaxed); }
     float GetRuntimeIpd() const { return m_runtimeIpd.load(std::memory_order_relaxed); }
@@ -847,7 +854,9 @@ private:
     XrAction m_thumbstickClickAction = XR_NULL_HANDLE;   // Bool, per hand (L3/R3)
     XrAction m_primaryButtonAction = XR_NULL_HANDLE;     // Bool, per hand (X / A)
     XrAction m_secondaryButtonAction = XR_NULL_HANDLE;   // Bool, per hand (Y / B)
-    XrAction m_menuButtonAction = XR_NULL_HANDLE;        // Bool, left only on Touch
+    XrAction m_secondaryButtonTouchAction = XR_NULL_HANDLE; // Bool, per hand (Y/B touch)
+    XrAction m_thumbrestTouchAction = XR_NULL_HANDLE;    // Bool, per hand (Touch thumbrest)
+    XrAction m_menuButtonAction = XR_NULL_HANDLE;        // Global Create/Options application action
     XrPath m_handPaths[2] = { XR_NULL_PATH, XR_NULL_PATH };
     XrSpace m_handSpaces[2] = { XR_NULL_HANDLE, XR_NULL_HANDLE };
     // Latest controller snapshot, owned by the frame thread.
@@ -1191,6 +1200,7 @@ private:
     float m_loggedRuntimeIpd = 0.0f;
     float m_loggedForcedProjectionFovDeg = 0.0f;
     std::atomic<bool> m_runtimeIsSteamVR = false;
+    std::atomic<bool> m_runtimeIsPsvr2 = false;
     std::atomic<bool> m_runtimeIsVirtualDesktop = false;
     // Head velocity in the base-recentered frame (rad/s, m/s), sampled from
     // xrLocateSpace. See GetHeadPose().

@@ -80,6 +80,7 @@ extern volatile float g_dbgLastOriginalFov;
 
 // Player state the hub refreshes from RTTI once per frame.
 extern bool g_isInVehicle;
+extern std::atomic<bool> g_isOnBike;
 // MOUNTED IS NOT DRIVING. g_isInVehicle (and shared[31]) mean "mounted to anything", passenger seats
 // included; this one means the DRIVER seat, from VehicleComponent::IsDriver. The wheel grab needs the
 // distinction because it hands the arms back to the DRIVING animation, which is the wrong pose in

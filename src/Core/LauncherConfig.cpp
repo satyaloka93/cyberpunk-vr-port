@@ -72,6 +72,9 @@ void InitRuntimePaths() {
     g_liveControls.xrVehHeadOffsetX = 0.0f;
     g_liveControls.xrVehHeadOffsetY = 0.0f;
     g_liveControls.xrVehHeadOffsetZ = 0.0f;
+    g_liveControls.xrBikeHeadOffsetX = 0.0f;
+    g_liveControls.xrBikeHeadOffsetY = 0.0f;
+    g_liveControls.xrBikeHeadOffsetZ = 0.0f;
 
     // DRIVING. Wheel grab ON. 0.28 m is a hand-sized reach around the animated wheel pose -- wide
     // enough that you do not have to hunt for a wheel you cannot see, tight enough that a hand
@@ -85,8 +88,7 @@ void InitRuntimePaths() {
     g_liveControls.xrWheelSteerDeadDeg = 1.5f;
     // Horn ON: a hand on the middle of the wheel honks, as it would in a real car. 12 cm is the hub
     // pad, comfortably inside the ~17 cm the animation holds the rim at.
-    // OFF: the horn gesture has no button left. Vehicle_Horn is X, and X is the exit now -- see
-    // the horn block in XInput.cpp. On, the gesture is counted and nothing is pressed.
+    // The proximity gesture supplements the native Sense Square / X horn binding.
     g_liveControls.xrWheelHorn = 0;
     g_liveControls.xrWheelHornRadius = 0.12f;
     // Driving with a gun: trigger = fire, throttle latched. 0.5 per second on the trim means the
@@ -192,6 +194,13 @@ void EnsureLiveControlFileExists() {
     fprintf(file, "xr_mono_xqueue_wait=0\n");
     fprintf(file, "xr_snap_turn_pulse_ms=30\n");
     fprintf(file, "xr_mono_depth_capture=1\n");
+    fprintf(file, "xr_veh_head_offset_x=0.000\n");
+    fprintf(file, "xr_veh_head_offset_y=0.000\n");
+    fprintf(file, "xr_veh_head_offset_z=0.000\n");
+    fprintf(file, "xr_bike_head_offset_x=0.000\n");
+    fprintf(file, "xr_bike_head_offset_y=0.000\n");
+    fprintf(file, "xr_bike_head_offset_z=0.000\n");
+    fprintf(file, "xr_wheel_grab=1\n");
     fclose(file);
 }
 

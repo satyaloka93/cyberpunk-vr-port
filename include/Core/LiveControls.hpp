@@ -62,20 +62,25 @@ struct LiveControls {
     // it is moved. It exists because the on-foot trio is a STANDING calibration: seated, the vehicle
     // camera is already in the right place (which is why the two automatic bakes are dropped there --
     // see LocateCamera), and a standing offset then carries the view off the seat.
-    volatile float xrVehHeadOffsetX;
+    volatile float xrVehHeadOffsetX; // car/non-bike mounted offset
     volatile float xrVehHeadOffsetY;
     volatile float xrVehHeadOffsetZ;
+    // Bikes need an independent seated viewpoint: moving the motorcycle view must not move the
+    // already-problematic car body/camera relationship.
+    volatile float xrBikeHeadOffsetX;
+    volatile float xrBikeHeadOffsetY;
+    volatile float xrBikeHeadOffsetZ;
     // ---- DRIVING: hands on the wheel (iPowerTech, 425d4262 + 51861118) --------------------------
     // None of these is published to a shared slot: the consumers (src/Anim/WheelGrab.cpp and the
     // XInput merge) are in this DLL and read them straight from here.
-    volatile int xrWheelGrab;        // 1 (default) = while DRIVING, a grip squeezed with the hand on the animated wheel pose hands that arm back to the driving animation. Per hand.
+    volatile int xrWheelGrab;        // 1 (default) = while DRIVING, click grip at the animated wheel pose to toggle that arm onto the wheel; click again to release. Per hand.
     volatile float xrWheelRadius;    // how near the animated hand the controller must be for the grip to mean "grab", metres. Default 0.28.
     volatile float xrWheelSteerMaxDeg;  // controller tilt that means full lock, degrees. 90 (default) = hands vertical, a real wheel 1:1. Lower turns less wrist into more steering.
     volatile float xrWheelSteerDeadDeg; // steering deadzone around centre, degrees. 1.5 (default) swallows tremor only; every degree here is a degree of dead wheel.
     volatile int xrWheelHorn;        // 1 (default) = a hand laid on the wheel HUB holds the horn (pad X = Vehicle_Horn) for as long as it stays there.
     volatile float xrWheelHornRadius;   // how near the wheel centre counts as "on the hub", metres. Default 0.12.
-    volatile int xrVehicleGunTrigger;   // 1 (default) = with a weapon out in the driver seat the right trigger FIRES (pad RB) and the throttle is latched.
-    volatile float xrVehicleThrottleTrim; // how much of the throttle's full travel the left stick adds or removes per second while a weapon is out. Default 0.5.
+    volatile int xrVehicleGunTrigger;   // 1 (default) = with a weapon out in the driver seat RT fires; throttle latches and R3 toggles it off/on.
+    volatile float xrVehicleThrottleTrim; // fallback throttle restored by R3 when the weapon was drawn at idle. Existing key retained for compatibility. Default 0.5.
     volatile int xrPhysicalBodyRotation; // 1 = physical body rotation (avatar body follows HMD/aim heading). 0 (default) = classic stick/snap heading. Gates the aiming/weapon body-turn paths; vehicles unaffected.
 };
 

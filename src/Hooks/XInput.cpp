@@ -76,12 +76,9 @@ extern "C" __declspec(dllexport) float CyberpunkVR_ScannerEarMargin = 0.04f;
 extern "C" __declspec(dllexport) int32_t CyberpunkVR_ScannerEnterMs = 120;
 extern "C" __declspec(dllexport) int32_t CyberpunkVR_ScannerExitMs  = 250;
 
-// HOW LONG X MUST BE HELD TO LEAVE A CAR, milliseconds. Not zero, and that is the whole point:
-// ExitVehicle_Button has no hold in the game's own mappings, so the vehicle state machine acts on
-// the first frame it sees -- and at speed that means jumping out. Level-mirroring X ejected the
-// player the moment the button was brushed while driving, which reads as a physics bug rather than
-// as a button. 400 ms is the timeout the game uses for its own hold bindings.
-extern "C" __declspec(dllexport) int32_t CyberpunkVR_VehicleExitHoldMs = 400;
+// Retained as an exported compatibility symbol for older overlays. Vehicle exit now follows the
+// game's native controller contract directly: Sense Circle / XInput B exits; Square / X remains horn.
+extern "C" __declspec(dllexport) int32_t CyberpunkVR_VehicleExitHoldMs = 0;
 extern "C" __declspec(dllexport) int32_t CyberpunkVR_DashStickUp = 1;
 // HOW FAR THE RIGHT STICK MUST GO TO SNAP-TURN, and how far back before it can snap again. 0.90 puts
 // the snap where every other gesture in this file already is (sprint, crouch, dash) -- a deliberate
@@ -116,6 +113,19 @@ static bool     g_xinputHooked = false;
 static int      g_xinputSnapArmedDir = 0;       // currently latched stick direction so we don't fire while held
 static DWORD    g_xinputSnapPulseStartMs = 0;   // when the current pulse began
 static int      g_xinputSnapPulseDir = 0;       // direction of the active pulse (0 = idle)
+
+// Complete-state, monotonic virtual packet stream. With no physical pad, the real call returns
+// packet zero on every poll; comparing only buttons/triggers caused stick and held-input loss.
+static SRWLOCK  g_xinputPacketLock = SRWLOCK_INIT;
+static XINPUT_GAMEPAD g_xinputLastMergedGamepad{};
+static DWORD    g_xinputMergedPacket = 0;
+static bool     g_xinputMergedPacketInitialized = false;
+
+// UEVR-style dual-role Sense SystemButton: quick release -> Start, >=500 ms hold -> Back.
+static SRWLOCK  g_pauseSelectLock = SRWLOCK_INIT;
+static bool     g_pauseSelectWasPressed = false;
+static bool     g_pauseSelectLongPressFired = false;
+static ULONGLONG g_pauseSelectPressedAtMs = 0;
 
 extern "C" int GetSnapTurnPulseMs();
 
@@ -152,6 +162,45 @@ DWORD WINAPI HookedXInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState) {
         r = ERROR_SUCCESS;
     }
 
+    static LONG s_firstStatePoll = 0;
+    if (InterlockedCompareExchange(&s_firstStatePoll, 1, 0) == 0)
+        Log("XInput: game began polling virtual VR gamepad state on user 0.\n");
+
+    // Interpret Create/Options in the game-poll domain so one-frame edges cannot be missed.
+    enum class PauseSelectEvent { None, Start, Back };
+    PauseSelectEvent pauseSelectEvent = PauseSelectEvent::None;
+    const ULONGLONG pauseSelectNowMs = GetTickCount64();
+    AcquireSRWLockExclusive(&g_pauseSelectLock);
+    if (vr.pauseSelectPressed) {
+        if (!g_pauseSelectWasPressed) {
+            g_pauseSelectPressedAtMs = pauseSelectNowMs;
+            g_pauseSelectLongPressFired = false;
+        } else if (!g_pauseSelectLongPressFired && pauseSelectNowMs - g_pauseSelectPressedAtMs >= 500) {
+            g_pauseSelectLongPressFired = true;
+            pauseSelectEvent = PauseSelectEvent::Back;
+        }
+    } else if (g_pauseSelectWasPressed) {
+        if (!g_pauseSelectLongPressFired) {
+            pauseSelectEvent = (pauseSelectNowMs - g_pauseSelectPressedAtMs >= 500)
+                ? PauseSelectEvent::Back : PauseSelectEvent::Start;
+        }
+        g_pauseSelectLongPressFired = false;
+    }
+    g_pauseSelectWasPressed = vr.pauseSelectPressed;
+    ReleaseSRWLockExclusive(&g_pauseSelectLock);
+
+    if (pauseSelectEvent == PauseSelectEvent::Start) {
+        pState->Gamepad.wButtons |= XINPUT_GAMEPAD_START;
+        static LONG s_startLogged = 0;
+        if (InterlockedCompareExchange(&s_startLogged, 1, 0) == 0)
+            Log("XInput[PSVR2]: SystemButton quick press mapped to Start/Pause.\n");
+    } else if (pauseSelectEvent == PauseSelectEvent::Back) {
+        pState->Gamepad.wButtons |= XINPUT_GAMEPAD_BACK;
+        static LONG s_backLogged = 0;
+        if (InterlockedCompareExchange(&s_backLogged, 1, 0) == 0)
+            Log("XInput[PSVR2]: SystemButton hold mapped to Back/Inventory.\n");
+    }
+
     // Buttons: OR (so a physical pad can still augment, and vice versa) -- except the two the port has
     // taken for itself, which are masked out here instead of reaching the pad:
     //
@@ -171,11 +220,9 @@ DWORD WINAPI HookedXInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState) {
     //   to get out of a vehicle at all. A magazine drop only exists while a gameplay screen is up, so
     //   that is the only place the port needs the button.
     //
-    //   IN A VEHICLE X IS THE EXIT, not the horn. Vehicle_Horn is X and ExitVehicle_Button is B, so
-    //   the mask above had removed the only pad exit while leaving the horn -- exactly backwards for
-    //   a seated player. X is taken here and re-emitted as B further down; B itself is left alone in a
-    //   vehicle, both because it is the vanilla exit and because there is no physical reload in a car
-    //   for the mask to protect.
+    //   IN A VEHICLE the native controller contract is retained: B / Sense Circle is
+    //   ExitVehicle_Button and X / Sense Square is Vehicle_Horn. Physical reload is inactive while
+    //   mounted, so neither button needs to be owned or translated by the port.
     // B ONLY WHILE A WEAPON IS IN HAND, and that is a correction. The mask exists to protect the
     // physical reload's magazine drop -- and a magazine drop cannot happen with nothing to drop it
     // from. Taken on every gameplay screen instead, it also swallowed B where B is Exit_Button, so
@@ -187,17 +234,17 @@ DWORD WINAPI HookedXInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState) {
     // which is what PhoneSystem.IsPhoneOpened reads. Not wired yet; this covers the common case.)
     const uint16_t kPortOwnedButtons =
         static_cast<uint16_t>(0x0080 | (g_hasWeaponEquipped ? 0x2000 : 0x0000));
-    // X AND B BOTH, and B is the correction: letting the raw B through in a car looked more
-    // forgiving and was the opposite. B is ExitVehicle_Button, so a stray press ejects the
-    // player from a moving car -- which reads as being thrown across the street, not as a
-    // button. Exit is a deliberate X press now, translated below; nothing else can eject.
-    constexpr uint16_t kVehicleOwnedButtons = 0x4000 | 0x2000;   // X = get out, B = never by accident
     const bool gameplayScreen = (g_menuModeValue == 0);
     const bool mounted = g_isInVehicle;
     uint16_t ownedNow = 0;
-    if (gameplayScreen) ownedNow = mounted ? kVehicleOwnedButtons : kPortOwnedButtons;
+    if (gameplayScreen && !mounted) ownedNow = kPortOwnedButtons;
     pState->Gamepad.wButtons |=
         (vr.buttons & static_cast<uint16_t>(~ownedNow));
+    if (mounted && gameplayScreen && (vr.buttons & 0x2000) != 0) {
+        static LONG s_vehicleCircleLogged = 0;
+        if (InterlockedCompareExchange(&s_vehicleCircleLogged, 1, 0) == 0)
+            Log("XInput[PSVR2]: Sense Circle passed through as vehicle B/ExitVehicle.\n");
+    }
 
     // MENU-ONLY: right grip = RB (right shoulder) for tab navigation to the RIGHT,
     // symmetric with the left grip's LB. The right grip is deliberately NEVER merged as
@@ -270,7 +317,7 @@ DWORD WINAPI HookedXInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState) {
         if (dtMs < 0.0) dtMs = 0.0;
         if (dtMs > 100.0) dtMs = 100.0;   // a hitch must not satisfy a whole window by itself
 
-        if (CyberpunkVR_ScannerGesture != 0) {
+        if (CyberpunkVR_ScannerGesture != 0 && !OpenXRManager::Get().IsRuntimePsvr2()) {
             // Left hand, HMD-local: [0] valid, [1..3] position. An INVALID sample counts as absence --
             // it feeds the exit timer rather than dropping the scan, because a dropout is exactly what
             // that timer exists to ride out.
@@ -306,7 +353,7 @@ DWORD WINAPI HookedXInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState) {
             // a headset should do. And the ear zone is what keeps this off the reload -- the
             // magazine grab is a left grip too, but it happens at the weapon, not at the head.
             const bool gripHeld = vr.leftGrip >= 0.7f;
-            scannerHold = s_earArmed && gripHeld && (g_menuModeValue == 0);
+            scannerHold = s_earArmed && gripHeld && (g_menuModeValue == 0) && !g_isInVehicle;
         } else {
             s_earArmed = false;
             s_inMs = 0.0;
@@ -340,12 +387,15 @@ DWORD WINAPI HookedXInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState) {
     // magazine drop cannot also dodge.
     OpenXRManager::Get().SetSharedSlot(vrshared::kRightSecondaryBtn, (vr.buttons & 0x2000) ? 1.0f : 0.0f);
     OpenXRManager::Get().SetSharedSlot(vrshared::kLeftSecondaryBtn,  (vr.buttons & 0x8000) ? 1.0f : 0.0f);
-    // The right stick click, which the merge above deliberately does NOT pass on: the physical reload uses it as
-    // the slide release. Published as a flag; the Lua side takes the rising edge.
-    // The scanner used to hold this click and the publish was suppressed while it did. It fires on
-    // the left grip now, so the click means one thing again and needs no guard.
+    // The right stick click, which the merge above deliberately does NOT pass on during on-foot
+    // gameplay: the physical reload uses it as the slide release and Lua takes the rising edge.
+    // Mounted with a gun, R3 belongs to the throttle toggle instead; suppress the reload publication
+    // as well as consuming the final XInput button below, so one click has exactly one owner.
+    const bool vehicleGunControls = g_isDriving.load(std::memory_order_relaxed)
+                                 && g_hasWeaponEquipped
+                                 && g_liveControls.xrVehicleGunTrigger != 0;
     OpenXRManager::Get().SetSharedSlot(vrshared::kRightStickClick,
-                                       (vr.buttons & 0x0080) ? 1.0f : 0.0f);
+        (!vehicleGunControls && (vr.buttons & XINPUT_GAMEPAD_RIGHT_THUMB)) ? 1.0f : 0.0f);
     // One switch for the whole port. The launcher's DEBUG checkbox already gates the plugin's own
     // chatter; republishing it here lets the CET bridges obey it too, live, without each of them
     // growing a setting of its own that nobody remembers to turn off.
@@ -471,51 +521,54 @@ DWORD WINAPI HookedXInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState) {
     //
     // So while a weapon is equipped in the driver seat:
     //   * the right trigger becomes FIRE (pressed through as RB),
-    //   * the throttle is LATCHED at whatever it was the instant the weapon came out, so the car keeps
-    //     rolling with nothing holding RT,
-    //   * the left stick's Y TRIMS that latched throttle (forward = more, back = less).
+    //   * the throttle is LATCHED at whatever it was the instant the weapon came out, so drawing does
+    //     not change speed,
+    //   * each RIGHT-STICK CLICK toggles that throttle between idle and the last nonzero setting.
     // Holstering ends all three and the trigger is the throttle again, no state left behind.
     //
-    // The trim axis is CONSUMED (zeroed, and the sprint gesture on it suppressed): in a vehicle stick Y
-    // is lean/rock and its CLICK is Vehicle_Autodrive, which our full-forward gesture asserts as L3 --
-    // a throttle trim that handed the car to the autopilot at the top of its travel would be worse than
-    // no trim at all. Stick X is untouched, so stick steering still works for anyone not holding the
-    // wheel.
+    // R3 is CONSUMED in this mode so it cannot also toggle the inverse vehicle camera. Left-stick Y is
+    // deliberately left alone now: it no longer has to be held forward or consumed as a throttle trim.
+    // Stick X likewise remains available to anyone steering without the physical wheel gesture.
     bool vehGunMode = false;
     {
         static bool  s_vehGunPrev = false;
+        static bool  s_vehR3Prev = false;
         static float s_vehThrottle = 0.0f;
-        static LARGE_INTEGER s_vehGunQpc = {};
+        static float s_vehThrottleResume = 1.0f;
 
-        vehGunMode = (g_isDriving.load(std::memory_order_relaxed) && g_hasWeaponEquipped
-                      && g_liveControls.xrVehicleGunTrigger != 0);
+        vehGunMode = vehicleGunControls;
         if (vehGunMode) {
-            LARGE_INTEGER now, freq;
-            QueryPerformanceCounter(&now);
-            QueryPerformanceFrequency(&freq);
-            float dt = 0.0f;
-            if (s_vehGunPrev && s_vehGunQpc.QuadPart != 0 && freq.QuadPart > 0) {
-                dt = static_cast<float>(static_cast<double>(now.QuadPart - s_vehGunQpc.QuadPart)
-                                        / static_cast<double>(freq.QuadPart));
-            }
-            if (dt < 0.0f) dt = 0.0f;
-            if (dt > 0.10f) dt = 0.10f;   // a hitch must not slam the throttle
-            s_vehGunQpc = now;
+            const bool r3Held = (vr.buttons & XINPUT_GAMEPAD_RIGHT_THUMB) != 0;
 
             // Freeze on the way in: whatever the trigger (ours or a physical pad's) was asking for on
-            // the last frame before the weapon appeared is the speed the car holds.
-            if (!s_vehGunPrev) s_vehThrottle = pState->Gamepad.bRightTrigger / 255.0f;
-
-            const float trimRate = g_liveControls.xrVehicleThrottleTrim > 0.0f
-                                 ? g_liveControls.xrVehicleThrottleTrim : 0.5f;
-            s_vehThrottle += ly * trimRate * dt;
-            if (s_vehThrottle < 0.0f) s_vehThrottle = 0.0f;
-            if (s_vehThrottle > 1.0f) s_vehThrottle = 1.0f;
+            // the last frame before the weapon appeared is the speed the vehicle keeps. Remember the
+            // latest useful value so an off->on click restores it instead of imposing an arbitrary
+            // half/full throttle. If the weapon was drawn at idle, the first click uses full throttle.
+            if (!s_vehGunPrev) {
+                s_vehThrottle = pState->Gamepad.bRightTrigger / 255.0f;
+                if (s_vehThrottle > 0.02f) {
+                    s_vehThrottleResume = s_vehThrottle;
+                } else {
+                    float fallback = g_liveControls.xrVehicleThrottleTrim;
+                    if (!(fallback >= 0.10f) || fallback > 1.0f) fallback = 0.50f;
+                    s_vehThrottleResume = fallback;
+                }
+                s_vehR3Prev = r3Held;   // a click already held during draw is not a fresh toggle
+            } else if (r3Held && !s_vehR3Prev) {
+                if (s_vehThrottle > 0.02f) {
+                    s_vehThrottleResume = s_vehThrottle;
+                    s_vehThrottle = 0.0f;
+                } else {
+                    s_vehThrottle = s_vehThrottleResume;
+                }
+            }
+            s_vehR3Prev = r3Held;
 
             // Assignment, not max(): the trigger is the gun's now, and the value it reports must not
-            // leak back into the throttle it no longer drives.
+            // leak back into the throttle it no longer drives. Consume R3 after the earlier raw-button
+            // merge so the same click cannot toggle VehicleInverseCameraToggle_Button.
             pState->Gamepad.bRightTrigger = static_cast<BYTE>(s_vehThrottle * 255.0f + 0.5f);
-            pState->Gamepad.sThumbLY = 0;                                   // consumed by the trim
+            pState->Gamepad.wButtons &= static_cast<WORD>(~XINPUT_GAMEPAD_RIGHT_THUMB);
             // RB = ranged attack. THE PORT'S TRIGGER OVERRIDE STILL DECIDES, because in this mode the
             // shot leaves through RB and not through the trigger byte the override was written for: a
             // revolver with its cylinder swung out would otherwise fire quite happily from the driver
@@ -524,6 +577,8 @@ DWORD WINAPI HookedXInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState) {
                                 : (trgMode > 0.5f) ? false
                                 : (vr.rightTrigger > 0.5f);
             if (fireHeld) pState->Gamepad.wButtons |= 0x0200;
+        } else {
+            s_vehR3Prev = false;
         }
         s_vehGunPrev = vehGunMode;
     }
@@ -646,9 +701,16 @@ DWORD WINAPI HookedXInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState) {
         g_sprintInputActive = (sfPub >= 0) ? (sfPub != 0) : wantSprint;
     }
 
-    // Right stick = camera turn / pitch.
+    // Right stick = camera turn / pitch. A shifted D-pad hold owns BOTH final axes, including
+    // values contributed by Steam Input or a physical pad, so scanner targeting cannot drift.
     float rx = ApplyStickDeadzone(vr.rightThumbX, 0.18f);
     float ry = ApplyStickDeadzone(vr.rightThumbY, 0.18f);
+    if (vr.dpadShiftActive) {
+        rx = 0.0f;
+        ry = 0.0f;
+        pState->Gamepad.sThumbRX = 0;
+        pState->Gamepad.sThumbRY = 0;
+    }
 
     // Right stick pushed near FULL down => CROUCH. Same bind as the right-stick click
     // (R3) used today; we assert R3 while the stick is held fully down and consume the
@@ -757,48 +819,23 @@ DWORD WINAPI HookedXInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState) {
     // The scanner, as the LB the game's Vision_Hold_Button listens for. Level-triggered by
     // construction: it is a HOLD binding, so it stays down exactly as long as the gesture does.
     if (scannerHold) synthButtons |= 0x0100;   // XINPUT_GAMEPAD_LEFT_SHOULDER
-    // X GETS YOU OUT OF THE CAR, HELD. The game has no pad binding for the exit except B
-    // (ExitVehicle_Button = IK_F + IK_Pad_B_CIRCLE), so the press is translated rather than rebound:
-    // X is held out of the merge above while mounted, and mirrored to B here.
-    //
-    // A HOLD, not a level mirror, and that is a correction rather than a refinement. ExitVehicle_Button
-    // carries no <hold> and no acceptedEvents in the game's mappings, so the vehicle state machine acts
-    // on the first frame it sees the action -- and at speed acting on it means throwing the player out
-    // of the car. Mirrored level, brushing X while driving ejected them into a ragdoll, which reads as
-    // a collision or physics bug and not as a button at all. Held, a stray tap costs nothing.
-    {
-        static uint64_t s_exitDownSinceMs = 0;
-        const bool xHeld = mounted && gameplayScreen && (vr.buttons & 0x4000) != 0;
-        if (!xHeld) {
-            s_exitDownSinceMs = 0;
-        } else {
-            const uint64_t now = GetTickCount64();
-            if (s_exitDownSinceMs == 0) s_exitDownSinceMs = now;
-            const uint64_t need = (CyberpunkVR_VehicleExitHoldMs > 0)
-                                      ? static_cast<uint64_t>(CyberpunkVR_VehicleExitHoldMs) : 400;
-            if (now - s_exitDownSinceMs >= need) {
-                synthButtons |= 0x2000;   // XINPUT_GAMEPAD_B = ExitVehicle_Button
-            }
-        }
-    }
+    // Vehicle buttons need no synthetic translation: Circle already contributes XInput B,
+    // which the game binds to ExitVehicle_Button, while Square remains X / Vehicle_Horn.
     pState->Gamepad.wButtons |= synthButtons;
 
-    // Bump packet number on any change so XInput consumers latch it.
-    static uint16_t s_lastButtons = 0;
-    static uint16_t s_lastSynth = 0;
-    static BYTE s_lastLT = 0, s_lastRT = 0;
-    // The trigger bytes compared here are the MERGED ones, not the raw VR values: the latched vehicle
-    // throttle walks bRightTrigger up and down while the VR trigger sits still, and a consumer that
-    // only re-reads on a new packet number would never see the trim move.
-    const BYTE outLT = pState->Gamepad.bLeftTrigger;
-    const BYTE outRT = pState->Gamepad.bRightTrigger;
-    if (vr.buttons != s_lastButtons || synthButtons != s_lastSynth || outLT != s_lastLT || outRT != s_lastRT) {
-        pState->dwPacketNumber++;
-        s_lastButtons = vr.buttons;
-        s_lastSynth = synthButtons;
-        s_lastLT = outLT;
-        s_lastRT = outRT;
+    // Publish one monotonic packet number for every FINAL merged-state change, including sticks,
+    // grips-as-shoulders, SystemButton edges and any augmenting physical controller.
+    AcquireSRWLockExclusive(&g_xinputPacketLock);
+    if (!g_xinputMergedPacketInitialized) {
+        g_xinputMergedPacketInitialized = true;
+        g_xinputMergedPacket = pState->dwPacketNumber + 1;
+        g_xinputLastMergedGamepad = pState->Gamepad;
+    } else if (memcmp(&g_xinputLastMergedGamepad, &pState->Gamepad, sizeof(XINPUT_GAMEPAD)) != 0) {
+        ++g_xinputMergedPacket;
+        g_xinputLastMergedGamepad = pState->Gamepad;
     }
+    pState->dwPacketNumber = g_xinputMergedPacket;
+    ReleaseSRWLockExclusive(&g_xinputPacketLock);
     return r;
 }
 

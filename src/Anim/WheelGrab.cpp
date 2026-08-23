@@ -13,10 +13,10 @@
 // resolve and no per-model offset table -- the reference pose IS the animation, which is why the same
 // code works on a bike, in any car, and in vehicles this port has never seen.
 //
-// Per hand, independently: bring a hand to where the animation holds the wheel, squeeze that grip,
-// and the arm is handed back to the animation (fingers included -- VRIK never writes finger bones, so
-// the native grip comes for free). Release the grip and the arm returns to the controller. The other
-// hand is unaffected, so you can hold the wheel with one hand and keep the other on a gun.
+// Per hand, independently: bring a hand to where the animation holds the wheel and click that grip
+// to toggle hold. The arm is handed back to the animation (fingers included -- VRIK never writes
+// finger bones, so the native grip comes for free); click again to release it to the controller. The
+// other hand is unaffected, so you can hold the wheel with one hand and keep the other on a gun.
 //
 // Handing an arm back means three writes must stop TOGETHER, not just the IK solve:
 //   * VRIK_SolveArm              -- the rotations
@@ -54,7 +54,7 @@ namespace {
 
 struct WheelHand {
     float blend       = 0.0f;   // 0 = arm IK drives the hand, 1 = animation does
-    bool  engaged     = false;  // grip held on a grab that started at the wheel
+    bool  engaged     = false;  // toggled hold; first click at wheel grabs, next click releases
     bool  atWheel     = false;  // controller is within the radius of the animated hand
     bool  atHub       = false;  // controller is on the wheel HUB -> horn
     bool  gripPrev    = false;
@@ -79,7 +79,13 @@ bool  g_wheelCenterValid = false;
 // animation holds it. It is the reference LEVER for the steering measurement below.
 float g_wheelSpan = 0.0f;
 float g_steer = 0.0f;           // -1 .. +1, faded by the grab blend
-float g_steerDeg = 0.0f;        // the raw angle, for the overlay read-out
+float g_steerDeg = 0.0f;        // continuity-corrected angle, for steering and overlay read-out
+// The absolute angle changes coordinate system when one hand leaves a two-handed grab. In
+// particular, drawing a weapon drops the right hand and switches from right-minus-left to
+// hub-minus-left; preserving the old angle across that topology change prevents an immediate pull.
+int   g_steerHandMask = 0;      // bit 0 right, bit 1 left, from the previous steering solve
+float g_steerRawDeg = 0.0f;     // previous raw angle in that topology, for wrap continuity
+float g_steerDegBias = 0.0f;    // raw + bias = the steering angle visible to the game
 
 // Hands level is neutral, but a hand resting on a wheel is never exactly level. The deadzone is a
 // setting (overlay slider); this is the fallback for a value outside the settable range. Small on
@@ -109,7 +115,7 @@ constexpr float kHornRadiusMax     = 0.30f;
 // chatter the horn on and off every solve -- an audible stutter, not a honk.
 constexpr float kHornHysteresis    = 0.03f;
 
-// Engage slower than release: reaching for the wheel is deliberate, letting go is a reaction.
+// Engage slower than release: reaching for the wheel is deliberate, toggling release is a reaction.
 constexpr float kEngageSec  = 0.16f;
 constexpr float kReleaseSec = 0.11f;
 // Above this the arm is handed over completely (nothing written at all). Below 1 the solve still
@@ -183,25 +189,27 @@ void WheelUpdate(float dtSec) {
         if (!enabled || !driving || handBlocked) {
             // In practice the right hand is already OFF the wheel when a weapon appears -- equipping
             // means reaching to the holster and squeezing there, which is the opposite end of the
-            // gesture. This clears the grab anyway: a weapon equipped some other way (a script, the
+            // gesture. This clears the toggle anyway: a weapon equipped some other way (a script, the
             // radial, a keyboard) must not leave the hand welded to the wheel, and the blend below
             // then walks the arm back over the usual ~0.1 s instead of snapping.
             w.engaged = false;
-        } else if (w.engaged) {
-            w.engaged = grip;                       // the grip alone holds it; let go and it ends
-        } else if (grip && !w.gripPrev && w.atWheel) {
-            w.engaged = true;                       // fresh press AT the wheel, never a held grip
+        } else if (grip && !w.gripPrev) {
+            if (w.engaged) {
+                w.engaged = false;                  // next click releases, wherever the controller moved
+            } else if (w.atWheel) {
+                w.engaged = true;                   // first click must begin at the wheel/handlebar
+            }
         }
         // Kept up to date even while blocked: a grip still held when the weapon is holstered is not a
-        // fresh press, so the wheel is not re-grabbed behind the player's back.
+        // fresh click, so the wheel is not re-grabbed behind the player's back.
         w.gripPrev = grip;
 
         const float step = dtSec / (w.engaged ? kEngageSec : kReleaseSec);
         if (w.engaged) { w.blend += step; if (w.blend > 1.0f) w.blend = 1.0f; }
         else           { w.blend -= step; if (w.blend < 0.0f) w.blend = 0.0f; }
 
-        // ARMED = the grip is not a gameplay button right now. Raised on proximity alone, before any
-        // press, so the CET side never leaks the first frame of the squeeze.
+        // ARMED = the grip is not a gameplay button right now. Raised on proximity before the first
+        // click and kept raised by the toggle, so CET never sees either grab/release click.
         if (w.atWheel || w.engaged)
             armedMask |= (h == 0) ? vrshared::kWheelArmedRightBit : vrshared::kWheelArmedLeftBit;
     }
@@ -227,6 +235,9 @@ void WheelUpdate(float dtSec) {
         // is also cleared on the solves where the arm blocks never run.
         g_steer = 0.0f;
         g_steerDeg = 0.0f;
+        g_steerHandMask = 0;
+        g_steerRawDeg = 0.0f;
+        g_steerDegBias = 0.0f;
     }
 
     // HORN. Laying a hand on the middle of the wheel is the gesture everyone already knows, so a
@@ -234,9 +245,9 @@ void WheelUpdate(float dtSec) {
     // down. Measured against the same centre the one-handed steering uses -- the midpoint of the two
     // ANIMATED hands, i.e. the hub -- so it needs no bone and no per-vehicle table.
     //
-    // A hand that is GRABBING is excluded: with the grip held the arm is the animation's, the
+    // A hand that is GRABBING is excluded: while toggled on the arm is the animation's, the
     // controller is free to wander, and working a wheel two-handed regularly takes a hand across
-    // where the hub is. Releasing the grip is what turns a hand at the hub back into a horn.
+    // where the hub is. Toggling the grab off turns a hand at the hub back into a horn.
     int hornMask = 0;
     {
         const bool hornEnabled = (g_liveControls.xrWheelHorn != 0);
@@ -297,6 +308,7 @@ void WheelSteerUpdate(const float* bodyRight, const float* bodyUp) {
     if (!bodyRight || !bodyUp) return;
     const bool eR = g_wheel[0].engaged, eL = g_wheel[1].engaged;
     if (!eR && !eL) return;   // WheelUpdate already zeroed it
+    const int handMask = (eR ? 1 : 0) | (eL ? 2 : 0);
 
     // Every path below ends here, zero included: a controller that stops reporting mid-corner must
     // straighten the wheel, not leave the car turning on the last angle it saw.
@@ -346,7 +358,27 @@ void WheelSteerUpdate(const float* bodyRight, const float* bodyUp) {
             if (!(deadDeg >= 0.0f) || deadDeg > kSteerDeadDegMax) deadDeg = kSteerDeadDegDefault;
             if (deadDeg > maxDeg - 5.0f) deadDeg = maxDeg - 5.0f;   // never swallow the whole range
 
-            deg = -std::atan2(y, hx) * 57.29577951f;
+            const float rawDeg = -std::atan2(y, hx) * 57.29577951f;
+            if (g_steerHandMask != 0 && handMask != g_steerHandMask) {
+                // Pickup continuity: changing between two hands and one hand must not change the
+                // command while the remaining controller has not moved. Drawing a weapon is the
+                // important case -- the right hand leaves, and the left hand inherits the exact
+                // steering angle that existed one solve earlier instead of pulling the car left.
+                g_steerDegBias = g_steerDeg - rawDeg;
+            } else if (g_steerHandMask == handMask) {
+                // Keep raw atan2 continuous through +/-180 so the fixed bias does not introduce a
+                // full-circle jump during an unusually large hand rotation.
+                const float delta = rawDeg - g_steerRawDeg;
+                if (delta < -180.0f) g_steerDegBias += 360.0f;
+                else if (delta > 180.0f) g_steerDegBias -= 360.0f;
+            } else {
+                // A brand-new grab keeps the established absolute-wheel behavior. Continuity is
+                // only needed when an already active grab changes its hand topology.
+                g_steerDegBias = 0.0f;
+            }
+            g_steerRawDeg = rawDeg;
+            g_steerHandMask = handMask;
+            deg = rawDeg + g_steerDegBias;
 
             // LEVER CORRECTION. Never more than 1: at the animation's own geometry the rule is
             // exactly as specified (hands vertical = full lock). Held closer together than that, the
@@ -495,6 +527,9 @@ void WheelReset() {
     }
     g_steer = 0.0f;
     g_steerDeg = 0.0f;
+    g_steerHandMask = 0;
+    g_steerRawDeg = 0.0f;
+    g_steerDegBias = 0.0f;
     g_wheelCenterValid = false;
     g_wheelSpan = 0.0f;
     g_wheelBlendRight.store(0.0f, std::memory_order_relaxed);

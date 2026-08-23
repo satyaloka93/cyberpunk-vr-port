@@ -75,10 +75,13 @@ struct LiveControlsUiState {
     float xrVehHeadOffsetX;
     float xrVehHeadOffsetY;
     float xrVehHeadOffsetZ;
+    float xrBikeHeadOffsetX;
+    float xrBikeHeadOffsetY;
+    float xrBikeHeadOffsetZ;
     // ---- DRIVING: hands on the wheel ----------------------------------------------------------
-    // 1 (default) = while driving, bringing a hand to where the driving animation holds the wheel and
-    // squeezing that grip hands the arm back to the animation (hand on the wheel, native finger curl);
-    // releasing the grip returns it to the controller. Per hand, independent. xrWheelRadius is how
+    // 1 (default) = while driving, bring a hand to the animated wheel pose and click grip to toggle
+    // that arm onto the wheel (native finger curl); click again to release it. Per hand, independent.
+    // xrWheelRadius is how
     // close the hand has to be, in metres, before the grip means "grab" instead of its normal action.
     int xrWheelGrab;
     float xrWheelRadius;
@@ -93,8 +96,8 @@ struct LiveControlsUiState {
     int xrWheelHorn;
     float xrWheelHornRadius;
     // DRIVING WITH A GUN. 1 (default) = with a weapon equipped in the driver seat the right trigger
-    // fires it (pad RB) and the throttle is latched at what it was, trimmed by the left stick's Y at
-    // xrVehicleThrottleTrim of full travel per second.
+    // fires it (pad RB), throttle latches at its current value, and R3 toggles idle/restored.
+    // xrVehicleThrottleTrim is the restore level only if the weapon was drawn at idle.
     int xrVehicleGunTrigger;
     float xrVehicleThrottleTrim;
 };

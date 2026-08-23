@@ -181,6 +181,9 @@ void PollLiveControls() {
     float xrVehHeadOffsetX = g_liveControls.xrVehHeadOffsetX;
     float xrVehHeadOffsetY = g_liveControls.xrVehHeadOffsetY;
     float xrVehHeadOffsetZ = g_liveControls.xrVehHeadOffsetZ;
+    float xrBikeHeadOffsetX = g_liveControls.xrBikeHeadOffsetX;
+    float xrBikeHeadOffsetY = g_liveControls.xrBikeHeadOffsetY;
+    float xrBikeHeadOffsetZ = g_liveControls.xrBikeHeadOffsetZ;
     int xrWheelGrab = g_liveControls.xrWheelGrab;
     float xrWheelRadius = g_liveControls.xrWheelRadius > 0.0f ? g_liveControls.xrWheelRadius : 0.28f;
     float xrWheelSteerMaxDeg = g_liveControls.xrWheelSteerMaxDeg > 0.0f ? g_liveControls.xrWheelSteerMaxDeg : 90.0f;
@@ -463,6 +466,21 @@ void PollLiveControls() {
             xrVehHeadOffsetZ = value;
             continue;
         }
+        if (sscanf_s(line, "xr_bike_head_offset_x=%f", &value) == 1 ||
+            sscanf_s(line, "xr_bike_head_offset_x = %f", &value) == 1) {
+            xrBikeHeadOffsetX = value;
+            continue;
+        }
+        if (sscanf_s(line, "xr_bike_head_offset_y=%f", &value) == 1 ||
+            sscanf_s(line, "xr_bike_head_offset_y = %f", &value) == 1) {
+            xrBikeHeadOffsetY = value;
+            continue;
+        }
+        if (sscanf_s(line, "xr_bike_head_offset_z=%f", &value) == 1 ||
+            sscanf_s(line, "xr_bike_head_offset_z = %f", &value) == 1) {
+            xrBikeHeadOffsetZ = value;
+            continue;
+        }
         if (sscanf_s(line, "xr_wheel_grab=%d", &intValue) == 1 ||
             sscanf_s(line, "xr_wheel_grab = %d", &intValue) == 1) {
             xrWheelGrab = intValue;
@@ -582,6 +600,9 @@ void PollLiveControls() {
     g_liveControls.xrVehHeadOffsetX = clampVehOff(xrVehHeadOffsetX);
     g_liveControls.xrVehHeadOffsetY = clampVehOff(xrVehHeadOffsetY);
     g_liveControls.xrVehHeadOffsetZ = clampVehOff(xrVehHeadOffsetZ);
+    g_liveControls.xrBikeHeadOffsetX = clampVehOff(xrBikeHeadOffsetX);
+    g_liveControls.xrBikeHeadOffsetY = clampVehOff(xrBikeHeadOffsetY);
+    g_liveControls.xrBikeHeadOffsetZ = clampVehOff(xrBikeHeadOffsetZ);
     g_liveControls.xrWheelGrab = xrWheelGrab != 0 ? 1 : 0;
     // Clamped, not trusted: these come from a text file. Below ~8 cm the grab is unreachable for a
     // hand you cannot see; above 60 cm every grip in a car is a grab.
@@ -599,8 +620,8 @@ void PollLiveControls() {
     g_liveControls.xrWheelHornRadius = (xrWheelHornRadius < 0.04f) ? 0.04f
                                      : (xrWheelHornRadius > 0.30f ? 0.30f : xrWheelHornRadius);
     g_liveControls.xrVehicleGunTrigger = xrVehicleGunTrigger != 0 ? 1 : 0;
-    g_liveControls.xrVehicleThrottleTrim = (xrVehicleThrottleTrim < 0.05f) ? 0.05f
-                                         : (xrVehicleThrottleTrim > 3.0f ? 3.0f : xrVehicleThrottleTrim);
+    g_liveControls.xrVehicleThrottleTrim = (xrVehicleThrottleTrim < 0.10f) ? 0.10f
+                                         : (xrVehicleThrottleTrim > 1.0f ? 1.0f : xrVehicleThrottleTrim);
     SetHmdTrackingSmooth(xrHmdSmooth);
     CyberpunkVR_HandLerpSpeed = (xrHandLerp < 0.0f) ? 0.0f : ((xrHandLerp > 30.0f) ? 30.0f : xrHandLerp);
     CyberpunkVR_HandRelToFilteredHead = xrHandRelFiltered;
@@ -691,6 +712,9 @@ LiveControlsUiState MakeLiveControlsUiState() {
     state.xrVehHeadOffsetX = g_liveControls.xrVehHeadOffsetX;
     state.xrVehHeadOffsetY = g_liveControls.xrVehHeadOffsetY;
     state.xrVehHeadOffsetZ = g_liveControls.xrVehHeadOffsetZ;
+    state.xrBikeHeadOffsetX = g_liveControls.xrBikeHeadOffsetX;
+    state.xrBikeHeadOffsetY = g_liveControls.xrBikeHeadOffsetY;
+    state.xrBikeHeadOffsetZ = g_liveControls.xrBikeHeadOffsetZ;
     state.xrWheelGrab = g_liveControls.xrWheelGrab;
     state.xrWheelRadius = g_liveControls.xrWheelRadius;
     state.xrWheelSteerMaxDeg = g_liveControls.xrWheelSteerMaxDeg;
@@ -759,6 +783,9 @@ void PersistLiveControlsUiState(const LiveControlsUiState& state) {
     fprintf(file, "xr_veh_head_offset_x=%.4f\n", state.xrVehHeadOffsetX);
     fprintf(file, "xr_veh_head_offset_y=%.4f\n", state.xrVehHeadOffsetY);
     fprintf(file, "xr_veh_head_offset_z=%.4f\n", state.xrVehHeadOffsetZ);
+    fprintf(file, "xr_bike_head_offset_x=%.4f\n", state.xrBikeHeadOffsetX);
+    fprintf(file, "xr_bike_head_offset_y=%.4f\n", state.xrBikeHeadOffsetY);
+    fprintf(file, "xr_bike_head_offset_z=%.4f\n", state.xrBikeHeadOffsetZ);
     fprintf(file, "xr_wheel_grab=%d\n", state.xrWheelGrab != 0 ? 1 : 0);
     fprintf(file, "xr_wheel_radius=%.3f\n", state.xrWheelRadius > 0.0f ? state.xrWheelRadius : 0.28f);
     fprintf(file, "xr_wheel_steer_max_deg=%.1f\n", state.xrWheelSteerMaxDeg > 0.0f ? state.xrWheelSteerMaxDeg : 90.0f);
@@ -839,6 +866,9 @@ extern "C" void SetLiveControlsUiState(const LiveControlsUiState* state, int per
         g_liveControls.xrVehHeadOffsetX = cl(state->xrVehHeadOffsetX);
         g_liveControls.xrVehHeadOffsetY = cl(state->xrVehHeadOffsetY);
         g_liveControls.xrVehHeadOffsetZ = cl(state->xrVehHeadOffsetZ);
+        g_liveControls.xrBikeHeadOffsetX = cl(state->xrBikeHeadOffsetX);
+        g_liveControls.xrBikeHeadOffsetY = cl(state->xrBikeHeadOffsetY);
+        g_liveControls.xrBikeHeadOffsetZ = cl(state->xrBikeHeadOffsetZ);
     }
     // DRIVING. Same clamps as the ini path -- the overlay sliders already bound these, but the two
     // entry points must not be able to disagree about what a valid value is.
@@ -855,7 +885,7 @@ extern "C" void SetLiveControlsUiState(const LiveControlsUiState* state, int per
         const float hr = state->xrWheelHornRadius;
         g_liveControls.xrWheelHornRadius = (hr < 0.04f) ? 0.04f : (hr > 0.30f ? 0.30f : hr);
         const float tt = state->xrVehicleThrottleTrim;
-        g_liveControls.xrVehicleThrottleTrim = (tt < 0.05f) ? 0.05f : (tt > 3.0f ? 3.0f : tt);
+        g_liveControls.xrVehicleThrottleTrim = (tt < 0.10f) ? 0.10f : (tt > 1.0f ? 1.0f : tt);
     }
     WriteVrikSettingsFile(); // publish mouse-Y flag for the CET VRIK mod
 
