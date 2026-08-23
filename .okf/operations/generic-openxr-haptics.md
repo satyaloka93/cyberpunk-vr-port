@@ -3,7 +3,7 @@ type: Runtime Integration
 title: Generic OpenXR controller haptics
 description: Quest/Touch and other non-PSVR2 controllers receive event-driven vibration through the application's OpenXR session, while PSVR2 remains exclusively owned by the Toolkit bridge.
 tags: [openxr, quest-3, touch, haptics, recoil, melee, input]
-timestamp: 2026-08-23T16:20:00+09:00
+timestamp: 2026-08-23T16:10:00+09:00
 ---
 
 # Backend boundary
