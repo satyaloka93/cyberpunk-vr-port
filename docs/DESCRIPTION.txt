@@ -65,11 +65,17 @@ Disable OpenXR Toolkit, RivaTuner, NVIDIA overlays and any other overlay.
      archive\pc\mod\                          the packed assets: the VR camera components,
                                               the held props, the weapon parts the reload
                                               drives, the case-ejection effects
-     engine\config\platform\pc\               CPU tweaks tuned for two views
+     OPTIONAL\low-spec\vrcam_cpu_tweaks.ini    inactive legacy performance/fidelity profile
      r6\input\HUDitor.xml                     HUDitor's editor moved to F11 (needs Input
                                               Loader) - REPLACES HUDitor's own file
      bin\x64\plugins\...\mods\HUDitor\persistency.json
                                               the VR HUD layout - REPLACES yours
+
+   The optional low-spec INI is not required and is not activated by extraction. Despite its
+   historical CPU-tweaks name, it shortens visible decal/streaming distances and reduces shadow,
+   vegetation and particle budgets; several values explicitly target handheld/integrated GPUs.
+   High-end PCs should leave it inactive. Copy it to engine\config\platform\pc only after a
+   matched performance test, and delete the copied file to revert.
 
    Keep exactly ONE .dll in red4ext\plugins\CyberpunkVR_Stereo\. RED4ext loads every DLL it
    finds there, so a renamed backup beside the real build loads as a second copy of the

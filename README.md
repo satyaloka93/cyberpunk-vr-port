@@ -113,6 +113,16 @@ Repository: <https://github.com/dariulone/cyberpunk-vr-port>
 - Selectable OpenXR providers (SteamVR or the system default); pre-launch resolution
   selector; quiet-by-default logging with a DEBUG toggle in the launcher.
 
+### Optional low-spec engine profile
+
+`OPTIONAL\low-spec\vrcam_cpu_tweaks.ini` is **not required by stereo and is not installed by
+default**. Its historical name is misleading: besides CPU/streaming cadence, it shortens visible
+decal and world-streaming distances and reduces rain, distant-shadow, vegetation, hair, and
+particle budgets; several values explicitly target handheld or integrated-GPU systems. High-end
+PCs should leave it inactive. Only copy it to `engine\config\platform\pc\vrcam_cpu_tweaks.ini`
+after a matched route/save/cadence test proves the frame-time tradeoff worthwhile. Delete the
+copied file to restore Cyberpunk's defaults.
+
 ## Requirements
 
 - Cyberpunk 2077 (PC, 2.31).

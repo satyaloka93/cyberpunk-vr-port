@@ -51,9 +51,10 @@ $Assets = @(
     @{ Repo = "mods\config\CyberpunkVR_SmokeGrip_right.ini";  Game = "bin\x64\CyberpunkVR_SmokeGrip_right.ini";  Dir = $false },
     @{ Repo = "mods\config\CyberpunkVR_SmokeGrip_Left.ini";   Game = "bin\x64\CyberpunkVR_SmokeGrip_Left.ini";   Dir = $false },
     @{ Repo = "mods\config\CyberpunkVR_LighterGrip_Left.ini"; Game = "bin\x64\CyberpunkVR_LighterGrip_Left.ini"; Dir = $false },
-    # Engine-side CPU tuning the second view needs, and SteamVR's OpenXR manifest-discovery helper.
-    @{ Repo = "mods\config\vrcam_cpu_tweaks.ini"; Game = "engine\config\platform\pc\vrcam_cpu_tweaks.ini"; Dir = $false },
-    @{ Repo = "mods\config\openvr_api.dll";      Game = "bin\x64\openvr_api.dll";                          Dir = $false }
+    # SteamVR's OpenXR manifest-discovery helper. The historical vrcam_cpu_tweaks.ini is deliberately
+    # NOT synchronized: it is an optional low-spec profile with visible fidelity cuts, not a runtime
+    # dependency, and deploy_stereo.ps1 must not silently reactivate it on a high-end test system.
+    @{ Repo = "mods\config\openvr_api.dll"; Game = "bin\x64\openvr_api.dll"; Dir = $false }
 )
 
 if (-not (Test-Path $GameRoot)) { throw "GameRoot not found: $GameRoot" }

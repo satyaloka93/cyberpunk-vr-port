@@ -93,8 +93,11 @@ foreach ($g in (Get-ChildItem (Join-Path $RepoRoot "mods\config") -Filter "Cyber
     Add-File $g.FullName "bin\x64\$($g.Name)"
 }
 
-# ---- engine-side tuning + SteamVR OpenXR manifest-discovery helper -----------------------------
-Add-File (Need (Join-Path $RepoRoot "mods\config\vrcam_cpu_tweaks.ini") "vrcam_cpu_tweaks.ini") "engine\config\platform\pc\vrcam_cpu_tweaks.ini"
+# ---- optional low-spec profile + SteamVR OpenXR manifest-discovery helper ----------------------
+# The historical "CPU tweaks" file also reduces visible decal/shadow/streaming detail and contains
+# explicit handheld/integrated-GPU values. It is not required by stereo, so never place it in the
+# active engine config tree automatically. Users who prove a benefit can copy it from OPTIONAL.
+Add-File (Need (Join-Path $RepoRoot "mods\config\vrcam_cpu_tweaks.ini") "optional low-spec tweaks") "OPTIONAL\low-spec\vrcam_cpu_tweaks.ini"
 Add-File (Need (Join-Path $RepoRoot "mods\config\openvr_api.dll") "openvr_api.dll") "bin\x64\openvr_api.dll"
 
 # ---- CET mods, redscript, tweaks --------------------------------------------------------------
@@ -205,6 +208,12 @@ REQUIREMENTS
     and audio-derived car/bike engine + shift feedback use the runtime's controller output.
     Read OPENXR-HAPTICS.md.
 
+    OPTIONAL LOW-SPEC PROFILE: OPTIONAL\low-spec\vrcam_cpu_tweaks.ini is not required and is
+    not active after extraction. Its historical name is misleading: it reduces visible decal,
+    shadow, vegetation, particle, and streaming detail and was partly tuned for handheld GPUs.
+    High-end PCs should leave it inactive. Copy it into engine\config\platform\pc only after a
+    matched frame-time test proves the tradeoff worthwhile; delete that copy to revert.
+
     Nothing else may proxy dxgi. If bin\x64\dxgi.dll exists (R.E.A.L. VR installs one), move it
     out of the folder -- two VR paths in one process fight over the same engine hooks.
 
@@ -224,6 +233,7 @@ WHAT LANDS WHERE
     archive\pc\mod\                       packed assets + the ArchiveXL manifest
     r6\input\HUDitor.xml               HUDitor's editor moved to F11 (needs input_loader)
     bin\x64\plugins\...\mods\HUDitor\persistency.json   the VR HUD layout -- REPLACES yours
+    OPTIONAL\low-spec\vrcam_cpu_tweaks.ini   inactive legacy performance/fidelity tradeoff
 
     The player entity assets in cyberpunkvrport.archive carry one render-to-texture camera per
     supported resolution. The launcher offers exactly the ones that exist.
