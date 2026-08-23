@@ -128,6 +128,8 @@ The compatible layout is:
 
 Steering angle, wheel-arm blend, throttle latch, and vehicle classification remain same-DLL state and never enter the haptic record. Enhanced DualSense Support's car/bike trigger profiles and audio-derived vehicle rumble still flow through `HapticsEngine`; they are mixed rather than disabled. If an incompatible DLL is detected, only VR motion pulses pause, while gun, audio, vehicle, and adaptive-trigger processing continues.
 
+There is a normal first-frame race: `OnPresent` creates the named mapping before that same frame reaches `FlushHandsToShared` and writes the protocol marker. A watcher polling every 5 ms can observe the brief zero-filled interval. The guarded bridge allows two seconds for first publication and writes expected pause states to stdout. Writing the transient warning to stderr was a functional bug because Windows PowerShell 5 converted native stderr to `NativeCommandError` under the launcher's `ErrorActionPreference = Stop`, terminating the launcher before the next frame could activate the protocol.
+
 ## Tuning
 
 | Flag | Effect |
