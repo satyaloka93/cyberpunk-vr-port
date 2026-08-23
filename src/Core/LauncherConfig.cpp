@@ -109,6 +109,10 @@ void InitRuntimePaths() {
     // the binding/entry-point patch keeps the game from reaching its main menu.
     g_liveControls.xrXInputInstall = 1;
     g_liveControls.xrInputActions = 1;
+    // Quest/Touch receives simple OpenXR vibration rather than adaptive-trigger resistance or rich
+    // Sense PCM. A modest 1.25 gain adds presence while preserving the per-weapon amplitude ladder.
+    // The runtime backend hard-disables this on PSVR2 regardless of the value.
+    g_liveControls.xrOpenXrHapticGain = 1.25f;
 
     // Capture the recenter-request baseline NOW (before CET could write), so the
     // first OnGameAttached this session is seen as a change and triggers a recenter,
@@ -191,6 +195,7 @@ void EnsureLiveControlFileExists() {
     // from reaching its main menu.
     fprintf(file, "xr_xinput_install=1\n");
     fprintf(file, "xr_input_actions=1\n");
+    fprintf(file, "xr_openxr_haptic_gain=1.25\n");
     fprintf(file, "xr_mono_xqueue_wait=0\n");
     fprintf(file, "xr_snap_turn_pulse_ms=30\n");
     fprintf(file, "xr_mono_depth_capture=1\n");

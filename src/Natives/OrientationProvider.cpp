@@ -9,6 +9,7 @@
 #include <locale>
 #include <clocale>
 #include "Utils/SharedSlots.hpp"   // CyberpunkVR_Hands_Shared slot map (single source of truth)
+#include "Runtimes/OpenXRManager.hpp"
 #include <RED4ext/Containers/StaticArray.hpp>
 #include <RED4ext/Scripting/Natives/ScriptGameInstance.hpp>
 #include <RED4ext/Scripting/Utils.hpp>
@@ -760,10 +761,10 @@ void SetVRReloadOwnedHand(RED4ext::IScriptable*, RED4ext::CStackFrame* aFrame, v
     }
 }
 
-// CET -> PSVR2Toolkit motion-haptic request. This DOES NOT call OpenXR haptics: Toolkit CAPI is
-// the sole Sense actuator owner, so gun/audio/vehicle feedback and this pulse mix in one bridge
-// instead of fighting each other. [157..160] are the bridge's published external ABI. Payload is
-// written first and sequence last; the bridge acts only after observing the sequence change.
+// CET haptic request with mutually exclusive actuator backends. PSVR2 publishes [157..160] for the
+// Toolkit bridge, which remains the sole Sense owner. Quest/Touch and other non-PSVR2 systems also
+// queue the same abstract pulse for the in-session OpenXR output action. QueueOpenXRHapticPulse
+// rejects PSVR2, so creating the generic action can never double-drive Sense.
 void SetVRHapticPulse(RED4ext::IScriptable*, RED4ext::CStackFrame* aFrame, void*, int64_t) {
     int32_t hand = 1;
     float amplitude = 0.0f;
@@ -773,11 +774,14 @@ void SetVRHapticPulse(RED4ext::IScriptable*, RED4ext::CStackFrame* aFrame, void*
     RED4ext::GetParameter(aFrame, &durationMs);
     aFrame->code++;
 
-    EnsureSharedMemory();
-    if (!g_pSharedHands) return;
-
     amplitude = std::clamp(amplitude, 0.0f, 1.0f);
     durationMs = std::clamp(durationMs, 1, 1000);
+    OpenXRManager::Get().QueueOpenXRHapticPulse(hand != 0 ? 1 : 0, amplitude, durationMs);
+
+    // Keep publishing the stable external ABI regardless of headset. On PSVR2 the guarded Toolkit
+    // bridge consumes it; on Quest no bridge should run, and the named mapping has no actuator.
+    EnsureSharedMemory();
+    if (!g_pSharedHands) return;
     g_pSharedHands[vrshared::kHapticProtocolMagicSlot] = vrshared::kHapticProtocolMagic;
     g_pSharedHands[vrshared::kHapticProtocolVersionSlot] = vrshared::kHapticProtocolVersion;
     g_pSharedHands[vrshared::kHapticHand] = (hand != 0) ? 1.0f : 0.0f;

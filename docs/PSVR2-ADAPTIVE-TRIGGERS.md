@@ -119,9 +119,10 @@ is disabled.
 
 ### Nothing else may drive the actuators
 
-Only the bridge may produce controller haptics. Driving them from the VR plugin as well — for
-example an OpenXR vibration action — competes with Toolkit CAPI for the same Sense actuators
-and costs most of the game's gun feedback, even when every pulse is accepted by the runtime.
+Only the bridge may produce **PSVR2 Sense** haptics. The port now has a generic OpenXR vibration
+action for Quest/Touch and other controllers, but its queue rejects every request when the detected
+system is PSVR2. Applying that action to Sense would compete with Toolkit CAPI for the same actuators
+and cost most of the game's gun feedback, even when every pulse was accepted by the runtime.
 
 
 ## Effect fidelity

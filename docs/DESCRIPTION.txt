@@ -149,15 +149,24 @@ ON FOOT
   PSVR2 left grip, held 0.18 s  scanner anywhere, unless mounted or reload owns the hand
   Swing a melee weapon          native VR melee along the blade
 
-  D-pad chord                   hold the LEFT stick clicked in, then pick the direction
-                                with the RIGHT stick. The right stick is taken out of the
-                                camera while the chord is held, so choosing a direction
-                                cannot snap-turn you. Release without choosing and it emits
-                                the normal left stick click instead.
+  D-pad shift                   Quest: touch and hold LEFT thumbrest. PSVR2: touch and hold
+                                Triangle. Then pick with the RIGHT stick. LEFT stick click
+                                remains the fallback modifier on every runtime. The right
+                                stick is taken out of the camera while shifted, so choosing
+                                a direction cannot snap-turn you.
 
 B is the mod's only while a weapon is actually in your hand, because a magazine drop is the
 only thing the mod needs it for. Holstered it reaches the game, so the phone and the radial
 close normally.
+
+QUEST / GENERIC OPENXR HAPTICS
+
+  Quest/Touch, Index, Vive and WMR use standard per-hand OpenXR vibration. Confirmed gun rounds
+  generate weapon-weighted recoil in the firing hand and a weaker support-hand pulse only during
+  two-hand grip. Melee swings and confirmed impacts use the same backend. F10 -> Controls ->
+  OpenXR controller haptic gain defaults to 1.25 because these controllers have no PSVR2 adaptive
+  trigger resistance or rich Sense PCM. Set it to 0 to disable. Do not run DSX or PSVR2Toolkit for
+  Quest. PSVR2 ignores this backend unconditionally and remains owned only by its Toolkit bridge.
 
 DRIVING
 

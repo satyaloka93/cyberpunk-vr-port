@@ -171,6 +171,8 @@ void PollLiveControls() {
     int xrMovementSource = g_liveControls.xrMovementSource;
     int xrXInputInstall = g_liveControls.xrXInputInstall;
     int xrInputActions = g_liveControls.xrInputActions;
+    float xrOpenXrHapticGain = g_liveControls.xrOpenXrHapticGain >= 0.0f
+        ? g_liveControls.xrOpenXrHapticGain : 1.25f;
     int xrMonoXQueueWait = g_liveControls.xrMonoXQueueWait;
     int xrSnapTurnPulseMs = g_liveControls.xrSnapTurnPulseMs > 0 ? g_liveControls.xrSnapTurnPulseMs : 30;
     int xrMonoDepthCapture = g_liveControls.xrMonoDepthCapture;
@@ -426,6 +428,11 @@ void PollLiveControls() {
             xrInputActions = intValue;
             continue;
         }
+        if (sscanf_s(line, "xr_openxr_haptic_gain=%f", &value) == 1 ||
+            sscanf_s(line, "xr_openxr_haptic_gain = %f", &value) == 1) {
+            xrOpenXrHapticGain = value;
+            continue;
+        }
         if (sscanf_s(line, "xr_mono_xqueue_wait=%d", &intValue) == 1 ||
             sscanf_s(line, "xr_mono_xqueue_wait = %d", &intValue) == 1) {
             xrMonoXQueueWait = intValue;
@@ -588,6 +595,9 @@ void PollLiveControls() {
     g_liveControls.xrSnapTurnAngleDeg = xrSnapTurnAngleDeg > 0.0f ? xrSnapTurnAngleDeg : 30.0f;
     g_liveControls.xrXInputInstall = xrXInputInstall != 0 ? 1 : 0;
     g_liveControls.xrInputActions = xrInputActions != 0 ? 1 : 0;
+    g_liveControls.xrOpenXrHapticGain = xrOpenXrHapticGain < 0.0f ? 0.0f
+        : (xrOpenXrHapticGain > 2.0f ? 2.0f : xrOpenXrHapticGain);
+    OpenXRManager::Get().SetOpenXRHapticGain(g_liveControls.xrOpenXrHapticGain);
     g_liveControls.xrMonoXQueueWait = xrMonoXQueueWait != 0 ? 1 : 0;
     g_liveControls.xrSnapTurnPulseMs = xrSnapTurnPulseMs > 0 ? xrSnapTurnPulseMs : 30;
     g_liveControls.xrMonoDepthCapture = xrMonoDepthCapture != 0 ? 1 : 0;
@@ -705,6 +715,7 @@ LiveControlsUiState MakeLiveControlsUiState() {
     state.xrCutsceneSuspendTier = g_liveControls.xrCutsceneSuspendTier;
     state.xrXInputInstall = g_liveControls.xrXInputInstall;
     state.xrInputActions = g_liveControls.xrInputActions;
+    state.xrOpenXrHapticGain = g_liveControls.xrOpenXrHapticGain;
     state.xrMonoXQueueWait = g_liveControls.xrMonoXQueueWait;
     state.xrMonoDepthCapture = g_liveControls.xrMonoDepthCapture;
     state.xrSnapTurnPulseMs = g_liveControls.xrSnapTurnPulseMs;
@@ -776,6 +787,9 @@ void PersistLiveControlsUiState(const LiveControlsUiState& state) {
             state.xrCutsceneSuspendTier < -1 ? -1 : (state.xrCutsceneSuspendTier > 4 ? 4 : state.xrCutsceneSuspendTier));
     fprintf(file, "xr_xinput_install=%d\n", state.xrXInputInstall != 0 ? 1 : 0);
     fprintf(file, "xr_input_actions=%d\n", state.xrInputActions != 0 ? 1 : 0);
+    fprintf(file, "xr_openxr_haptic_gain=%.2f\n",
+            state.xrOpenXrHapticGain < 0.0f ? 0.0f
+            : (state.xrOpenXrHapticGain > 2.0f ? 2.0f : state.xrOpenXrHapticGain));
     fprintf(file, "xr_mono_xqueue_wait=%d\n", state.xrMonoXQueueWait != 0 ? 1 : 0);
     fprintf(file, "xr_mono_depth_capture=%d\n", state.xrMonoDepthCapture != 0 ? 1 : 0);
     fprintf(file, "xr_snap_turn_pulse_ms=%d\n", state.xrSnapTurnPulseMs > 0 ? state.xrSnapTurnPulseMs : 30);
@@ -856,6 +870,9 @@ extern "C" void SetLiveControlsUiState(const LiveControlsUiState* state, int per
     g_liveControls.xrSnapTurnAngleDeg = state->xrSnapTurnAngleDeg > 0.0f ? state->xrSnapTurnAngleDeg : 30.0f;
     g_liveControls.xrXInputInstall = state->xrXInputInstall != 0 ? 1 : 0;
     g_liveControls.xrInputActions = state->xrInputActions != 0 ? 1 : 0;
+    g_liveControls.xrOpenXrHapticGain = state->xrOpenXrHapticGain < 0.0f ? 0.0f
+        : (state->xrOpenXrHapticGain > 2.0f ? 2.0f : state->xrOpenXrHapticGain);
+    OpenXRManager::Get().SetOpenXRHapticGain(g_liveControls.xrOpenXrHapticGain);
     g_liveControls.xrMonoXQueueWait = state->xrMonoXQueueWait != 0 ? 1 : 0;
     g_liveControls.xrMonoDepthCapture = state->xrMonoDepthCapture != 0 ? 1 : 0;
     g_liveControls.xrSnapTurnPulseMs = state->xrSnapTurnPulseMs > 0 ? state->xrSnapTurnPulseMs : 30;

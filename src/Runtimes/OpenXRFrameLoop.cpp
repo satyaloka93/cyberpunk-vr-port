@@ -1380,6 +1380,9 @@ DWORD OpenXRManager::FrameThreadMain() {
                 syncInfo.countActiveActionSets = 1;
                 syncInfo.activeActionSets = &activeActionSet;
                 XrResult syncRes = xrSyncActions(m_session, &syncInfo);
+                // Haptic requests arrive from CET and the per-round shot hook on other threads.
+                // Apply them only from the XR frame owner, after the action set is synchronized.
+                PumpOpenXRHaptics();
                 
                 if (doHandLog) {
                     Log("OpenXRManager[Hands]: syncRes=%d sessionState=%d\n", syncRes, (int)m_sessionState);
@@ -1678,9 +1681,17 @@ DWORD OpenXRManager::FrameThreadMain() {
                             }
                         }
 
-                        // PSVR2's Triangle capacitive channel substitutes for Touch's missing
-                        // left-thumbrest path. Triangle CLICK remains Y/weapon switch.
+                        // Quest/Touch uses the real left thumbrest capacitive path. PSVR2's Triangle
+                        // touch substitutes for it through SteamVR's Oculus profile; L3 remains the
+                        // fallback on every runtime. Touching is a modifier only -- no click is sent.
                         leftDpadTouchModifier = thumbrestTouch || (IsRuntimePsvr2() && secondaryTouch);
+                        if (!IsRuntimePsvr2() && thumbrestTouch) {
+                            static bool s_touchDpadConfirmed = false;
+                            if (!s_touchDpadConfirmed) {
+                                s_touchDpadConfirmed = true;
+                                Log("OpenXRManager[Input]: left thumbrest D-pad shift confirmed.\n");
+                            }
+                        }
                         leftStickClicked = sclick;
                     } else {
                         ctrl.rightTrigger = trig;

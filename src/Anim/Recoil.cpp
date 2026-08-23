@@ -24,6 +24,7 @@
 
 #include "Anim/CharacterRig.hpp"
 #include "Camera/CameraState.hpp"
+#include "Runtimes/OpenXRManager.hpp"
 
 #include <windows.h>
 #include <atomic>
@@ -164,6 +165,23 @@ extern "C" void RecoilOnShot() {
     s_lastMs = now;
     g_lastShotMs = now;
     g_shotSeq.fetch_add(1, std::memory_order_release);
+
+    // The same measured once-per-round edge drives generic OpenXR recoil. This is deliberately not
+    // trigger-threshold feedback: empty cylinders, blocked reload states and held vehicle throttle do
+    // not reach RecoilOnShot, so they cannot vibrate. WeaponKickDeg preserves the existing per-weapon
+    // ladder. Quest/Touch has no adaptive-trigger resistance or rich Sense PCM, so its configurable
+    // 1.25 default gain gives the short grip pulse more presence without flattening every weapon to 1.
+    float kick = CyberpunkVR_WeaponKickDeg;
+    if (!(kick > 0.0f) || kick > 16.0f) kick = 1.0f;
+    const float rootKick = std::sqrt(kick);
+    float amplitude = 0.45f + 0.25f * rootKick;
+    if (amplitude > 1.0f) amplitude = 1.0f;
+    int durationMs = static_cast<int>(35.0f + 8.0f * rootKick);
+    if (durationMs > 65) durationMs = 65;
+    OpenXRManager::Get().QueueOpenXRHapticPulse(1, amplitude, durationMs);
+    if (CyberpunkVR_TwoHandActive) {
+        OpenXRManager::Get().QueueOpenXRHapticPulse(0, amplitude * 0.55f, durationMs);
+    }
 }
 
 // Advance both springs to now. Called once per fresh solve, before either arm is built.

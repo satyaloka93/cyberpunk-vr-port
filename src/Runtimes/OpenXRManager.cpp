@@ -723,10 +723,17 @@ bool OpenXRManager::Init() {
                 info.countSubactionPaths = 2;
                 info.subactionPaths = m_handPaths;
             }
-            xrCreateAction(m_actionSet, &info, &out);
+            const XrResult actionResult = xrCreateAction(m_actionSet, &info, &out);
+            if (XR_FAILED(actionResult)) {
+                Log("OpenXRManager[Input]: create action %s failed result=%d.\n", name, actionResult);
+                out = XR_NULL_HANDLE;
+            }
         };
 
         makeAction(m_handPoseAction,        XR_ACTION_TYPE_POSE_INPUT,     "hand_pose",        "Hand Pose",            true);
+        // Output exists even in pose-only input mode. It is applied only on non-PSVR2 systems;
+        // merely creating/binding it cannot compete with the Toolkit-owned Sense actuators.
+        makeAction(m_hapticAction,          XR_ACTION_TYPE_VIBRATION_OUTPUT, "controller_haptic", "Controller Haptic", true);
         // aim pose has a runtime-stable forward direction (-Z = pointing) that
         // is NOT mirrored between left/right grip poses. We use it for the
         // hand-locomotion yaw so the player walks where they point, not where
@@ -758,6 +765,9 @@ bool OpenXRManager::Init() {
             std::vector<XrActionSuggestedBinding> v;
             v.reserve(list.size());
             for (const Bind& b : list) {
+                // Optional actions must not poison the runtime's complete suggested-binding set if
+                // their creation failed. Pose/input continues even when haptics are unavailable.
+                if (b.action == XR_NULL_HANDLE) continue;
                 XrPath p = XR_NULL_PATH;
                 if (XR_SUCCEEDED(xrStringToPath(m_instance, b.path, &p))) {
                     v.push_back({ b.action, p });
@@ -778,6 +788,8 @@ bool OpenXRManager::Init() {
             const std::initializer_list<Bind> poseOnly = {
                 { m_handPoseAction, "/user/hand/left/input/grip/pose" },
                 { m_handPoseAction, "/user/hand/right/input/grip/pose" },
+                { m_hapticAction,   "/user/hand/left/output/haptic" },
+                { m_hapticAction,   "/user/hand/right/output/haptic" },
             };
             for (const char* profile : { "/interaction_profiles/oculus/touch_controller",
                                           "/interaction_profiles/valve/index_controller",
@@ -814,6 +826,8 @@ bool OpenXRManager::Init() {
             { m_thumbrestTouchAction,       "/user/hand/right/input/thumbrest/touch" },
             { m_menuButtonAction,           "/user/hand/left/input/menu/click" },
             { m_menuButtonAction,           "/user/hand/right/input/system/click" },
+            { m_hapticAction,               "/user/hand/left/output/haptic" },
+            { m_hapticAction,               "/user/hand/right/output/haptic" },
         });
 
         // -- Valve Index: A/B on both hands, system as menu --
@@ -835,6 +849,8 @@ bool OpenXRManager::Init() {
             { m_secondaryButtonAction, "/user/hand/left/input/b/click" },
             { m_secondaryButtonAction, "/user/hand/right/input/b/click" },
             { m_menuButtonAction,      "/user/hand/left/input/system/click" },
+            { m_hapticAction,          "/user/hand/left/output/haptic" },
+            { m_hapticAction,          "/user/hand/right/output/haptic" },
         });
 
         // -- HTC Vive Wand: no A/B/X/Y, no thumbstick (touchpad as v2f), grip is bool --
@@ -850,6 +866,8 @@ bool OpenXRManager::Init() {
             { m_triggerAction,         "/user/hand/left/input/trigger/value" },
             { m_triggerAction,         "/user/hand/right/input/trigger/value" },
             { m_menuButtonAction,      "/user/hand/left/input/menu/click" },
+            { m_hapticAction,          "/user/hand/left/output/haptic" },
+            { m_hapticAction,          "/user/hand/right/output/haptic" },
         });
 
         // -- Windows MR motion controller: trackpad+thumbstick combo --
@@ -865,6 +883,8 @@ bool OpenXRManager::Init() {
             { m_triggerAction,         "/user/hand/left/input/trigger/value" },
             { m_triggerAction,         "/user/hand/right/input/trigger/value" },
             { m_menuButtonAction,      "/user/hand/left/input/menu/click" },
+            { m_hapticAction,          "/user/hand/left/output/haptic" },
+            { m_hapticAction,          "/user/hand/right/output/haptic" },
         });
 
         // -- KHR simple controller (fallback: only select + menu + grip pose) --
@@ -874,6 +894,8 @@ bool OpenXRManager::Init() {
             { m_primaryButtonAction,   "/user/hand/left/input/select/click" },
             { m_primaryButtonAction,   "/user/hand/right/input/select/click" },
             { m_menuButtonAction,      "/user/hand/left/input/menu/click" },
+            { m_hapticAction,          "/user/hand/left/output/haptic" },
+            { m_hapticAction,          "/user/hand/right/output/haptic" },
         });
 
 bindings_done:
@@ -1010,6 +1032,88 @@ bool OpenXRManager::InitGraphics(ID3D12Device* device, ID3D12CommandQueue* queue
     return true;
 }
 
+void OpenXRManager::QueueOpenXRHapticPulse(int hand, float amplitude, int durationMs) {
+    // Never send generic OpenXR vibration to Sense. The Toolkit bridge owns every PSVR2 actuator so
+    // adaptive triggers, PCM audio/vehicle feedback and motion pulses are mixed by one process.
+    if (IsRuntimePsvr2()) return;
+    if (hand < 0 || hand > 1 || !(amplitude > 0.0f) || durationMs <= 0) return;
+
+    if (amplitude > 1.0f) amplitude = 1.0f;
+    if (durationMs > 1000) durationMs = 1000;
+    std::lock_guard<std::mutex> lock(m_hapticMutex);
+    PendingHapticPulse& pending = m_pendingHaptics[hand];
+    // More than one event can land between XR frames (an impact immediately after a swing, or a
+    // high-rate burst). Keep the strongest/longest request rather than letting the last writer win.
+    if (!pending.pending || amplitude > pending.amplitude) pending.amplitude = amplitude;
+    if (!pending.pending || durationMs > pending.durationMs) pending.durationMs = durationMs;
+    pending.pending = true;
+}
+
+void OpenXRManager::ClearOpenXRHaptics(bool stopRuntime) {
+    {
+        std::lock_guard<std::mutex> lock(m_hapticMutex);
+        m_pendingHaptics[0] = {};
+        m_pendingHaptics[1] = {};
+    }
+    if (!stopRuntime || IsRuntimePsvr2() || m_session == XR_NULL_HANDLE ||
+        m_hapticAction == XR_NULL_HANDLE) return;
+    for (int hand = 0; hand < 2; ++hand) {
+        XrHapticActionInfo info{XR_TYPE_HAPTIC_ACTION_INFO};
+        info.action = m_hapticAction;
+        info.subactionPath = m_handPaths[hand];
+        xrStopHapticFeedback(m_session, &info);
+    }
+}
+
+void OpenXRManager::PumpOpenXRHaptics() {
+    // Dropping events while unfocused is intentional: retaining a shot/menu event and replaying it
+    // when the headset regains focus would be delayed false feedback.
+    if (IsRuntimePsvr2() || m_session == XR_NULL_HANDLE || m_hapticAction == XR_NULL_HANDLE ||
+        m_sessionState != XR_SESSION_STATE_FOCUSED) {
+        ClearOpenXRHaptics(false);
+        return;
+    }
+
+    PendingHapticPulse pulses[2]{};
+    {
+        std::lock_guard<std::mutex> lock(m_hapticMutex);
+        pulses[0] = m_pendingHaptics[0];
+        pulses[1] = m_pendingHaptics[1];
+        m_pendingHaptics[0] = {};
+        m_pendingHaptics[1] = {};
+    }
+
+    float gain = m_openXrHapticGain.load(std::memory_order_relaxed);
+    if (!(gain > 0.0f)) return;
+    if (gain > 2.0f) gain = 2.0f;
+    for (int hand = 0; hand < 2; ++hand) {
+        if (!pulses[hand].pending) continue;
+        float amplitude = pulses[hand].amplitude * gain;
+        if (amplitude > 1.0f) amplitude = 1.0f;
+
+        XrHapticActionInfo info{XR_TYPE_HAPTIC_ACTION_INFO};
+        info.action = m_hapticAction;
+        info.subactionPath = m_handPaths[hand];
+        XrHapticVibration vibration{XR_TYPE_HAPTIC_VIBRATION};
+        vibration.amplitude = amplitude;
+        vibration.duration = static_cast<XrDuration>(pulses[hand].durationMs) * 1000000;
+        vibration.frequency = XR_FREQUENCY_UNSPECIFIED;
+        const XrResult result = xrApplyHapticFeedback(
+            m_session, &info, reinterpret_cast<const XrHapticBaseHeader*>(&vibration));
+        if (XR_SUCCEEDED(result)) {
+            if (!m_openXrHapticActiveLogged) {
+                m_openXrHapticActiveLogged = true;
+                Log("OpenXRManager[Haptics]: generic OpenXR controller output active system=\"%s\" gain=%.2f.\n",
+                    m_systemName, gain);
+            }
+        } else if (!m_openXrHapticErrorLogged) {
+            m_openXrHapticErrorLogged = true;
+            Log("OpenXRManager[Haptics]: xrApplyHapticFeedback failed result=%d system=\"%s\".\n",
+                result, m_systemName);
+        }
+    }
+}
+
 bool OpenXRManager::BeginSession() {
     if (m_session == XR_NULL_HANDLE || m_sessionRunning.load(std::memory_order_relaxed)) return false;
 
@@ -1029,6 +1133,7 @@ bool OpenXRManager::BeginSession() {
 
 void OpenXRManager::EndSession() {
     if (m_session == XR_NULL_HANDLE || !m_sessionRunning.load(std::memory_order_relaxed)) return;
+    ClearOpenXRHaptics(true);
     xrEndSession(m_session);
     m_sessionRunning.store(false, std::memory_order_relaxed);
     Log("OpenXRManager: Session ended.\n");
@@ -2009,7 +2114,13 @@ void OpenXRManager::Shutdown() {
     m_thumbstickClickAction = XR_NULL_HANDLE;
     m_primaryButtonAction = XR_NULL_HANDLE;
     m_secondaryButtonAction = XR_NULL_HANDLE;
+    m_secondaryButtonTouchAction = XR_NULL_HANDLE;
+    m_thumbrestTouchAction = XR_NULL_HANDLE;
     m_menuButtonAction = XR_NULL_HANDLE;
+    m_hapticAction = XR_NULL_HANDLE;
+    ClearOpenXRHaptics(false);
+    m_openXrHapticActiveLogged = false;
+    m_openXrHapticErrorLogged = false;
 
     m_views.clear();
     m_viewConfigViews.clear();

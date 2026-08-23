@@ -146,6 +146,15 @@ adaptive triggers, gun/vehicle audio, and per-hand VR melee pulses. Versioned sh
 markers and a live heartbeat prevent wheel, button, or trigger values from being misread as
 haptics. See [`docs/PSVR2-ADAPTIVE-TRIGGERS.md`](docs/PSVR2-ADAPTIVE-TRIGGERS.md).
 
+### Quest 3 and generic OpenXR haptics
+
+Quest/Touch, Index, Vive and WMR use the port's in-session OpenXR vibration output—never DSX or
+the PSVR2Toolkit bridge. Confirmed gun rounds generate weapon-weighted right-hand recoil, with a
+weaker left pulse only while two-hand grip is active; melee swing and confirmed-impact events use
+the same backend. `F10 → Controls → OpenXR controller haptic gain` defaults to `1.25` to give simple
+rumble more presence where adaptive-trigger resistance and rich Sense PCM are unavailable. PSVR2
+hard-disables this backend regardless of the slider, preserving one actuator owner.
+
 ## Installation (drop-in)
 
 Download the release archive and extract its contents into your **Cyberpunk 2077
@@ -233,11 +242,12 @@ draw in the first place, that hand is already off the wheel by then. A hand togg
 here needs to know which vehicle you are in, because the reference pose is the
 game's own driving animation — bikes included.
 
-**D-pad chord.** Hold the **left stick clicked in**, then pick the direction with
-the **right stick** — up / down / left / right. While the chord is held the right
-stick is taken out of the camera, so selecting a direction cannot snap-turn you.
-Release the left stick *without* having chosen a direction and it emits the normal
-L3 press instead, so nothing is lost by using it.
+**D-pad shift.** On Quest/Touch, touch and hold the **left thumbrest**; on PSVR2,
+touch and hold **Triangle**. Then pick the direction with the **right stick** — up /
+down / left / right. The left-stick click remains the fallback modifier on every
+runtime. While a modifier is held the right stick is taken out of the camera, so
+selecting a direction cannot snap-turn you. Releasing the L3 fallback without
+choosing a direction still emits the normal L3 press.
 
 Buttons follow each runtime's interaction profile (Touch / Index / Vive / WMR);
 customise the actual actions in the game's *Settings → Key Bindings → Controller*.

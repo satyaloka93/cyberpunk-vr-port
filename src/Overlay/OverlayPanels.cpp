@@ -710,6 +710,23 @@ bool DrawLiveControls(LiveControlsUiState& state) {
                                   "Off = the game only sees a physical pad / nothing.");
             }
 
+            float hapticGain = state.xrOpenXrHapticGain >= 0.0f ? state.xrOpenXrHapticGain : 1.25f;
+            if (ImGui::SliderFloat("OpenXR controller haptic gain", &hapticGain, 0.0f, 2.0f, "%.2f")) {
+                state.xrOpenXrHapticGain = hapticGain;
+                changed = true;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Quest/Touch, Index, Vive and WMR vibration. Default 1.25 gives simple\n"
+                                  "controller rumble more presence without adaptive-trigger resistance.\n"
+                                  "0 disables it. PSVR2 always ignores this setting: the Toolkit bridge\n"
+                                  "remains the sole Sense actuator owner, preventing doubled feedback.");
+            }
+            if (OpenXRManager::Get().IsRuntimePsvr2()) {
+                ImGui::TextDisabled("PSVR2 output: PSVR2Toolkit bridge (OpenXR haptics locked out)");
+            } else {
+                ImGui::TextDisabled("OpenXR output: gun recoil + melee swing/confirmed impact");
+            }
+
             ImGui::Separator();
             ImGui::TextUnformatted("Weapon holsters (reach + right grip)");
             changed |= CheckboxInt("Immersive holsters", &state.xrImmersiveHolsters);
@@ -882,9 +899,9 @@ bool DrawLiveControls(LiveControlsUiState& state) {
             ImGui::BulletText("PSVR2 left grip, held 0.18 s - scanner anywhere (not while mounted)");
             ImGui::BulletText("Left  menu button - pause menu");
             ImGui::Spacing();
-            ImGui::TextUnformatted("D-Pad, as a chord: HOLD the LEFT stick click, pick with the RIGHT stick");
+            ImGui::TextUnformatted("D-Pad shift: touch LEFT thumbrest (Quest) / Triangle (PSVR2), then use RIGHT stick");
             ImGui::BulletText("Right stick UP / DOWN / LEFT / RIGHT -> D-Pad UP / DOWN / LEFT / RIGHT");
-            ImGui::BulletText("Released with no direction = the vanilla left stick click (L3)");
+            ImGui::BulletText("Left-stick click remains the fallback modifier on every runtime");
             ImGui::Spacing();
             ImGui::TextUnformatted("In a vehicle (the gestures above do not apply):");
             ImGui::BulletText("Right B / Sense Circle - get out (native vehicle binding)");

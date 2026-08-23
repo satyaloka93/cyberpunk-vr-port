@@ -21,8 +21,7 @@ Only the Toolkit bridge may own the DSX-compatible UDP port/controller-effect pa
 - Do not run DSX or bundled `UDPClient.exe` concurrently.
 - Restart the bridge rather than using the mod's Restart UDP Client command.
 - Start SteamVR before the bridge so Toolkit CAPI can be discovered.
-- Do not drive controller haptics from the VR plugin either. See
-  [Nothing else may drive the actuators](#nothing-else-may-drive-the-actuators).
+- Do not drive **Sense** through the VR plugin's generic OpenXR output. That backend rejects PSVR2 automatically; see [Nothing else may drive the actuators](#nothing-else-may-drive-the-actuators) and [Generic OpenXR controller haptics](generic-openxr-haptics.md).
 
 ## UDP autostart resets itself
 
@@ -53,7 +52,7 @@ rhythms went quiet, machine guns lost feedback entirely, and a tech sniper shot 
 wrong hand. The pulses themselves were valid — the runtime accepted every one — but SteamVR
 haptic output and Toolkit CAPI compete for the same Sense actuators.
 
-The upstream-0.1.3 PSVR2 plugin does not create or apply an OpenXR vibration action. Motion-driven haptics go only through the bridge's own effect engine so they mix with its audio, weapon, and vehicle layers rather than fighting them.
+The upstream-0.1.3 PSVR2 plugin creates a generic vibration action for compatibility with Quest/Touch and other headsets but rejects all requests when the detected system is PSVR2. Sense motion haptics therefore still go only through the bridge's own effect engine so they mix with its audio, weapon, and vehicle layers rather than fighting them.
 
 # Native launcher boundary
 

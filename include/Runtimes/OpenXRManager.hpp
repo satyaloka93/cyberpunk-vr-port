@@ -785,6 +785,18 @@ public:
     bool IsInitialized() const { return m_initialized; }
     bool IsSessionRunning() const { return m_sessionRunning.load(std::memory_order_relaxed); }
 
+    // Generic controller haptics for Quest/Touch, Index, Vive and WMR. Requests may arrive from CET
+    // or the game shot hook on non-XR threads, so they are queued and applied by the XR frame owner.
+    // PSVR2 always rejects this path: PSVR2Toolkit remains the sole Sense actuator owner.
+    void QueueOpenXRHapticPulse(int hand, float amplitude, int durationMs);
+    void SetOpenXRHapticGain(float gain) {
+        m_openXrHapticGain.store(gain < 0.0f ? 0.0f : (gain > 2.0f ? 2.0f : gain),
+                                 std::memory_order_relaxed);
+    }
+    float GetOpenXRHapticGain() const {
+        return m_openXrHapticGain.load(std::memory_order_relaxed);
+    }
+
 private:
     static DWORD WINAPI FrameThreadThunk(LPVOID param);
     DWORD FrameThreadMain();
@@ -805,6 +817,8 @@ private:
     void PollEvents();
     bool BeginSession();
     void EndSession();
+    void PumpOpenXRHaptics();
+    void ClearOpenXRHaptics(bool stopRuntime);
     bool EnsureMonoSubmitResources();
     bool EnsureMonoCaptureResource(const D3D12_RESOURCE_DESC& sourceDesc);
     bool EnsureDepthSnapshot(ID3D12Resource* gameDepth);
@@ -857,7 +871,18 @@ private:
     XrAction m_secondaryButtonTouchAction = XR_NULL_HANDLE; // Bool, per hand (Y/B touch)
     XrAction m_thumbrestTouchAction = XR_NULL_HANDLE;    // Bool, per hand (Touch thumbrest)
     XrAction m_menuButtonAction = XR_NULL_HANDLE;        // Global Create/Options application action
+    XrAction m_hapticAction = XR_NULL_HANDLE;            // Generic per-hand vibration; never applied on PSVR2
     XrPath m_handPaths[2] = { XR_NULL_PATH, XR_NULL_PATH };
+    struct PendingHapticPulse {
+        bool pending = false;
+        float amplitude = 0.0f;
+        int durationMs = 0;
+    };
+    std::mutex m_hapticMutex;
+    PendingHapticPulse m_pendingHaptics[2]{};
+    std::atomic<float> m_openXrHapticGain{1.25f};
+    bool m_openXrHapticActiveLogged = false;
+    bool m_openXrHapticErrorLogged = false;
     XrSpace m_handSpaces[2] = { XR_NULL_HANDLE, XR_NULL_HANDLE };
     // Latest controller snapshot, owned by the frame thread.
     mutable std::mutex m_inputMutex;
