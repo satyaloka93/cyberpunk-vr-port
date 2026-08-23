@@ -151,9 +151,12 @@ haptics. See [`docs/PSVR2-ADAPTIVE-TRIGGERS.md`](docs/PSVR2-ADAPTIVE-TRIGGERS.md
 Quest/Touch, Index, Vive and WMR use the port's in-session OpenXR vibration output—never DSX or
 the PSVR2Toolkit bridge. Confirmed gun rounds generate weapon-weighted right-hand recoil, with a
 weaker left pulse only while two-hand grip is active; melee swing and confirmed-impact events use
-the same backend. `F10 → Controls → OpenXR controller haptic gain` defaults to `1.25` to give simple
-rumble more presence where adaptive-trigger resistance and rich Sense PCM are unavailable. PSVR2
-hard-disables this backend regardless of the slider, preserving one actuator owner.
+the same backend. While driving a car or bike, Windows default-output loopback converts the same
+low-frequency engine/road audio and shift/impact transients used by the PSVR2 bridge into a continuous
+OpenXR amplitude envelope for both hands. `F10 → Controls → OpenXR controller haptic gain` defaults
+to `1.25`; `OpenXR vehicle audio rumble` independently tunes driving texture. PSVR2 hard-disables
+this backend regardless of the sliders, preserving one actuator owner. See
+[`docs/OPENXR-HAPTICS.md`](docs/OPENXR-HAPTICS.md).
 
 ## Installation (drop-in)
 

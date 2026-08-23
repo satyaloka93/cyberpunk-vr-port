@@ -163,10 +163,12 @@ QUEST / GENERIC OPENXR HAPTICS
 
   Quest/Touch, Index, Vive and WMR use standard per-hand OpenXR vibration. Confirmed gun rounds
   generate weapon-weighted recoil in the firing hand and a weaker support-hand pulse only during
-  two-hand grip. Melee swings and confirmed impacts use the same backend. F10 -> Controls ->
-  OpenXR controller haptic gain defaults to 1.25 because these controllers have no PSVR2 adaptive
-  trigger resistance or rich Sense PCM. Set it to 0 to disable. Do not run DSX or PSVR2Toolkit for
-  Quest. PSVR2 ignores this backend unconditionally and remains owned only by its Toolkit bridge.
+  two-hand grip. Melee swings and confirmed impacts use the same backend. While driving a car or
+  bike, the Windows default output supplies low-frequency engine/road body and gear/impact transients
+  to both hands, matching the evidence source used by the PSVR2 bridge but reduced to OpenXR's simple
+  amplitude envelope. F10 -> Controls exposes global haptic gain (default 1.25) and independent
+  vehicle audio rumble (default 1.0). Do not run DSX or PSVR2Toolkit for Quest. PSVR2 ignores this
+  backend unconditionally and remains owned only by its Toolkit bridge.
 
 DRIVING
 

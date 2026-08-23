@@ -142,6 +142,7 @@ if (Test-Path $hud) {
 # Optional PSVR2 Sense bridge setup. Documentation only: the third-party bridge, Toolkit driver,
 # Enhanced DualSense Support and Native Settings UI remain separate downloads.
 Add-File (Need (Join-Path $RepoRoot "docs\PSVR2-ADAPTIVE-TRIGGERS.md") "PSVR2 haptics guide") "PSVR2-ADAPTIVE-TRIGGERS.md"
+Add-File (Need (Join-Path $RepoRoot "docs\OPENXR-HAPTICS.md") "OpenXR haptics guide") "OPENXR-HAPTICS.md"
 
 # ---- the OpenXR probe is NOT packaged ---------------------------------------------------------
 # It stays in tools\xr_probe\ and goes to a tester by hand, when there is something to measure.
@@ -199,6 +200,10 @@ REQUIREMENTS
     OPTIONAL PSVR2 HAPTICS: Enhanced DualSense Support + Native Settings UI + the matching
     guarded PSVR2Toolkit bridge. The bridge is the only Sense actuator owner: do not run DSX,
     UDPClient.exe, or OpenXR haptics beside it. Read PSVR2-ADAPTIVE-TRIGGERS.md.
+
+    QUEST / OTHER OPENXR HAPTICS: built in; do not run DSX or PSVR2Toolkit. Gun, melee,
+    and audio-derived car/bike engine + shift feedback use the runtime's controller output.
+    Read OPENXR-HAPTICS.md.
 
     Nothing else may proxy dxgi. If bin\x64\dxgi.dll exists (R.E.A.L. VR installs one), move it
     out of the folder -- two VR paths in one process fight over the same engine hooks.

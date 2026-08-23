@@ -721,10 +721,22 @@ bool DrawLiveControls(LiveControlsUiState& state) {
                                   "0 disables it. PSVR2 always ignores this setting: the Toolkit bridge\n"
                                   "remains the sole Sense actuator owner, preventing doubled feedback.");
             }
+            float vehicleHapticGain = state.xrOpenXrVehicleHapticGain >= 0.0f
+                ? state.xrOpenXrVehicleHapticGain : 1.0f;
+            if (ImGui::SliderFloat("OpenXR vehicle audio rumble", &vehicleHapticGain, 0.0f, 2.0f, "%.2f")) {
+                state.xrOpenXrVehicleHapticGain = vehicleHapticGain;
+                changed = true;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Cars and bikes: low-frequency engine/road audio becomes continuous\n"
+                                  "two-hand rumble; shift/impact transients become stronger bumps.\n"
+                                  "0 disables only vehicle audio haptics. The global haptic gain above\n"
+                                  "still scales the final output. Captures the Windows default output.");
+            }
             if (OpenXRManager::Get().IsRuntimePsvr2()) {
                 ImGui::TextDisabled("PSVR2 output: PSVR2Toolkit bridge (OpenXR haptics locked out)");
             } else {
-                ImGui::TextDisabled("OpenXR output: gun recoil + melee swing/confirmed impact");
+                ImGui::TextDisabled("OpenXR output: gun + melee + driving engine/gear audio");
             }
 
             ImGui::Separator();

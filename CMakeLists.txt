@@ -98,6 +98,7 @@ target_link_libraries(cyberpunkvrport_stereo PRIVATE
     d3d12.lib
     d3dcompiler
     dxgi.lib        # the SYSTEM import lib -- bare "dxgi" would resolve to our own target
+    ole32.lib       # WASAPI loopback for non-PSVR2 vehicle engine/gear haptic envelopes
     psapi
     RED4ext::SDK
 )

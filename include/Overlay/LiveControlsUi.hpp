@@ -53,6 +53,8 @@ struct LiveControlsUiState {
     // Quest/Touch and other non-PSVR2 OpenXR vibration gain. 0 disables, default 1.25, max 2.
     // PSVR2 ignores it and remains exclusively owned by the Toolkit bridge.
     float xrOpenXrHapticGain;
+    // Non-PSVR2 engine/road/gear audio-envelope gain. 0 disables vehicle rumble only.
+    float xrOpenXrVehicleHapticGain;
     // Mono submit safety flags. Defaults 0 keep CP2077 mono mode from hanging on
     // the menu (see cybervrport-controller-bindings memory for the trace).
     int xrMonoXQueueWait;

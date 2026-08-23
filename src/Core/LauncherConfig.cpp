@@ -113,6 +113,9 @@ void InitRuntimePaths() {
     // Sense PCM. A modest 1.25 gain adds presence while preserving the per-weapon amplitude ladder.
     // The runtime backend hard-disables this on PSVR2 regardless of the value.
     g_liveControls.xrOpenXrHapticGain = 1.25f;
+    // Audio-derived engine/road body plus gear-change transients. Separate so continuous vehicle
+    // texture can be tuned or disabled without weakening gun/melee events.
+    g_liveControls.xrOpenXrVehicleHapticGain = 1.0f;
 
     // Capture the recenter-request baseline NOW (before CET could write), so the
     // first OnGameAttached this session is seen as a change and triggers a recenter,
@@ -196,6 +199,7 @@ void EnsureLiveControlFileExists() {
     fprintf(file, "xr_xinput_install=1\n");
     fprintf(file, "xr_input_actions=1\n");
     fprintf(file, "xr_openxr_haptic_gain=1.25\n");
+    fprintf(file, "xr_openxr_vehicle_haptic_gain=1.00\n");
     fprintf(file, "xr_mono_xqueue_wait=0\n");
     fprintf(file, "xr_snap_turn_pulse_ms=30\n");
     fprintf(file, "xr_mono_depth_capture=1\n");

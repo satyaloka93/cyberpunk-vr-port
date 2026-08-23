@@ -789,6 +789,9 @@ public:
     // or the game shot hook on non-XR threads, so they are queued and applied by the XR frame owner.
     // PSVR2 always rejects this path: PSVR2Toolkit remains the sole Sense actuator owner.
     void QueueOpenXRHapticPulse(int hand, float amplitude, int durationMs);
+    // Latest audio-derived engine/gear envelope. The capture worker refreshes this only while the
+    // player is driving; the frame owner expires it after 100 ms and never routes it to PSVR2.
+    void SetOpenXRVehicleHaptics(float leftAmplitude, float rightAmplitude);
     void SetOpenXRHapticGain(float gain) {
         m_openXrHapticGain.store(gain < 0.0f ? 0.0f : (gain > 2.0f ? 2.0f : gain),
                                  std::memory_order_relaxed);
@@ -881,6 +884,9 @@ private:
     std::mutex m_hapticMutex;
     PendingHapticPulse m_pendingHaptics[2]{};
     std::atomic<float> m_openXrHapticGain{1.25f};
+    std::atomic<float> m_openXrVehicleHapticAmplitude[2]{ {0.0f}, {0.0f} };
+    std::atomic<uint64_t> m_openXrVehicleHapticTickMs{0};
+    uint64_t m_openXrEventHapticUntilMs[2]{}; // frame-owner only; prevents engine rumble truncating an event pulse
     bool m_openXrHapticActiveLogged = false;
     bool m_openXrHapticErrorLogged = false;
     XrSpace m_handSpaces[2] = { XR_NULL_HANDLE, XR_NULL_HANDLE };

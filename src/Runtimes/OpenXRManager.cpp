@@ -1,10 +1,12 @@
 #include "Anim/WheelGrab.hpp"   // the wheel-grab blends, for the hand smoothing below
 #include "Runtimes/OpenXRManager.hpp"
+#include "Runtimes/OpenXRVehicleAudioHaptics.hpp"
 #include "Utils/SharedSlots.hpp"   // CyberpunkVR_Hands_Shared slot map (single source of truth)
 #include "Hooks/Ngx.hpp"
 #include "Runtimes/RuntimeFovCorrection.hpp"
 #include "Utils/XrMath.hpp"   // extracted pure quaternion/vector math (inline)
 #include "Runtimes/OpenXRInternal.hpp"   // shared inline statics/helpers for the split OpenXR TUs
+#include <algorithm>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -902,6 +904,11 @@ bindings_done:
         (void)0;
     }
 
+    // Quest/Touch receives an OpenXR amplitude envelope derived from the same default-output audio
+    // evidence that gives PSVR2 its engine and gear-shift feel. Never capture for PSVR2: the Toolkit
+    // bridge already owns that audio and every Sense actuator.
+    if (!IsRuntimePsvr2()) cvr::haptics::StartVehicleAudioCapture();
+
     m_initialized = true;
     return true;
 }
@@ -1049,12 +1056,26 @@ void OpenXRManager::QueueOpenXRHapticPulse(int hand, float amplitude, int durati
     pending.pending = true;
 }
 
+void OpenXRManager::SetOpenXRVehicleHaptics(float leftAmplitude, float rightAmplitude) {
+    if (IsRuntimePsvr2()) return;
+    leftAmplitude = std::clamp(leftAmplitude, 0.0f, 1.0f);
+    rightAmplitude = std::clamp(rightAmplitude, 0.0f, 1.0f);
+    m_openXrVehicleHapticAmplitude[0].store(leftAmplitude, std::memory_order_relaxed);
+    m_openXrVehicleHapticAmplitude[1].store(rightAmplitude, std::memory_order_relaxed);
+    m_openXrVehicleHapticTickMs.store(GetTickCount64(), std::memory_order_release);
+}
+
 void OpenXRManager::ClearOpenXRHaptics(bool stopRuntime) {
     {
         std::lock_guard<std::mutex> lock(m_hapticMutex);
         m_pendingHaptics[0] = {};
         m_pendingHaptics[1] = {};
     }
+    m_openXrVehicleHapticAmplitude[0].store(0.0f, std::memory_order_relaxed);
+    m_openXrVehicleHapticAmplitude[1].store(0.0f, std::memory_order_relaxed);
+    m_openXrVehicleHapticTickMs.store(0, std::memory_order_release);
+    m_openXrEventHapticUntilMs[0] = 0;
+    m_openXrEventHapticUntilMs[1] = 0;
     if (!stopRuntime || IsRuntimePsvr2() || m_session == XR_NULL_HANDLE ||
         m_hapticAction == XR_NULL_HANDLE) return;
     for (int hand = 0; hand < 2; ++hand) {
@@ -1086,9 +1107,28 @@ void OpenXRManager::PumpOpenXRHaptics() {
     float gain = m_openXrHapticGain.load(std::memory_order_relaxed);
     if (!(gain > 0.0f)) return;
     if (gain > 2.0f) gain = 2.0f;
+    const uint64_t nowMs = GetTickCount64();
+    const uint64_t vehicleTick = m_openXrVehicleHapticTickMs.load(std::memory_order_acquire);
+    const bool vehicleFresh = vehicleTick != 0 && nowMs >= vehicleTick && nowMs - vehicleTick <= 100;
     for (int hand = 0; hand < 2; ++hand) {
-        if (!pulses[hand].pending) continue;
-        float amplitude = pulses[hand].amplitude * gain;
+        float rawAmplitude = 0.0f;
+        int durationMs = 0;
+        if (pulses[hand].pending) {
+            rawAmplitude = pulses[hand].amplitude;
+            durationMs = pulses[hand].durationMs;
+            m_openXrEventHapticUntilMs[hand] = nowMs + static_cast<uint64_t>(durationMs);
+        } else {
+            // xrApplyHapticFeedback replaces the current vibration. Do not let a low engine update on
+            // the next frame cut a gunshot or melee impact short; resume continuous rumble when that
+            // event's requested duration has elapsed.
+            if (nowMs < m_openXrEventHapticUntilMs[hand]) continue;
+            if (vehicleFresh) {
+                rawAmplitude = m_openXrVehicleHapticAmplitude[hand].load(std::memory_order_relaxed);
+                durationMs = 45; // refreshed every XR frame; short lifetime fails silent if capture stalls
+            }
+        }
+        if (!(rawAmplitude > 0.01f) || durationMs <= 0) continue;
+        float amplitude = rawAmplitude * gain;
         if (amplitude > 1.0f) amplitude = 1.0f;
 
         XrHapticActionInfo info{XR_TYPE_HAPTIC_ACTION_INFO};
@@ -1096,7 +1136,7 @@ void OpenXRManager::PumpOpenXRHaptics() {
         info.subactionPath = m_handPaths[hand];
         XrHapticVibration vibration{XR_TYPE_HAPTIC_VIBRATION};
         vibration.amplitude = amplitude;
-        vibration.duration = static_cast<XrDuration>(pulses[hand].durationMs) * 1000000;
+        vibration.duration = static_cast<XrDuration>(durationMs) * 1000000;
         vibration.frequency = XR_FREQUENCY_UNSPECIFIED;
         const XrResult result = xrApplyHapticFeedback(
             m_session, &info, reinterpret_cast<const XrHapticBaseHeader*>(&vibration));
@@ -2034,6 +2074,7 @@ void OpenXRManager::FlushHandsToShared() {
 
 void OpenXRManager::Shutdown() {
     std::lock_guard<std::mutex> initLock(m_initMutex);
+    cvr::haptics::StopVehicleAudioCapture();
     m_stopFrameThread.store(true, std::memory_order_relaxed);
     // ASK THE RUNTIME TO END THE SESSION FIRST (dabinn, TofuExpress fbe336fa). A frame loop parked
     // inside xrWaitFrame is not woken by our own event; xrRequestExitSession is what makes the
