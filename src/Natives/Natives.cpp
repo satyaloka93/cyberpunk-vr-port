@@ -196,6 +196,12 @@ void EnsureSharedMemory() {
         g_hMapFile = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, 1024, "CyberpunkVR_Hands_Shared");
         if (g_hMapFile) g_pSharedHands = (float*)MapViewOfFile(g_hMapFile, FILE_MAP_ALL_ACCESS, 0, 0, 1024);
     }
+    if (g_pSharedHands) {
+        // Fail-closed handshake for the external PSVR2Toolkit bridge. This advertises layout only;
+        // no actuator is driven from the game process.
+        g_pSharedHands[vrshared::kHapticProtocolMagicSlot] = vrshared::kHapticProtocolMagic;
+        g_pSharedHands[vrshared::kHapticProtocolVersionSlot] = vrshared::kHapticProtocolVersion;
+    }
 }
 
 // Seqlock reader facility (g_handsStable / RefreshHandsSnapshot / SharedPose) is

@@ -58,6 +58,18 @@ local meleePrevRel = nil       -- weapon pos relative to player, last frame (so 
 local MELEE_SWING_SPEED = 2.5  -- m/s of weapon motion relative to player — peaks at 2-5 m/s on a real swing
 local MELEE_BOX = 0.22         -- blade hit radius (m) — tight to NPC body silhouette
 
+-- Motion haptics are REQUESTS to the external PSVR2Toolkit bridge, never OpenXR output. The bridge
+-- is the sole Sense actuator owner and mixes these with gun, audio and vehicle feedback. Swing is
+-- one pulse per whoosh episode; impact is emitted only when VRMeleeBladeHit returns an actual hit.
+local HAPTIC_HAND        = 1     -- 1 = right (the port's weapon hand), 0 = left
+local HAPTIC_SWING_MIN   = 0.45
+local HAPTIC_SWING_MAX   = 0.85
+local HAPTIC_SWING_MS    = 45
+local HAPTIC_HIT_AMP     = 1.00
+local HAPTIC_HIT_MS      = 90
+local HAPTIC_HIT_MIN_GAP = 0.12
+local hapticHitLast      = -1.0
+
 -- SWING WHOOSH: in the flat game the whoosh rides on the attack anim's audio events, which a VR
 -- swing never plays — so redscript VRMeleeWhoosh replays the weapon's own audio-config whoosh
 -- (per-family, positional on the weapon). Fired here on the swing EDGE: once per swing episode
@@ -607,11 +619,23 @@ registerForEvent('onUpdate', function(dt)
             local strongW = false
             if type(GetVRMeleeTrigger) == 'function' then strongW = (GetVRMeleeTrigger() == 1) end
             pcall(function() pl:VRMeleeWhoosh(wpn, wSpeed >= WHOOSH_FAST_SPEED, strongW) end)
+            if type(SetVRHapticPulse) == 'function' then
+                local amplitude = HAPTIC_SWING_MIN
+                    + (HAPTIC_SWING_MAX - HAPTIC_SWING_MIN)
+                    * math.min(1.0, math.max(0.0, (wSpeed - WHOOSH_SWING_SPEED) / 3.0))
+                pcall(function() SetVRHapticPulse(HAPTIC_HAND, amplitude, HAPTIC_SWING_MS) end)
+            end
         end
         if speed >= MELEE_SWING_SPEED then
             local strong = false
             if type(GetVRMeleeTrigger) == 'function' then strong = (GetVRMeleeTrigger() == 1) end
-            pcall(function() pl:VRMeleeBladeHit(wpn, wp, fwd, MELEE_BOX, strong) end)
+            local hit = 0
+            pcall(function() hit = pl:VRMeleeBladeHit(wpn, wp, fwd, MELEE_BOX, strong) end)
+            if hit == 1 and type(SetVRHapticPulse) == 'function'
+               and (guardClock - hapticHitLast) >= HAPTIC_HIT_MIN_GAP then
+                hapticHitLast = guardClock
+                pcall(function() SetVRHapticPulse(HAPTIC_HAND, HAPTIC_HIT_AMP, HAPTIC_HIT_MS) end)
+            end
         end
     end)
 end)

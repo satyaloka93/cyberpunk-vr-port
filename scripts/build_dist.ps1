@@ -139,6 +139,10 @@ if (Test-Path $hud) {
     Add-File (Need (Join-Path $hud "persistency.json") "persistency.json") "bin\x64\plugins\cyber_engine_tweaks\mods\HUDitor\persistency.json"
 }
 
+# Optional PSVR2 Sense bridge setup. Documentation only: the third-party bridge, Toolkit driver,
+# Enhanced DualSense Support and Native Settings UI remain separate downloads.
+Add-File (Need (Join-Path $RepoRoot "docs\PSVR2-ADAPTIVE-TRIGGERS.md") "PSVR2 haptics guide") "PSVR2-ADAPTIVE-TRIGGERS.md"
+
 # ---- the OpenXR probe is NOT packaged ---------------------------------------------------------
 # It stays in tools\xr_probe\ and goes to a tester by hand, when there is something to measure.
 # Registering a MACHINE-WIDE OpenXR API layer is not a thing to ship to everyone who installs a
@@ -191,6 +195,10 @@ REQUIREMENTS
     care about it. HUDitor remains optional: without it the standard flat-screen HUD is used, while
     the packaged scanner-details redscript adjustment still moves that dynamic panel into view.
     The port composites the HUD into the second eye either way.
+
+    OPTIONAL PSVR2 HAPTICS: Enhanced DualSense Support + Native Settings UI + the matching
+    guarded PSVR2Toolkit bridge. The bridge is the only Sense actuator owner: do not run DSX,
+    UDPClient.exe, or OpenXR haptics beside it. Read PSVR2-ADAPTIVE-TRIGGERS.md.
 
     Nothing else may proxy dxgi. If bin\x64\dxgi.dll exists (R.E.A.L. VR installs one), move it
     out of the folder -- two VR paths in one process fight over the same engine hooks.

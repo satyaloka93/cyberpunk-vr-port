@@ -716,6 +716,13 @@ RED4EXT_C_EXPORT void RED4EXT_CALL PostRegisterTypes() {
         "SetVRReloadOwnedHand", "SetVRReloadOwnedHand", &SetVRReloadOwnedHand);
     fReloadOwnedHand->flags = flags; fReloadOwnedHand->AddParam("Int32", "hand");
     rtti->RegisterFunction(fReloadOwnedHand);
+    auto fHapticPulse = RED4ext::CGlobalFunction::Create(
+        "SetVRHapticPulse", "SetVRHapticPulse", &SetVRHapticPulse);
+    fHapticPulse->flags = flags;
+    fHapticPulse->AddParam("Int32", "hand");
+    fHapticPulse->AddParam("Float", "amplitude");
+    fHapticPulse->AddParam("Int32", "durationMs");
+    rtti->RegisterFunction(fHapticPulse);
     auto fSprintActive = RED4ext::CGlobalFunction::Create(
         "SetVRSprintActive", "SetVRSprintActive", &SetVRSprintActive);
     fSprintActive->flags = flags; fSprintActive->SetReturnType("Int32");

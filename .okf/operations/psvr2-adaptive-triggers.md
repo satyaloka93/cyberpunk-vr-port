@@ -2,7 +2,7 @@
 type: Integration Runbook
 title: PSVR2 Sense adaptive triggers and grip haptics
 description: Optional integration of Enhanced DualSense Support gameplay profiles with the PSVR2Toolkit bridge, including VR melee motion haptics and the single-owner rule for the controller-effect path.
-resource: https://github.com/satyaloka93/PSVR2Toolkit/releases/tag/cyberpunk-dsx-bridge-v0.2.0
+resource: https://github.com/satyaloka93/PSVR2Toolkit/tree/cyberpunk-dsx-bridge-slot-guard
 tags: [psvr2, sense, adaptive-triggers, haptics, melee, cyberpunk, dependencies]
 timestamp: 2026-08-11T15:40:00+09:00
 ---
@@ -53,9 +53,7 @@ rhythms went quiet, machine guns lost feedback entirely, and a tech sniper shot 
 wrong hand. The pulses themselves were valid — the runtime accepted every one — but SteamVR
 haptic output and Toolkit CAPI compete for the same Sense actuators.
 
-The plugin therefore ships with that action disabled. Motion-driven haptics must go through
-the bridge's own effect engine so they mix with its audio and semantic layers rather than
-fighting them.
+The upstream-0.1.3 PSVR2 plugin does not create or apply an OpenXR vibration action. Motion-driven haptics go only through the bridge's own effect engine so they mix with its audio, weapon, and vehicle layers rather than fighting them.
 
 # Native launcher boundary
 
@@ -111,11 +109,24 @@ Routing through `HapticsEngine` is what makes this safe: the pulse mixes with th
 semantic layers instead of competing for the actuators, which is the failure described in
 [Nothing else may drive the actuators](#nothing-else-may-drive-the-actuators).
 
-Slot `[157]` is written last, after the payload, so a changed sequence means the record is
-complete. The watcher adopts the current sequence when it attaches, so joining mid-session
-does not replay a stale event, and it validates amplitude and duration before emitting —
-the mapping outlives the game process and a stale record must not reach the actuators at full
-strength.
+Slot `[157]` is written last, after the payload, so a changed sequence means the record is complete. The guarded watcher additionally requires magic `18512`, protocol version `1`, and a changing OpenXR heartbeat in slots `[168..170]`. It adopts the current sequence only after seeing a live heartbeat, so joining mid-session does not replay a stale event. This matters because the bridge can retain the named mapping after the game exits; magic without freshness would accept metadata left by an earlier process.
+
+# Driving and input isolation
+
+The haptic ABI remains the already-shipped `[157..160]` contract. The upstream 0.1.3 port had independently reused those indices for right B, left Y, R3, and analog R2. That was unsafe even though it compiled: a bridge has no source-level dependency on this repository, so ordinary grep and compiler checks could not see the collision.
+
+The compatible layout is:
+
+| Slots | Owner |
+|---|---|
+| `[157..160]` | haptic sequence, hand, amplitude, duration — external bridge ABI |
+| `[161]` | physical-reload trigger override |
+| `[162]` | physical-reload owned hand |
+| `[163]` | wheel/handlebar armed mask |
+| `[164..167]` | right B, left Y, R3, analog R2 |
+| `[168..170]` | haptic magic, version, live heartbeat |
+
+Steering angle, wheel-arm blend, throttle latch, and vehicle classification remain same-DLL state and never enter the haptic record. Enhanced DualSense Support's car/bike trigger profiles and audio-derived vehicle rumble still flow through `HapticsEngine`; they are mixed rather than disabled. If an incompatible DLL is detected, only VR motion pulses pause, while gun, audio, vehicle, and adaptive-trigger processing continues.
 
 ## Tuning
 
@@ -137,11 +148,11 @@ Cyberpunk and retries attaching once a second, so starting the bridge first stil
 
 The release's installer must run with SteamVR closed. It backs up `driver_playstation_vr2.dll` before installing the matching raw-trigger Toolkit driver. PlayStation VR2 App updates may restore Sony's driver; rerun the matching installer after such an update.
 
-Detailed user instructions and troubleshooting live in the repository's [PSVR2 adaptive-trigger setup](https://github.com/satyaloka93/cyberpunk-vr-port/blob/psvr2-tweaks/docs/PSVR2-ADAPTIVE-TRIGGERS.md).
+Detailed user instructions and troubleshooting live in the repository's [PSVR2 adaptive-trigger setup](https://github.com/satyaloka93/cyberpunk-vr-port/blob/upstream-0.1.3-psvr2/docs/PSVR2-ADAPTIVE-TRIGGERS.md).
 
 # Citations
 
 [1] [PSVR2Toolkit community fork](https://github.com/satyaloka93/PSVR2Toolkit)
-[2] [Cyberpunk DSX Bridge v0.2.0](https://github.com/satyaloka93/PSVR2Toolkit/releases/tag/cyberpunk-dsx-bridge-v0.2.0)
+[2] [Cyberpunk DSX Bridge guarded branch](https://github.com/satyaloka93/PSVR2Toolkit/tree/cyberpunk-dsx-bridge-slot-guard)
 [3] [Enhanced DualSense Support](https://www.nexusmods.com/cyberpunk2077/mods/4156)
 [4] [Native Settings UI](https://www.nexusmods.com/cyberpunk2077/mods/3518)

@@ -1444,10 +1444,10 @@ function M.frame(weapon, slotComp, holder, dt)
             slideS.locked = true
         end
         -- THE SLIDE RELEASE BUTTON: the right stick CLICK, which the VR core now consumes for exactly this (it
-        -- used to be crouch, and crouch is the same stick pushed fully down -- shared slot 159,
+        -- used to be crouch, and crouch is the same stick pushed fully down -- shared slot 166,
         -- vrshared::kRightStickClick). A thumb closes a locked-back slide the way it does on the real pistol,
         -- without a whole hand reaching over the gun. Rising edge only, or a held click would fight the hand.
-        local clickNow = (GetVRSharedSlot(159) or 0.0) > 0.5
+        local clickNow = (GetVRSharedSlot(166) or 0.0) > 0.5
         local clickEdge = clickNow and not slideS.clickPrev
         slideS.clickPrev = clickNow
         if clickEdge and empty and slideS.locked and not (slideS.grabbed or slideS.releasing) then
@@ -2325,7 +2325,7 @@ function M.frame(weapon, slotComp, holder, dt)
                 grip and 'Y' or 'n', magS.gripLock and 'Y' or 'n', free,
                 tostring(magS.hand), hmx and 'Y' or 'NIL')
 
-            local btn = (GetVRSharedSlot(157) or 0.0) > 0.5
+            local btn = (GetVRSharedSlot(164) or 0.0) > 0.5
             local btnEdge = btn and not magS.btnWas
             magS.btnWas = btn
 
@@ -3778,7 +3778,7 @@ function M.frame(weapon, slotComp, holder, dt)
         -- crane is the gun's own part and has nothing to do with whether the magazine is in.
         local want = (magS.state ~= 'in') and 1.0 or 0.0
         if hc.manual then
-            local b2 = (GetVRSharedSlot(157) or 0.0) > 0.5
+            local b2 = (GetVRSharedSlot(164) or 0.0) > 0.5
             if b2 and not hatchS.btnPrev then
                 hatchS.open = not hatchS.open
                 -- on the EDGE, not on arrival: a crane is heard leaving the frame, not reaching the end of its swing
@@ -4073,7 +4073,7 @@ function M.frame(weapon, slotComp, holder, dt)
         -- THE CLICK TOGGLES IT: down on one press, back on the next. A shot would be the honest release, and it is
         -- still honoured below, but the ammo count is not a reliable trigger on this weapon -- the log reads it as
         -- `0` and `nil` by turns -- and a thumb that can only ever push one way is worse than one that cannot.
-        local clk = (GetVRSharedSlot(159) or 0.0) > 0.5
+        local clk = (GetVRSharedSlot(166) or 0.0) > 0.5
         if clk and not hamS.prev then
             hamS.want = (hamS.want > 0.5) and 0.0 or 1.0
             hamS.seq = cfg.hammer.poses and 0.0 or nil     -- the thumb sets off; the hammer waits for it below
@@ -4088,7 +4088,7 @@ function M.frame(weapon, slotComp, holder, dt)
         -- action, a long deliberate pull. Squeeze it with the hammer already cocked and the sear lets go almost at
         -- once -- single action, a touch. The same finger, two entirely different guns.
         --
-        -- So the analog value drives the hammer directly (shared[160], published by the merge; [30] is the same
+        -- So the analog value drives the hammer directly (shared[167], published by the merge; [30] is the same
         -- trigger as a FLAG and a flag cannot express travel), and the port decides where in that travel the shot
         -- falls rather than the game's own threshold:
         --
@@ -4099,7 +4099,7 @@ function M.frame(weapon, slotComp, holder, dt)
         -- That last line is also the whole fire block, and it replaces emptying the magazine behind the game's
         -- back: a gun that is merely disconnected from its trigger keeps its rounds and its count, so opening the
         -- crane costs nothing and a speedloader put in with the crane still open cannot be fired either.
-        local ta = (type(GetVRSharedSlot) == 'function' and GetVRSharedSlot(160)) or 0.0
+        local ta = (type(GetVRSharedSlot) == 'function' and GetVRSharedSlot(167)) or 0.0
         local craneOpen = (hatchS.p or 0.0) > 0.9
         local SA  = mc2.saBreak or 0.20
         local DA  = mc2.daBreak or 0.75

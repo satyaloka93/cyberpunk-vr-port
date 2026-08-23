@@ -172,8 +172,8 @@ void DrawVRHandsControls() {
         }
         // Cutscene VRIK suspend (PR #40). Picks the minimum scene tier at which the plugin fully
         // suspends the body+arm solve so the engine authored cinematic pose plays clean. Persisted
-        // through the LiveControls bridge (vrport.ini xr_cutscene_suspend_tier) and republished to
-        // shared[158] every tick, so a change here takes effect without a restart.
+        // through the LiveControls bridge (vrport.ini xr_cutscene_suspend_tier) and read from the
+        // same-DLL g_sceneTier state, so a change here takes effect without a restart.
         //
         // Combo index -> stored min-tier: Never(-1), Tier2+(1), Tier3+(2), Tier4+(3), Tier5(4).
         static const int kTierValues[] = { -1, 1, 2, 3, 4 };

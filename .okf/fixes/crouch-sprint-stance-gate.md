@@ -70,39 +70,20 @@ The mod logs each distinct locomotion value once (`crouch: locomotion state N ob
 reports an unreadable blackboard explicitly, so the crouch constant is confirmed against the
 live build rather than assumed.
 
-## The perk is declared, not queried
+## Crouch-to-sprint remains opt-in
 
-`Crouch-sprint perk owned` in the F10 **DLSS / Debug** section, persisted as
-`xr_crouch_sprint_perk` in `vrport.ini`, default **off**.
-
-The perk is deliberately not read from TweakDB: naming a record that silently returns false
-would be indistinguishable from a bug. The default is the stance-preserving one, which is the
-desired behaviour for a player without the perk. Tick it once the perk is unlocked.
+The native tuning export `CyberpunkVR_SprintFromCrouch` defaults to `0`, which blocks the full-stick sprint detent while locomotion is Crouch, CrouchSprint, or CrouchDodge. Setting it to `1` allows the game to decide whether a full detent should transition from crouch. It is not currently exposed in F10 or persisted in `vrport.ini`.
 
 # Signal path
 
-Lua can read shared slots through `GetVRSharedSlot` but has no writer, so state the CET mods
-observe reaches the runtime through purpose-built natives in the Hands plugin. A generic
-setter is deliberately not offered — the shared block carries seqlocks and pose data, and a mod
-writing the wrong index is how the smoking bridge once produced a self-igniting lighter.
+The current 0.1.3 port no longer sends crouch state through shared slot `[161]`. The VRIK CET mod calls the purpose-built `SetVRLocomotionState` native, which writes same-DLL `g_VRLocomotionState`; the XInput hook reads that global directly. Slot `[161]` now belongs exclusively to physical reload's trigger override.
 
-| Slot | Contents |
-|---|---|
-| `[157]` | haptic sequence, written last so the payload is complete before it is observed |
-| `[158]` | haptic hand |
-| `[159]` | haptic amplitude |
-| `[160]` | haptic duration ms |
-| `[161]` | crouched |
-
-Slots `[157..160]` are wired and firing but currently have no consumer — see
-[PSVR2 adaptive triggers and grip haptics](../operations/psvr2-adaptive-triggers.md).
+The adjacent `[157..160]` block is the external PSVR2Toolkit motion-haptic ABI and has no role in stance. Keeping locomotion out of that record prevents a state transition from being interpreted as a pulse. See [PSVR2 adaptive triggers and grip haptics](../operations/psvr2-adaptive-triggers.md).
 
 # Regression checks
 
 1. Crouch, push fully forward: the player creeps at full crouch speed and stays crouched.
 2. Stand, push fully forward: the player sprints as before.
 3. Partial deflection still walks in both stances.
-4. `crouch: locomotion state N observed` appears for standing and crouching. If instead
-   `locomotion blackboard unreadable` appears, the gate is inactive and crouch will break out
-   exactly as before the fix.
-5. D-pad shifting via left-stick click still works — the sprint change must not disturb it.
+4. Verify the VRIK CET mod calls `SetVRLocomotionState` without a scripting error; a missing native leaves the gate in its explicit unknown-state fallback.
+5. D-pad shifting via Triangle touch or the L3 fallback still works — the sprint change must not disturb it.

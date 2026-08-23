@@ -136,6 +136,16 @@ the dynamic panel HUDitor does not expose.
 
 Install RED4ext, CET and redscript first (the usual Nexus dependencies).
 
+### Optional PS VR2 adaptive triggers and grip haptics
+
+[Enhanced DualSense Support](https://www.nexusmods.com/cyberpunk2077/mods/4156) can feed its
+weapon, scanner, menu, and vehicle profiles to the guarded
+[PSVR2Toolkit bridge](https://github.com/satyaloka93/PSVR2Toolkit/tree/cyberpunk-dsx-bridge-slot-guard).
+The bridge—not OpenXR, DSX, or `UDPClient.exe`—is the sole Sense actuator owner and mixes
+adaptive triggers, gun/vehicle audio, and per-hand VR melee pulses. Versioned shared-memory
+markers and a live heartbeat prevent wheel, button, or trigger values from being misread as
+haptics. See [`docs/PSVR2-ADAPTIVE-TRIGGERS.md`](docs/PSVR2-ADAPTIVE-TRIGGERS.md).
+
 ## Installation (drop-in)
 
 Download the release archive and extract its contents into your **Cyberpunk 2077

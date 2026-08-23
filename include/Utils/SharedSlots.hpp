@@ -90,9 +90,26 @@
 //             (and the published [141]) one snap-delta back for the locates of the
 //             snap tick, releasing when [99] advances; the hook DEFERS the packet
 //             rotation while [99] == [150] so the held frame keeps the pre-snap pose.
+//  [154]       left trigger analog (0..1)     plugin -> Smoking CET bridge
+//  [155]       left grip pressed (0/1)        plugin -> Smoking CET bridge
+//  [156]       DEBUG logging on (0/1)         plugin -> every CET bridge
+//  [157]       haptic event sequence          CET/native -> PSVR2Toolkit bridge (EXTERNAL)
+//  [158]       haptic hand (0 left/1 right)   CET/native -> PSVR2Toolkit bridge (EXTERNAL)
+//  [159]       haptic amplitude (0..1)        CET/native -> PSVR2Toolkit bridge (EXTERNAL)
+//  [160]       haptic duration (milliseconds) CET/native -> PSVR2Toolkit bridge (EXTERNAL)
+//  [161]       physical-reload trigger override (0 pass/1 block/2 force)
+//  [162]       physical-reload owned hand (-1 none/0 left/1 right)
+//  [163]       wheel/handlebar armed mask (bit0 right, bit1 left)
+//  [164]       right secondary/B pressed
+//  [165]       left secondary/Y pressed
+//  [166]       right-stick click/R3 pressed
+//  [167]       right-trigger analog (0..1)
+//  [168]       haptic protocol magic (18512 exactly)
+//  [169]       haptic protocol version (1 exactly)
+//  [170]       haptic protocol heartbeat (advances from OpenXR hand publish)
 //
 // ---------------------------------------------------------------------------
-// GRAVEYARD (dead -- reclaim before growing past [150])
+// GRAVEYARD (dead -- verify all readers before reclaiming any slot)
 // ---------------------------------------------------------------------------
 //  [69]        never used (it was [67..69] once: a brief LT-inject melee-guard experiment, removed
 //              the same session — the VR guard went STAT-driven, IsBlocking/IsDeflecting set
@@ -111,12 +128,9 @@
 //              consumed [132..134] briefly -- removed after live test)
 //  [137..140]  located camera entity-local (writer removed)
 //  [145]       FinalCamera poison-test counter (removed session 3)
-//  [154..255]  mostly unused, but NOT a blank cheque -- [200..202] carry a right-hand debug
-//              position read by the overlay and [227..230] an XR pose quaternion read by
-//              vrik_hook. Check with a grep, not with this comment.
-//  [154]       left trigger analog (0..1)     plugin -> Smoking CET bridge
-//  [155]       left grip pressed (0/1)        plugin -> Smoking CET bridge
-//  [156]       DEBUG logging on (0/1)         plugin -> every CET bridge
+//  [171..255]  mostly unused, but NOT a blank cheque -- [200..203] carry a right-hand debug
+//              position/valid flag and [227..230] an XR pose quaternion read by vrik_hook.
+//              Check with a grep, not with this comment.
 // ============================================================================
 
 namespace vrshared {
@@ -151,50 +165,46 @@ constexpr int kLeftGripPressed   = 155;
 // smoking one alone in a single session, and as much again from the weapon one. A log nobody can
 // open is a log nobody reads.
 constexpr int kDebugLog          = 156;
-// Face buttons as pressed flags, for gameplay gestures that need a button of their own. The physical reload
-// drops the magazine on B, the way the flat game does -- and the button still reaches the game through the
-// XInput merge, so nothing is taken away by publishing it.
-constexpr int kRightSecondaryBtn = 157;   // right B
-constexpr int kLeftSecondaryBtn  = 158;   // left Y
-// The RIGHT STICK CLICK -- and this one is taken AWAY from the game on purpose, unlike the face buttons above.
-// It was R3 = crouch, but crouching is already the right stick pushed fully DOWN (vr_core: ry < -0.90 asserts R3),
-// so the click itself is redundant and is now the physical reload's SLIDE RELEASE: what a thumb does on a real
-// pistol, instead of reaching a whole hand over the gun. The bit is masked out of the XInput merge, or the game
-// would crouch on every slide release.
-constexpr int kRightStickClick    = 159;   // right stick click (R3), consumed by the port
-// THE RIGHT TRIGGER, as an ANALOG value and as a channel back. [30] has been the trigger's only channel and it is a
-// FLAG -- pressed past half or not -- which is enough for a melee power modifier and useless for an action that is
-// worked progressively. A revolver's is: the trigger carries the hammer back as it is squeezed, and where the shot
-// falls in that travel is the difference between single and double action.
-constexpr int kRightTriggerAnalog = 160;   // 0..1, plugin -> CET
-// ...and the port's own say over what the GAME sees on that trigger. 0 = pass it through, 1 = swallow it, 2 = press
-// it fully. Swallowing is how a gun with its cylinder swung out refuses to fire -- the alternative was emptying the
-// magazine behind the game's back, which cost real ammunition out of the player's pocket every time the crane was
-// opened. Pressing it fully is a cocked hammer letting go under a touch, which is what a single action is.
-// The wrist the physical reload owns this frame: 0 left, 1 right, -1 nobody.
-//
-// A REAL BOUNDARY, and the reason this slot exists at all. The reload became its own CET mod, and
-// two CET mods are two sandboxes with no view of each other; the collision solve has to leave the
-// owned wrist alone (it publishes a push-OUT of the gun every frame while the reload writes a hold
-// over it, and both together are a shake). Written by SetVRReloadOwnedHand from the reload mod,
-// read with GetVRSharedSlot by the collision mod. -1 also covers "that mod is not installed".
-constexpr int kReloadOwnedHand = 162;
-constexpr int kTriggerOverride    = 161;   // 0 pass / 1 block / 2 force, CET -> plugin
-// WHEEL GRAB: which hands are AT THE STEERING WHEEL, so their grip is not a gameplay button.
-// bit0 (1) = right hand, bit1 (2) = left. Raised on PROXIMITY, before the grip is pressed, so a
-// consumer watching for the press edge never leaks the first frame of it.
-//
-// The one piece of the driving feature that crosses a boundary, and the reason is the grips: [49] and
-// [155] are read by FOUR CET mods -- the holster equip, the smoking poses, the basketball grab and the
-// reload's magazine hand -- and a grip that is holding the wheel must not also mean any of those. The
-// rest of that feature's state (the blends, the steering, the horn, the settings) stayed inside the
-// plugin as plain globals in src/Anim/WheelGrab.cpp: the upstream version published thirteen slots
-// because it had to reach the dxgi proxy, and that proxy is gone.
-//
-// The upstream numbering was [157..169], which in THIS tree is the B and Y buttons, the right stick
-// click, the trigger channel and the reload's owned wrist -- six live slots. Renumbered rather than
-// copied, which is what the graveyard at the top of this file is for.
+// PSVR2 motion-haptic request. [157..160] are an EXTERNAL ABI: the separately shipped
+// PSVR2Toolkit DSX bridge maps CyberpunkVR_Hands_Shared by name and reads these exact indices.
+// Sequence is written LAST, after the payload. Never reuse or renumber these without a lockstep
+// bridge release. In particular, a wheel/input value here changes every frame and becomes a haptic
+// flood that suppresses gun feedback and adaptive triggers.
+constexpr int kHapticSeq          = 157;
+constexpr int kHapticHand         = 158;   // 0 left / 1 right
+constexpr int kHapticAmp          = 159;   // 0..1
+constexpr int kHapticDurMs        = 160;   // 1..1000
+
+// ...the port's own say over what the GAME sees on the right trigger. 0 = pass it through,
+// 1 = swallow it, 2 = press it fully. Physical reload owns this channel.
+constexpr int kTriggerOverride    = 161;
+// The wrist the physical reload owns this frame: 0 left, 1 right, -1 nobody. This crosses between
+// the independent Reload and HandCollision CET sandboxes.
+constexpr int kReloadOwnedHand    = 162;
+// WHEEL GRAB: bit0 = right hand, bit1 = left. This is the only driving value that crosses to CET;
+// steering/blends remain internal C++ globals. It is deliberately outside the haptic ABI.
 constexpr int kWheelArmedMask     = 163;
 constexpr int kWheelArmedRightBit = 1;
 constexpr int kWheelArmedLeftBit  = 2;
+
+// Gameplay inputs consumed by physical reload. These used to occupy [157..160] in the 0.1.3 port,
+// which silently violated the already-shipped bridge ABI. Keep them after the driving channel.
+constexpr int kRightSecondaryBtn  = 164;   // right B
+constexpr int kLeftSecondaryBtn   = 165;   // left Y
+constexpr int kRightStickClick    = 166;   // R3, consumed by the port
+constexpr int kRightTriggerAnalog = 167;   // 0..1, plugin -> CET
+
+// A bridge newer than v0.2.1 requires this marker before it consumes [157..160]. That makes an
+// incompatible game build fail closed instead of interpreting buttons/steering as pulse records.
+// Marker and version are small exactly representable IEEE-754 integers; heartbeat freshness proves
+// this process, rather than a stale mapping retained by a still-running bridge, owns the layout.
+constexpr int   kHapticProtocolMagicSlot     = 168;
+constexpr int   kHapticProtocolVersionSlot   = 169;
+constexpr int   kHapticProtocolHeartbeatSlot = 170;
+constexpr float kHapticProtocolMagic         = 18512.0f; // 0x4850, "HP"
+constexpr float kHapticProtocolVersion       = 1.0f;
+
+static_assert(kHapticDurMs < kTriggerOverride);
+static_assert(kWheelArmedMask < kRightSecondaryBtn);
+static_assert(kRightTriggerAnalog < kHapticProtocolMagicSlot);
 } // namespace vrshared

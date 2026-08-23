@@ -1604,6 +1604,17 @@ void OpenXRManager::FlushHandsToShared() {
         if (s_hMapFile2) sShared = (float*)MapViewOfFile(s_hMapFile2, FILE_MAP_ALL_ACCESS, 0, 0, 1024);
     }
     if (!sShared) return;
+
+    // Advertise the versioned external haptic record before any CET pulse can arrive. A guarded
+    // bridge refuses [157..160] without this marker, preventing an incompatible build from turning
+    // input or driving values into actuator floods. This only identifies shared memory; it never
+    // calls OpenXR haptics, so Toolkit CAPI remains the sole Sense actuator owner.
+    sShared[vrshared::kHapticProtocolMagicSlot] = vrshared::kHapticProtocolMagic;
+    sShared[vrshared::kHapticProtocolVersionSlot] = vrshared::kHapticProtocolVersion;
+    float heartbeat = sShared[vrshared::kHapticProtocolHeartbeatSlot];
+    if (!(heartbeat >= 0.0f && heartbeat < 8388607.0f)) heartbeat = 0.0f;
+    sShared[vrshared::kHapticProtocolHeartbeatSlot] = heartbeat + 1.0f;
+
     std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(m_handMutex));
 
     // Publish hands + HMD orientation to the VRIK plugin, ALWAYS from the live pose.

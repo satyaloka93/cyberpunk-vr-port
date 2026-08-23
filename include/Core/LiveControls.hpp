@@ -55,7 +55,7 @@ struct LiveControls {
     volatile int xrImmersiveHolsters; // 1 = visual-holster equip (default), 0 = simple slot mapping (back=Slot1, R hip=Slot2, L hip=Slot3). Published to shared[23] for the CET Holster mod.
     // Cutscene VRIK suspend (PR #40): minimum GameplayTier at which the pose-apply hook fully
     // suspends the body+arm solve. -1 = never, 0..4 = Tier1..Tier5. Default 3 (Tier4 cinematics).
-    // Published ENCODED to shared[158] each tick, see LocateCamera.
+    // Consumed inside this DLL with g_sceneTier; no shared slot is used (see LocateCamera).
     volatile int xrCutsceneSuspendTier;
     // IN-VEHICLE HEAD OFFSET, metres, in the view's own right/forward/up basis. ADDED to the
     // xrHeadOffset* trio while the player is mounted, and 0 by default so it changes nothing until

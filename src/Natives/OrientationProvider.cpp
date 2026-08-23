@@ -760,6 +760,35 @@ void SetVRReloadOwnedHand(RED4ext::IScriptable*, RED4ext::CStackFrame* aFrame, v
     }
 }
 
+// CET -> PSVR2Toolkit motion-haptic request. This DOES NOT call OpenXR haptics: Toolkit CAPI is
+// the sole Sense actuator owner, so gun/audio/vehicle feedback and this pulse mix in one bridge
+// instead of fighting each other. [157..160] are the bridge's published external ABI. Payload is
+// written first and sequence last; the bridge acts only after observing the sequence change.
+void SetVRHapticPulse(RED4ext::IScriptable*, RED4ext::CStackFrame* aFrame, void*, int64_t) {
+    int32_t hand = 1;
+    float amplitude = 0.0f;
+    int32_t durationMs = 0;
+    RED4ext::GetParameter(aFrame, &hand);
+    RED4ext::GetParameter(aFrame, &amplitude);
+    RED4ext::GetParameter(aFrame, &durationMs);
+    aFrame->code++;
+
+    EnsureSharedMemory();
+    if (!g_pSharedHands) return;
+
+    amplitude = std::clamp(amplitude, 0.0f, 1.0f);
+    durationMs = std::clamp(durationMs, 1, 1000);
+    g_pSharedHands[vrshared::kHapticProtocolMagicSlot] = vrshared::kHapticProtocolMagic;
+    g_pSharedHands[vrshared::kHapticProtocolVersionSlot] = vrshared::kHapticProtocolVersion;
+    g_pSharedHands[vrshared::kHapticHand] = (hand != 0) ? 1.0f : 0.0f;
+    g_pSharedHands[vrshared::kHapticAmp] = amplitude;
+    g_pSharedHands[vrshared::kHapticDurMs] = static_cast<float>(durationMs);
+
+    float sequence = g_pSharedHands[vrshared::kHapticSeq];
+    if (!(sequence >= 0.0f && sequence < 8388607.0f)) sequence = 0.0f;
+    g_pSharedHands[vrshared::kHapticSeq] = sequence + 1.0f;
+}
+
 // DIAGNOSTIC ONLY: the live camera GetZoom, published to shared[28] for telemetry.
 //
 // DO NOT scale an overlay or a projection with this. MAIN's render projection already contains
@@ -781,7 +810,7 @@ void SetVRMeleeFire(RED4ext::IScriptable*, RED4ext::CStackFrame* aFrame, void*, 
     int32_t v = 0; RED4ext::GetParameter(aFrame, &v); aFrame->code++;
     if (g_pSharedHands) g_pSharedHands[29] = (float)v;
 }
-// THE PORT'S SAY OVER THE RIGHT TRIGGER -> shared[161], read by the XInput merge in the stereo module.
+// THE PORT'S SAY OVER THE RIGHT TRIGGER -> vrshared::kTriggerOverride, read by the XInput merge.
 // 0 = pass it through, 1 = swallow it, 2 = press it fully. The physical reload uses both ends: a revolver with its
 // cylinder swung out swallows the trigger (it has nothing under the hammer), and a cocked one presses it fully as
 // soon as the finger has moved far enough, which is what single action means.
@@ -791,7 +820,8 @@ void SetVRMeleeFire(RED4ext::IScriptable*, RED4ext::CStackFrame* aFrame, void*, 
 void SetVRTriggerMode(RED4ext::IScriptable*, RED4ext::CStackFrame* aFrame, void*, int64_t) {
     int32_t v = 0; RED4ext::GetParameter(aFrame, &v); aFrame->code++;
     EnsureSharedMemory();
-    if (g_pSharedHands) g_pSharedHands[161] = (float)((v < 0) ? 0 : ((v > 2) ? 2 : v));
+    if (g_pSharedHands) g_pSharedHands[vrshared::kTriggerOverride] =
+        static_cast<float>((v < 0) ? 0 : ((v > 2) ? 2 : v));
 }
 // Live MODE of the Aim_JNT shake kill (g_VRCamBoneFreeze: 0 stock / 1 yaw-live / 2 full /
 // 3 swing-only).
