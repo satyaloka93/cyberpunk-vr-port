@@ -829,6 +829,18 @@ void PersistLiveControlsUiState(const LiveControlsUiState& state) {
             state.xrOpenXrVehicleHapticGain < 0.0f ? 0.0f
             : (state.xrOpenXrVehicleHapticGain > 2.0f ? 2.0f : state.xrOpenXrVehicleHapticGain));
     fprintf(file, "xr_mono_xqueue_wait=%d\n", state.xrMonoXQueueWait != 0 ? 1 : 0);
+    // PARSED SINCE 0.0.3, NEVER WRITTEN BACK -- SO SETTING IT DID NOTHING PAST THE NEXT REWRITE.
+    //
+    // d44951a gated depth submit off because copying the game's live scene depth on our capture
+    // queue races the game's own queue while it reallocates render targets on load, and that
+    // caused GPU device-hung (0x887a0006). The key survived in the PARSER but never appeared
+    // here, and this function rewrites the whole file -- so every startup and every overlay save
+    // silently dropped it and restored the default, which is 1 (ON).
+    //
+    // Measured 2026-08-25: set to 0 by hand, the session honoured it ("[DEPTH] depth submit
+    // disabled"), the next launch rewrote the profile without it, and the session after that had
+    // no such line at all. A guard nobody can keep switched on is not a guard.
+    fprintf(file, "xr_depth_submit=%d\n", g_liveControls.xrDepthSubmit != 0 ? 1 : 0);
     fprintf(file, "xr_mono_depth_capture=%d\n", state.xrMonoDepthCapture != 0 ? 1 : 0);
     fprintf(file, "xr_snap_turn_pulse_ms=%d\n", state.xrSnapTurnPulseMs > 0 ? state.xrSnapTurnPulseMs : 30);
     fprintf(file, "xr_immersive_holsters=%d\n", state.xrImmersiveHolsters != 0 ? 1 : 0);
