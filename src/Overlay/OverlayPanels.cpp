@@ -127,6 +127,36 @@ bool DrawFovControl(LiveControlsUiState& state) {
         ImGui::EndDisabled();
     }
     ImGui::TextUnformatted("This changes the OpenXR projection layer FOV, not the CP2077 camera FOV.");
+
+    // SHARPNESS vs THE OUTER EDGE, and only where it has been measured.
+    //
+    // Shown only on PSVR2 because that is the only headset this has been measured on, and the
+    // sizing it switches is gated the same way -- offering it elsewhere would be a control that
+    // silently does nothing. The numbers in the tooltip are this machine's, off the [FOV] and
+    // [SUBMITFOV] log lines; they are why the switch exists rather than a taste setting.
+    if (OpenXRManager::Get().IsRuntimePsvr2()) {
+        ImGui::Separator();
+        bool spanMode = state.xrFovMode == 1;
+        if (ImGui::Checkbox("Sharper: render the lens span, not the panel cover", &spanMode)) {
+            state.xrFovMode = spanMode ? 1 : 0;
+            changed = true;
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(
+                "Cover sizing renders 2 x max(|left|,|right|), so a canted frustum is drawn\n"
+                "together with its own mirror image and half of it is thrown away.\n\n"
+                "PSVR2 measured: frusta L=-61.5 R=+43.4 (9.0 deg of cant), lens 104.9 deg,\n"
+                "cover asks the engine for 123.0 deg. At 3072 px that is 24.98 px/deg\n"
+                "against 29.26 at the lens span -- about 17%% more linear resolution.\n\n"
+                "Cost: the submitted frustum stays symmetric, so the wide side is short\n"
+                "by the cant and a sliver can appear at the outer edge. That margin is\n"
+                "exactly what the original black-border fix bought.");
+        }
+        if (state.xrForceFov > 0.0f) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("(overridden by the manual FOV above)");
+        }
+    }
     return changed;
 }
 

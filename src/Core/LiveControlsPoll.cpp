@@ -717,6 +717,7 @@ LiveControlsUiState MakeLiveControlsUiState() {
     state.xrRecenter = g_liveControls.xrRecenter;
     state.xrMonoSubmit = g_liveControls.xrMonoSubmit;
     state.xrForceFov = g_liveControls.xrForceFov;
+    state.xrFovMode = g_liveControls.xrFovMode;
     state.xrMenuRect = g_liveControls.xrMenuRect;
     state.xrMenuFov = g_liveControls.xrMenuFov;
     state.xrMenuFollowDeg = g_liveControls.xrMenuFollowDeg;
@@ -783,7 +784,7 @@ void PersistLiveControlsUiState(const LiveControlsUiState& state) {
     fprintf(file, "xr_cascade_save_main=%d\n", CyberpunkVR_CascadeSaveMain != 0 ? 1 : 0);
     fprintf(file, "xr_force_fov=%.3f\n", state.xrForceFov);
     // PSVR2 only. 0 = cover the panel (default), 1 = de-canted lens span (sharper, may show an edge).
-    fprintf(file, "xr_fov_mode=%d\n", g_liveControls.xrFovMode == 1 ? 1 : 0);
+    fprintf(file, "xr_fov_mode=%d\n", state.xrFovMode == 1 ? 1 : 0);
     fprintf(file, "xr_menu_rect=%d\n", state.xrMenuRect != 0 ? 1 : 0);
     fprintf(file, "xr_menu_fov=%.3f\n", state.xrMenuFov);
     fprintf(file, "xr_menu_follow_deg=%.3f\n", state.xrMenuFollowDeg >= 5.0f ? state.xrMenuFollowDeg : 60.0f);
@@ -875,6 +876,7 @@ extern "C" void SetLiveControlsUiState(const LiveControlsUiState* state, int per
     g_liveControls.xrRecenter = 0;
     g_liveControls.xrMonoSubmit = state->xrMonoSubmit != 0 ? 1 : 0;
     g_liveControls.xrForceFov = state->xrForceFov > 0.0f ? state->xrForceFov : 0.0f;
+    g_liveControls.xrFovMode = state->xrFovMode == 1 ? 1 : 0;
     g_liveControls.xrMenuRect = state->xrMenuRect != 0 ? 1 : 0;
     g_liveControls.xrMenuFov = state->xrMenuFov > 1.0f ? state->xrMenuFov : 65.0f;
     g_liveControls.xrMenuFollowDeg = (state->xrMenuFollowDeg >= 5.0f && state->xrMenuFollowDeg <= 90.0f) ? state->xrMenuFollowDeg : 60.0f;

@@ -9,6 +9,8 @@ struct LiveControlsUiState {
     int xrRecenter;
     int xrMonoSubmit;
     float xrForceFov;
+    // 0 = cover the panel, 1 = de-canted lens span. PSVR2 only; ignored elsewhere.
+    int   xrFovMode;
     int xrMenuRect;
     float xrMenuFov;
     float xrMenuFollowDeg;
