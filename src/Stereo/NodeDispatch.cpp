@@ -880,8 +880,9 @@ uint8_t __fastcall Detour_NodeDispatch(
     // Same exit and same documented return value as the node cut above, and it deliberately leaves
     // feature bits alone for the reason given at the top of this file.
     if (vrcam_node && CyberpunkVR_VrcamRebindBlindMs > 0) {
-        const uint64_t blind_until = g_vrcam_rebind_blind_until_ms.load(std::memory_order_relaxed);
-        if (blind_until && GetTickCount64() < blind_until) {
+        const uint64_t rebound_at = g_vrcam_rebind_at_ms.load(std::memory_order_relaxed);
+        if (rebound_at && GetTickCount64() - rebound_at
+                            < static_cast<uint64_t>(CyberpunkVR_VrcamRebindBlindMs)) {
             InterlockedIncrement64(reinterpret_cast<volatile LONG64*>(
                 &CyberpunkVR_DebugVrcamRebindSkips));
             t_current_node_work = previous_node_work;

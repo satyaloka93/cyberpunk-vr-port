@@ -1763,6 +1763,44 @@ extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugEiNullArgs = 0;
         }
         return;
     }
+    // THE NARROW GATE: AutoSpawnOnTerrain's indirect draws, second eye only, just after a re-bind.
+    //
+    // This is the replacement for a broad experiment that failed. Skipping EVERY second-eye node for
+    // 400 ms after a re-bind did suppress the 42-call NULL-argument burst -- it went to zero -- but
+    // the process then died at the FIRST save load, at Cyberpunk2077.exe+0x1375AE reading 0x7E19C,
+    // which is a different fault from the one being fixed (+0x1F51F5 with RDX=-1). A node that never
+    // runs never ALLOCATES or REGISTERS what it was going to, so the broad skip was manufacturing
+    // unallocated slots of its own. See the note at CyberpunkVR_VrcamRebindBlindMs.
+    //
+    // So the node still runs here. Everything it allocates and registers still happens. What is
+    // withheld is only its ExecuteIndirect calls, and only while the argument buffers may still
+    // belong to the component that was just destroyed. Evidence for choosing this node and nothing
+    // else: in the 13:01 capture all 42 skips were AutoSpawnOnTerrain, work RVA 0x77D214, one
+    // command list, one signature, argOff stepping 20 from 0 to 820, vrcamNode=1 on every one.
+    //
+    // Ordered cheapest-first: a thread-local bool, then an int, then the RVA compare, and only then
+    // a clock read -- this is a hot path and the common case must fall through on the first test.
+    if (t_vrcam_node_active && CyberpunkVR_VrcamRebindIndirectMs > 0 && g_exe_base) {
+        const uintptr_t work = t_current_node_work;
+        const uintptr_t base = reinterpret_cast<uintptr_t>(g_exe_base);
+        if (work > base &&
+            static_cast<uint32_t>(work - base) == AUTO_SPAWN_ON_TERRAIN_WORK_RVA) {
+            const uint64_t rebound_at = g_vrcam_rebind_at_ms.load(std::memory_order_relaxed);
+            if (rebound_at && GetTickCount64() - rebound_at
+                                < static_cast<uint64_t>(CyberpunkVR_VrcamRebindIndirectMs)) {
+                const uint64_t n = ++CyberpunkVR_DebugVrcamIndirectGated;
+                if (n <= 8 || (n % 500) == 0) {
+                    log("[EI-DIAG] gated AutoSpawnOnTerrain indirect on the second eye "
+                        "(args=%p argOff=%llu sinceRebind=%llums count=%llu)",
+                        (void*)args, (unsigned long long)argOff,
+                        (unsigned long long)(GetTickCount64() - rebound_at),
+                        (unsigned long long)n);
+                }
+                return;
+            }
+        }
+    }
+
     // A NULL ARGUMENT BUFFER CANNOT BE EXECUTED: D3D12 dereferences it at +0xF0 and the process dies.
     // Measured on the psvr2-tweaks branch during a save load -- eight calls on one command list and
     // signature, maxCount=1, argOff marching 0,20,40..140, args=NULL on every one, vrcamNode=1 on

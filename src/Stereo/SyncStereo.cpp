@@ -1095,8 +1095,8 @@ extern "C" __declspec(dllexport) uint32_t CyberpunkVR_DebugRttDtexH = 0;
 // The bound VRCAM component. Resolved ONCE (by the selected resolution) and then reused, so
 // the per-frame writes never have to re-decide which component they are talking to.
 std::atomic<uintptr_t> g_vrcam_comp{0};
-// Second-eye blind window after a VRCAM component re-bind. See the skip in NodeDispatch.cpp.
-std::atomic<uint64_t> g_vrcam_rebind_blind_until_ms{0};
+// When the VRCAM component was last re-bound. Set unconditionally; each consumer owns its window.
+std::atomic<uint64_t> g_vrcam_rebind_at_ms{0};
 // DEFAULT 0 -- THE SKIP IS OFF, AND IT IS OFF BECAUSE IT MADE THINGS WORSE.
 //
 // Shipped at 400 ms on 2026-08-24. It did suppress the symptom it targeted: the 42-call
@@ -1115,6 +1115,18 @@ std::atomic<uint64_t> g_vrcam_rebind_blind_until_ms{0};
 // the indirect draws alone -- never the whole second eye.
 extern "C" __declspec(dllexport) int32_t  CyberpunkVR_VrcamRebindBlindMs = 0;
 extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugVrcamRebindSkips = 0;
+
+// THE NARROW GATE, and it is narrow on purpose after the broad one failed.
+//
+// Only AutoSpawnOnTerrain (work RVA 0x77D214), only on the second eye, only inside this window, and
+// only its INDIRECT DRAWS. The node still executes, so every allocation and registration it performs
+// still happens -- which is exactly what the broad skip destroyed. What is withheld is the handful of
+// ExecuteIndirect calls whose argument buffers belong to the component that was just destroyed.
+//
+// 400 ms: the whole 42-call burst landed inside a single frame, so this only has to outlast the
+// rebuild. 0 disables it.
+extern "C" __declspec(dllexport) int32_t  CyberpunkVR_VrcamRebindIndirectMs = 400;
+extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugVrcamIndirectGated = 0;
 // Its AUTHORED fov, captured at bind before anything of ours writes to it.
 float g_vrcam_base_fov = 0.f;
 extern "C" __declspec(dllexport) float    CyberpunkVR_DebugVrcamBaseFov = 0.f;

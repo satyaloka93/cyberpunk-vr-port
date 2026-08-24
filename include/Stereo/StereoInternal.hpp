@@ -388,12 +388,22 @@ extern float g_vrcam_base_fov;
 extern std::atomic<uintptr_t> g_main_view_ctx;
 extern std::atomic<uintptr_t> g_main_view_obj;
 extern std::atomic<uintptr_t> g_vrcam_comp;
-// SECOND-EYE BLIND WINDOW AFTER A VRCAM COMPONENT RE-BIND. Set by the re-bind site in
-// FrameGraph.cpp, read by the node dispatcher. See the note at the dispatcher's skip for why.
-extern std::atomic<uint64_t> g_vrcam_rebind_blind_until_ms;
-// How long that window lasts, in ms. 0 disables the skip entirely and restores the old behaviour.
+// WHEN THE VRCAM COMPONENT WAS LAST RE-BOUND (GetTickCount64 ms), or 0 if never. Set
+// unconditionally by the re-bind site in FrameGraph.cpp so that each consumer below can own its own
+// window independently -- an earlier version gated the timestamp itself on one consumer's setting,
+// which silently disabled the other the moment that one was turned off.
+extern std::atomic<uint64_t> g_vrcam_rebind_at_ms;
+
+// BROAD: skip EVERY second-eye node for this many ms after a re-bind. DEFAULT 0 = off, because it
+// caused a worse crash than it prevented -- see the note at its definition.
 extern "C" __declspec(dllexport) extern int32_t  CyberpunkVR_VrcamRebindBlindMs;
 extern "C" __declspec(dllexport) extern uint64_t CyberpunkVR_DebugVrcamRebindSkips;
+
+// NARROW: drop only AutoSpawnOnTerrain's INDIRECT DRAWS on the second eye for this many ms after a
+// re-bind. The node itself still runs, so anything it allocates or registers still happens; only
+// the draws against argument buffers belonging to the destroyed component are withheld.
+extern "C" __declspec(dllexport) extern int32_t  CyberpunkVR_VrcamRebindIndirectMs;
+extern "C" __declspec(dllexport) extern uint64_t CyberpunkVR_DebugVrcamIndirectGated;
 extern uint8_t g_vrcam_dlss_cache[DLSS_CACHE_SZ];
 extern thread_local bool t_vrcam_dlss_post;
 extern thread_local bool t_vrcam_sl_active;

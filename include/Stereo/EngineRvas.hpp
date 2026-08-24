@@ -48,6 +48,11 @@ constexpr uintptr_t GRAPH_CONTEXT_RESET_RVA = 0x79C05C;
 constexpr uintptr_t GRAPH_CONTEXT_OWNER_MOVE_RVA = 0x79CDB8;
 constexpr uintptr_t NODE_DISPATCH_RVA = 0x1EC404;
 constexpr uintptr_t COPY_TO_TEXTURE_WORK_RVA = 0x377B58;
+// The terrain-scatter pass. Named here because it is the ONLY node observed replaying indirect
+// draws against argument buffers that no longer exist after a VRCAM component re-bind: 42 of them
+// in one pass, on ONE command list and ONE signature, argOff stepping 20 from 0 to 820, and
+// vrcamNode=1 on every one. Read off CyberpunkVR_ProfNodeName in the 2026-08-24 13:01 capture.
+constexpr uintptr_t AUTO_SPAWN_ON_TERRAIN_WORK_RVA = 0x77D214;
 constexpr uintptr_t RENDER_FINAL2D_WORK_RVA = 0x209FF0;
 constexpr uintptr_t DECLARE_FINAL_ONLY_WORK_RVA   = 0x1EE4A0; // DeclareCommonResourceAllocs_FinalOnly
 constexpr uintptr_t EXTRACTION_FINAL_COLOR_WORK_RVA = 0x209CD4; // ExtractionFinalColor

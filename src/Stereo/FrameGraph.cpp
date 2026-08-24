@@ -83,16 +83,11 @@ static __int64 __fastcall Detour_RTTViewCreate(__int64 a1, __int64 a2) {
                     CyberpunkVR_DebugVrcamBaseFov = g_vrcam_base_fov;
                     log("[rtt] re-bound vrcam component %p -> %p (%ux%u)",
                         reinterpret_cast<void*>(cached), reinterpret_cast<void*>(a1), w, h);
-                    // BLIND THE SECOND EYE UNTIL ITS RESOURCES EXIST AGAIN. See the skip in
-                    // NodeDispatch.cpp for the evidence; the short version is that the component
-                    // being destroyed and re-created does not rebuild everything the frame graph
-                    // still references, and the second eye then replays nodes against resources
-                    // that are gone.
-                    if (CyberpunkVR_VrcamRebindBlindMs > 0) {
-                        g_vrcam_rebind_blind_until_ms.store(
-                            GetTickCount64() + static_cast<uint64_t>(CyberpunkVR_VrcamRebindBlindMs),
-                            std::memory_order_relaxed);
-                    }
+                    // STAMP THE RE-BIND. Unconditionally -- the consumers decide what to do with
+                    // it and how long their own window is. The component being destroyed and
+                    // re-created does not rebuild everything the frame graph still references, and
+                    // the second eye then replays nodes against resources that are gone.
+                    g_vrcam_rebind_at_ms.store(GetTickCount64(), std::memory_order_relaxed);
                     // A destroyed-and-recreated component means the game is churning render
                     // resources, which is the window both recorded failure modes landed in. The
                     // save-load signal misses menu-initiated loads entirely -- it fires only for
