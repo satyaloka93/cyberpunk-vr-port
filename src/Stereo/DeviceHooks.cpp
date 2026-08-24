@@ -33,6 +33,7 @@
 #include "Utils/StereoLog.hpp"
 #include "Stereo/VrcamConfig.hpp"   // vrcam.json access + CName hashing, shared with the launcher
 #include "Render/ColorBlit.hpp"   // HUD debug overlay on the mirror image
+#include "Overlay/ImGuiOverlay.hpp"   // OverlayArmLoadGuard
 #include <windows.h>
 #include <d3d12.h>
 #include <d3d11.h>
@@ -767,6 +768,12 @@ static HRESULT STDMETHODCALLTYPE Hook_CreateGraphicsPipelineState(
         if (SUCCEEDED(hr2)) {
             ++CyberpunkVR_DebugSightSwaps;
             log("[pso] sight PS substituted (graphics desc) pso=%p", out ? *out : nullptr);
+            // Pipeline-state creation is heavyweight D3D12 work and arrives in tight bursts. On
+            // 2026-08-11 a burst landed immediately before the seventh DEVICE_HUNG, while an
+            // earlier burst in the same session sat inside a guard window and passed. Measured
+            // 2-5 bursts per session, so arming here coalesces into a couple of extra windows
+            // rather than pinning the drain on. See .okf/fixes/overlay-load-transition-guard.md.
+            OverlayArmLoadGuard("sight PSO substitution");
             if (out && *out) pso_ids_record(*out, desc->PS, desc->VS);  // keep the ORIGINAL id
             ++CyberpunkVR_DebugPsoGfx;
             return hr2;
@@ -888,6 +895,9 @@ static HRESULT STDMETHODCALLTYPE Hook_CreatePipelineState(
                     ++CyberpunkVR_DebugSightSwaps;
                     ++CyberpunkVR_DebugPsoStream;
                     log("[pso] sight PS substituted (stream desc) pso=%p", out ? *out : nullptr);
+                    // Same reason as the graphics-desc path above: a PSO burst is a churn window,
+                    // and the guard has to cover both ways in or it covers neither reliably.
+                    OverlayArmLoadGuard("sight PSO substitution");
                     return hr2;
                 }
                 log("[pso] sight PS substitution REFUSED hr=0x%08X (stream) -- original kept",

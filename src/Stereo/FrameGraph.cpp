@@ -83,6 +83,14 @@ static __int64 __fastcall Detour_RTTViewCreate(__int64 a1, __int64 a2) {
                     CyberpunkVR_DebugVrcamBaseFov = g_vrcam_base_fov;
                     log("[rtt] re-bound vrcam component %p -> %p (%ux%u)",
                         reinterpret_cast<void*>(cached), reinterpret_cast<void*>(a1), w, h);
+                    // A destroyed-and-recreated component means the game is churning render
+                    // resources, which is the window both recorded failure modes landed in. The
+                    // save-load signal misses menu-initiated loads entirely -- it fires only for
+                    // respawn-type loads and only AFTER the load completes; this fires on the
+                    // churn itself, whatever started it. This is the caller the "COUNTED, NOT
+                    // LOGGED" note in ImGuiOverlay.cpp already describes.
+                    // See .okf/fixes/overlay-load-transition-guard.md.
+                    OverlayArmLoadGuard("vrcam component re-bind");
                 } else if (!cached) {
                     if (!dims_match) {
                         if ((CyberpunkVR_DebugRttCompRejects++ % 600) == 0)
