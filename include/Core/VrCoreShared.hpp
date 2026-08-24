@@ -66,6 +66,8 @@ extern volatile float g_engineHorizontalFovDeg;
 
 // xr_force_fov, or 0 to derive from the runtime.
 extern "C" float GetForcedFov();
+// 0 = cover the panel (default), 1 = de-canted lens span. PSVR2 only; see CameraFov.cpp.
+extern "C" int GetFovMode();
 
 // Still read by the hub as well as by the hook that writes it.
 extern void* volatile g_dbgFovCamState;  // 1 further use(s) in VrCore.cpp

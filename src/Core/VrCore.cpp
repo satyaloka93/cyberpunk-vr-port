@@ -229,6 +229,12 @@ extern "C" float GetForcedFov() {
     return CyberpunkVR_HeadsetDefaultFovDeg();
 }
 
+// HOW TO SIZE THE RENDER FOV WHEN xr_force_fov IS 0. See CameraFov.cpp for what it selects between
+// and why it is PSVR2-only for now: 0 = cover the panel, 1 = the de-canted lens span.
+extern "C" int GetFovMode() {
+    return g_liveControls.xrFovMode == 1 ? 1 : 0;
+}
+
 extern "C" float GetMenuFov() {
     return g_liveControls.xrMenuFov;
 }

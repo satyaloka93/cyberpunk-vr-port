@@ -123,6 +123,7 @@ void PollLiveControls() {
     int xrWindowWidth = 0;
     int xrWindowHeight = 0;
     float xrForceFov = 0.0f;
+    int   xrFovMode = g_liveControls.xrFovMode;
     int xrMenuRect = 0;
     float xrMenuFov = 65.0f;
     float xrMenuFollowDeg = 60.0f;
@@ -257,6 +258,11 @@ void PollLiveControls() {
             continue;
         }
 
+        if (sscanf_s(line, "xr_fov_mode=%d", &intValue) == 1 ||
+            sscanf_s(line, "xr_fov_mode = %d", &intValue) == 1) {
+            xrFovMode = intValue;
+            continue;
+        }
         if (sscanf_s(line, "xr_force_fov=%f", &value) == 1 ||
             sscanf_s(line, "xr_force_fov = %f", &value) == 1) {
             xrForceFov = value;
@@ -578,6 +584,7 @@ void PollLiveControls() {
     g_liveControls.xrRecenter = xrRecenter;
     g_liveControls.xrMonoSubmit = xrMonoSubmit;
     g_liveControls.xrForceFov = xrForceFov;
+    g_liveControls.xrFovMode = (xrFovMode == 1) ? 1 : 0;
     g_liveControls.xrMenuRect = xrMenuRect;
     g_liveControls.xrMenuFov = xrMenuFov;
     g_liveControls.xrMenuFollowDeg = xrMenuFollowDeg;
@@ -775,6 +782,8 @@ void PersistLiveControlsUiState(const LiveControlsUiState& state) {
     fprintf(file, "xr_threaded_submit=%d\n", CyberpunkVR_ThreadedMonoSubmit);
     fprintf(file, "xr_cascade_save_main=%d\n", CyberpunkVR_CascadeSaveMain != 0 ? 1 : 0);
     fprintf(file, "xr_force_fov=%.3f\n", state.xrForceFov);
+    // PSVR2 only. 0 = cover the panel (default), 1 = de-canted lens span (sharper, may show an edge).
+    fprintf(file, "xr_fov_mode=%d\n", g_liveControls.xrFovMode == 1 ? 1 : 0);
     fprintf(file, "xr_menu_rect=%d\n", state.xrMenuRect != 0 ? 1 : 0);
     fprintf(file, "xr_menu_fov=%.3f\n", state.xrMenuFov);
     fprintf(file, "xr_menu_follow_deg=%.3f\n", state.xrMenuFollowDeg >= 5.0f ? state.xrMenuFollowDeg : 60.0f);

@@ -64,7 +64,30 @@ extern "C" void __fastcall OnNormalFovHookCallback(void* cameraState, float orig
             // span-sized frustum leaves the outer edge and the bottom black. See
             // GetPanelCoveringHorizontalFovDeg for the geometry. The submit follows this value
             // through GetGameRenderFovDeg, so the two ends of the contract cannot drift apart.
-            targetHDeg = GetPanelCoveringHorizontalFovDeg(lf, rf, aspect);
+            //
+            // xr_fov_mode=1 TRADES THAT EDGE BACK FOR SHARPNESS, AND ON PSVR2 ONLY.
+            //
+            // Cover sizing is 2*max(|angleLeft|,|angleRight|), so a canted frustum is rendered
+            // together with its own mirror image and half the widening is thrown away. Measured on
+            // PSVR2 (SteamVR 2.17.7): eye frusta L=-61.500 R=+43.446, i.e. 9.027 deg of cant, lens
+            // HFov 104.946 -- and cover sizing asks the engine for 2*61.5 = 123.000. At 3072 px
+            // that is 24.98 px/deg against 29.26 at the lens span: a sixth of the linear resolution
+            // spent on frustum the wearer cannot see. That is the reported blur.
+            //
+            // Mode 1 asks for the de-canted span instead. It is NOT free and is not the default:
+            // the submit stays symmetric, so the wide side is short by the cant and an edge can
+            // appear. Which matters more is a per-headset judgement, so this is a switch rather
+            // than a new row in kHeadsetFovDefaults -- that table's rule is measured-never-guessed,
+            // and no single number is right for both goals here.
+            //
+            // PSVR2-gated deliberately: every other headset keeps the behaviour it shipped with.
+            // The Quest 3 reports its true 94 deg span and needs nothing, and a masked runtime
+            // (VDXR naming a Pico 4 "Oculus Quest2") must never be guessed at. Widen only on
+            // measured evidence from the headset in question.
+            const bool spanMode = GetFovMode() == 1 && OpenXRManager::Get().IsRuntimePsvr2();
+            targetHDeg = spanMode
+                ? GetCorrectedGameHorizontalFovDeg(ComputeRuntimeFovCorrection(lf, rf))
+                : GetPanelCoveringHorizontalFovDeg(lf, rf, aspect);
         }
         if (!(targetHDeg > 1.0f && targetHDeg < 170.0f)) {
             targetHDeg = OpenXRManager::Get().GetRuntimeHorizontalFovDeg();

@@ -20,6 +20,10 @@ struct LiveControls {
     volatile int xrRecenter;
     volatile int xrMonoSubmit;
     volatile float xrForceFov;
+    // HOW THE RENDER FOV IS SIZED WHEN xr_force_fov IS 0. PSVR2 ONLY -- every other headset
+    // ignores this and keeps cover sizing. 0 = cover the panel (default, no black edge),
+    // 1 = the de-canted lens span (sharper, may leave an edge on a canted headset).
+    volatile int xrFovMode;
     volatile int xrMenuRect;
     volatile float xrMenuFov;
     volatile float xrMenuFollowDeg; // head-vs-panel yaw offset (deg) that starts the lazy menu re-center
