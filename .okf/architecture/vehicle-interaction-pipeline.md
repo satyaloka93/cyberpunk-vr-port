@@ -4,7 +4,7 @@ title: Mounted vehicle interaction pipeline
 description: How vehicle classification, seated VRIK, manual steering, gun controls, and car/bike offsets cooperate in the upstream 0.1.3 PSVR2 port.
 resource: https://github.com/satyaloka93/cyberpunk-vr-port/blob/upstream-0.1.3-psvr2/src/Anim/WheelGrab.cpp
 tags: [vehicles, vrik, steering, psvr2, input]
-timestamp: 2026-08-23T17:34:00+09:00
+timestamp: 2026-08-24T11:45:00+09:00
 ---
 
 # State and classification
@@ -26,6 +26,30 @@ While mounted, VRIK is **arms-only**. Cyberpunk's authored vehicle animation own
 Do not apply a fixed 90° or 180° skeleton rotation. Heading diagnostics compare untouched animated-body forward against both the game camera and final render view four times after entry. A value near `1` is aligned, `0` is sideways, and `-1` is backwards. Tests have shown both transient entry disagreement and later alignment, so correction must be based on settled samples rather than one transition frame.
 
 A Quest 3/VDXR car test confirmed `mounted=1`, `bike=0`, and the arms-only branch. Final-view heading settled positive (`1.000`, `0.987`, `0.923`, `0.919`), so that run does not show the old full-body ownership regression or a backwards body. A complaint about bad **position** should first record whether the body is left/right, ahead/behind, or high/low and A/B the saved car offsets against zero; heading evidence alone cannot diagnose translation.
+
+# The wheel hub is per-vehicle state
+
+`g_wheelCenter` / `g_wheelSpan` are globals, and for a long time `WheelReset()` had exactly one
+caller: the VRIK tracking on-to-off edge. **Nothing cleared the hub on dismount**, so geometry
+measured on one vehicle stayed live in the next — a motorcycle's handlebars inherited by a car being
+the case that exposes it. Fixed 2026-08-24 by resetting on the mounted/bike identity edge in
+[LocateCamera.cpp](../../src/Hooks/LocateCamera.cpp), deliberately **not** on `driving`, which can
+flicker mid-drive where `IsDriver` is unavailable.
+
+The symptom was a car that would only turn one way, and it looked like a weapon bug because it only
+appears with a weapon drawn:
+
+| Grab | Steering vector | Reads the hub? |
+|---|---|---|
+| Two hands | right controller - left controller | no |
+| One hand | hub - remaining controller | **yes** |
+
+A drawn weapon forces the right hand off the wheel, so steering falls to the one-handed path, which
+is the only path that reads the hub. The hub also only refreshes while **both** hands are off the
+wheel *and* the animated hands are more than 15 cm apart — and the one-handed driving pose collapses
+them, so the refresh is skipped by design and the stale value is pinned exactly while it is in use.
+A fresh one-handed grab cannot correct it either: `g_steerHandMask == 0` takes the "brand-new grab"
+branch, which sets `g_steerDegBias = 0` and steers on absolute geometry against the wrong origin.
 
 # Wheel and handlebar ownership
 

@@ -18,6 +18,7 @@
 #include "Camera/CameraLink.hpp"
 #include "Camera/CameraState.hpp"
 #include "Anim/CharacterRig.hpp"  // g_VrikFrameEpoch: exact camera/entity frame pairing
+#include "Anim/WheelGrab.hpp"     // WheelReset: the frozen hub is per-vehicle state
 #include "Utils/LogThrottle.hpp"
 #include "Core/LiveControls.hpp"
 #include "Core/Telemetry.hpp"
@@ -271,6 +272,27 @@ extern "C" void __fastcall OnLocateCameraCallback(float* rbxPtr, float xmm0_val)
             static bool s_lastMounted = false;
             static bool s_lastDriving = false;
             static bool s_lastBike = false;
+
+            // THE WHEEL HUB IS PER-VEHICLE STATE, AND IT USED TO OUTLIVE THE VEHICLE.
+            //
+            // g_wheelCenter/g_wheelSpan are globals, and WheelReset had exactly one caller: the VRIK
+            // tracking on->off edge. Nothing cleared them on dismount, so a hub measured on one
+            // vehicle stayed live in the next one -- a motorcycle's handlebars inherited by a car
+            // being the case that shows it.
+            //
+            // It only surfaces with a weapon drawn, which is what made it look like a weapon bug.
+            // Two-handed steering is right-controller minus left and never reads the hub at all; a
+            // drawn weapon forces the right hand off the wheel, steering falls to the one-handed
+            // path, and THAT measures against the hub. Worse, the hub only refreshes while both
+            // hands are off the wheel AND the animated hands are >15 cm apart -- and the one-handed
+            // driving pose collapses them, so the refresh is skipped by design and the stale value
+            // is pinned exactly while it is being used. The result is a car that will only turn one
+            // way. Reset on the identity edge, not on `driving`: that flag can flicker mid-drive
+            // where IsDriver is unavailable, and dropping the hub under an active grab would hitch.
+            if (!s_vehicleStateKnown || s_lastMounted != g_isInVehicle || s_lastBike != onBike) {
+                cvr::anim::WheelReset();
+            }
+
             if (!s_vehicleStateKnown || s_lastMounted != g_isInVehicle ||
                 s_lastDriving != driving || s_lastBike != onBike) {
                 Log("[VR][vehicle] mounted=%d driving=%d bike=%d type=%s mountedVehicleProperty=%s -> VRIK %s\n",
