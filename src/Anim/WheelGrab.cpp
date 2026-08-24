@@ -373,9 +373,27 @@ void WheelSteerUpdate(const float* bodyRight, const float* bodyUp) {
                 if (delta < -180.0f) g_steerDegBias += 360.0f;
                 else if (delta > 180.0f) g_steerDegBias -= 360.0f;
             } else {
-                // A brand-new grab keeps the established absolute-wheel behavior. Continuity is
-                // only needed when an already active grab changes its hand topology.
-                g_steerDegBias = 0.0f;
+                // A BRAND-NEW GRAB. Two hands and one hand are not the same case here.
+                //
+                // With TWO hands the absolute angle is meaningful: the controllers define the
+                // wheel's orientation between them, and level hands really are straight ahead.
+                // Keep that -- it is the established behaviour and it is correct.
+                //
+                // With ONE hand it is not meaningful. v is (hub -> controller), so the angle is
+                // whatever point on the rim you happened to grab, which is arbitrary. Measured
+                // 2026-08-24, fresh one-handed grabs with bias 0 opened at raw = +16.6, -26.7,
+                // -22.5, -10.3 deg -- and at the user's xr_wheel_steer_max_deg=40 that -26.7 is
+                // out=-0.789, i.e. 79% left lock demanded before the hand had moved at all. That
+                // is the "left hand just pulls the car left and it will not straighten or go
+                // right" report: the offset eats most of the range, so right lock is unreachable.
+                //
+                // So for one hand, where you grab IS straight ahead. Two hands keep absolute.
+                //
+                // (An earlier fix attributed this to a stale wheel hub carried across vehicles and
+                // was wrong: the same telemetry shows hubValid=1, span=0.377 and a stable car hub
+                // throughout. The per-vehicle reset it added is still correct on its own terms and
+                // stays, but it was never this bug.)
+                g_steerDegBias = (handMask == 3) ? 0.0f : -rawDeg;
             }
             g_steerRawDeg = rawDeg;
             g_steerHandMask = handMask;
