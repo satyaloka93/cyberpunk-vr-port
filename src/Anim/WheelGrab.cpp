@@ -37,6 +37,7 @@
 #include "Core/VrCoreShared.hpp"   // g_isDriving, g_isInVehicle, g_hasWeaponEquipped
 #include "Utils/SharedSlots.hpp"
 
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 
@@ -415,6 +416,36 @@ void WheelSteerUpdate(const float* bodyRight, const float* bodyUp) {
     g_steerDeg = deg;
     g_wheelSteer.store(g_steer, std::memory_order_relaxed);
     g_wheelSteerDeg.store(g_steerDeg, std::memory_order_relaxed);
+
+    // STEERING TELEMETRY. Added because a one-handed-pull diagnosis was made from reading this
+    // function and the mount/dismount trace, a fix was shipped on it, and the fix did not work --
+    // which means the reasoning was wrong somewhere this code does not show. Every term that goes
+    // into `out` is printed so the next report is evidence instead of another hypothesis:
+    //
+    //   mask   1=right only, 2=left only, 3=both. A weapon out should give 2 while driving.
+    //   raw    the atan2 angle before continuity bias -- the absolute hand-vs-hub geometry.
+    //   bias   the pickup-continuity offset. Non-zero only after a topology change mid-grab.
+    //   deg    raw+bias, what the curve actually sees.
+    //   lever/nominal  short lever = hypersensitive; nominal 0 means the hub span is unknown.
+    //   hub    the frozen wheel centre and whether it is even valid.
+    //
+    // Twice a second while a grab is live, so it costs nothing and cannot flood a driving session.
+    {
+        using clk = std::chrono::steady_clock;
+        static clk::time_point s_next{};
+        const clk::time_point now = clk::now();
+        if (now >= s_next) {
+            s_next = now + std::chrono::milliseconds(500);
+            Log("[WHEEL] mask=%d raw=%.1f bias=%.1f deg=%.1f out=%.3f lever=%.3f nominal=%.3f "
+                "hubValid=%d hub=(%.3f,%.3f,%.3f) span=%.3f bike=%d\n",
+                handMask, g_steerRawDeg, g_steerDegBias, deg, out,
+                haveV ? std::sqrt(VRIK_Dot3(v, bodyRight)*VRIK_Dot3(v, bodyRight) +
+                                  VRIK_Dot3(v, bodyUp)*VRIK_Dot3(v, bodyUp)) : 0.0f,
+                nominal, g_wheelCenterValid ? 1 : 0,
+                g_wheelCenter[0], g_wheelCenter[1], g_wheelCenter[2], g_wheelSpan,
+                g_isOnBike.load(std::memory_order_relaxed) ? 1 : 0);
+        }
+    }
 }
 
 // Blend the IK target toward the animated hand. At blend 0 this is a no-op; the caller skips the

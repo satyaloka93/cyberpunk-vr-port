@@ -1775,11 +1775,28 @@ extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugEiNullArgs = 0;
     // during a load is still open.
     if (!args) {
         const uint64_t n = ++CyberpunkVR_DebugEiNullArgs;
-        if (n == 1 || (n % 500) == 0) {
+        // NAME THE NODE, AND LOG THE WHOLE BURST.
+        //
+        // The old throttle was `n == 1 || n % 500`, and in four consecutive load crashes this line
+        // appeared exactly ONCE as the last line in the log -- so the process died at or near the
+        // first skip and the throttle guaranteed we never saw the shape of the burst. The earlier
+        // measurement that produced the guard saw EIGHT calls with argOff marching 0,20,40..140, so
+        // one line is not the whole story. The first 64 are logged individually now, then it falls
+        // back to a coarse throttle so a healthy session cannot flood.
+        //
+        // The node RVA is the point: it says WHICH frame-graph node the second eye is replaying with
+        // an unbuilt argument resource, which is the open question the guard's own note ends on.
+        if (n <= 64 || (n % 500) == 0) {
+            const uintptr_t work = t_current_node_work;
+            const uint32_t rva = (g_exe_base && work > reinterpret_cast<uintptr_t>(g_exe_base))
+                               ? static_cast<uint32_t>(work - reinterpret_cast<uintptr_t>(g_exe_base))
+                               : 0u;
+            const char* nodeName = rva ? CyberpunkVR_ProfNodeName(rva) : nullptr;
             log("[EI-DIAG] skipped ExecuteIndirect with NULL argument buffer "
-                "(list=%p sig=%p maxCount=%u argOff=%llu vrcamNode=%d count=%llu)",
+                "(list=%p sig=%p maxCount=%u argOff=%llu vrcamNode=%d count=%llu node=%s rva=0x%X)",
                 (void*)self, (void*)sig, maxCount, (unsigned long long)argOff,
-                t_vrcam_node_active ? 1 : 0, (unsigned long long)n);
+                t_vrcam_node_active ? 1 : 0, (unsigned long long)n,
+                nodeName ? nodeName : "?", rva);
         }
         return;
     }
