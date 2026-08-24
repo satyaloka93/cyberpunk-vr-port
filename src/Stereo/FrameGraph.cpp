@@ -88,6 +88,9 @@ static __int64 __fastcall Detour_RTTViewCreate(__int64 a1, __int64 a2) {
                     // re-created does not rebuild everything the frame graph still references, and
                     // the second eye then replays nodes against resources that are gone.
                     g_vrcam_rebind_at_ms.store(GetTickCount64(), std::memory_order_relaxed);
+                    // Arm the node breadcrumb for the frames that follow.
+                    g_rebind_trace_remaining.store(CyberpunkVR_RebindTraceCount,
+                                                   std::memory_order_relaxed);
                     // A destroyed-and-recreated component means the game is churning render
                     // resources, which is the window both recorded failure modes landed in. The
                     // save-load signal misses menu-initiated loads entirely -- it fires only for

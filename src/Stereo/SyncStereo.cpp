@@ -1097,6 +1097,10 @@ extern "C" __declspec(dllexport) uint32_t CyberpunkVR_DebugRttDtexH = 0;
 std::atomic<uintptr_t> g_vrcam_comp{0};
 // When the VRCAM component was last re-bound. Set unconditionally; each consumer owns its window.
 std::atomic<uint64_t> g_vrcam_rebind_at_ms{0};
+std::atomic<int32_t> g_rebind_trace_remaining{0};
+// How many second-eye dispatches to name after each re-bind. 400 covers the handful of frames the
+// crash has ever taken to arrive; 0 disables the trace.
+extern "C" __declspec(dllexport) int32_t CyberpunkVR_RebindTraceCount = 400;
 // DEFAULT 0 -- THE SKIP IS OFF, AND IT IS OFF BECAUSE IT MADE THINGS WORSE.
 //
 // Shipped at 400 ms on 2026-08-24. It did suppress the symptom it targeted: the 42-call

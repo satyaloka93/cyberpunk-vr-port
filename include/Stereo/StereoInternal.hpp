@@ -393,6 +393,10 @@ extern std::atomic<uintptr_t> g_vrcam_comp;
 // window independently -- an earlier version gated the timestamp itself on one consumer's setting,
 // which silently disabled the other the moment that one was turned off.
 extern std::atomic<uint64_t> g_vrcam_rebind_at_ms;
+// Budget of second-eye node dispatches still to be traced after a re-bind. See the breadcrumb in
+// NodeDispatch.cpp: armed at each re-bind, counts down, zero in steady state.
+extern std::atomic<int32_t> g_rebind_trace_remaining;
+extern "C" __declspec(dllexport) extern int32_t CyberpunkVR_RebindTraceCount;
 
 // BROAD: skip EVERY second-eye node for this many ms after a re-bind. DEFAULT 0 = off, because it
 // caused a worse crash than it prevented -- see the note at its definition.

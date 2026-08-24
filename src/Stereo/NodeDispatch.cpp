@@ -53,6 +53,10 @@
 #include "Stereo/EngineRvas.hpp"
 #include "Stereo/DetourRegistry.hpp"
 
+// Defined in Profiler.cpp; no header carries it, so each user declares it (CommandListCensus.cpp
+// does the same). Maps a node work RVA to the engine's own name for that pass.
+extern "C" __declspec(dllexport) const char* CyberpunkVR_ProfNodeName(uint32_t rva);
+
 namespace cvr {
 namespace detail {
 
@@ -1031,6 +1035,38 @@ uint8_t __fastcall Detour_NodeDispatch(
         t_prof_child_ticks = 0;
         prof_t0 = prof_now();
     }
+    // BREADCRUMB: NAME THE NODE WE ARE INSIDE WHEN THE LOAD CRASH LANDS.
+    //
+    // The cdb unwind of the 08:04:40 dump put THIS function in the live call chain, twice nested,
+    // directly beneath the fault:
+    //     00 Cyberpunk2077+0x1F51F5      <- reads a 0xB0-stride table with RDX = -1
+    //     01 Cyberpunk2077+0x7743C9      <- reads the -1 out of a descriptor object
+    //     03 Cyberpunk2077 (node work)
+    //     04 CyberpunkVR_Stereo!Detour_NodeDispatch+0x958
+    //     07 CyberpunkVR_Stereo!Detour_NodeDispatch+0x958   (SceneDrv re-enters per pass)
+    // So the -1 is consumed inside a frame-graph node running under this detour. What the unwind
+    // cannot say is WHICH node, because the exe ships no symbols -- every name in it is the nearest
+    // export plus a six-digit offset and therefore meaningless.
+    //
+    // This logs the node identity for second-eye dispatches immediately after a component re-bind,
+    // which is the only window the crash has ever occurred in. The last line in the log then names
+    // the node that faulted, which is the one fact still missing. It is a DIAGNOSTIC: nothing is
+    // skipped, reordered or suppressed -- after two gates that changed behaviour and taught us
+    // little, this only observes.
+    //
+    // Self-limiting by count rather than by clock: armed with a budget at each re-bind, so steady
+    // state costs one relaxed atomic load per dispatch and nothing else, and a session cannot be
+    // flooded however many times the player loads.
+    if (vrcam_node) {
+        int32_t budget = g_rebind_trace_remaining.load(std::memory_order_relaxed);
+        if (budget > 0 && g_rebind_trace_remaining.fetch_sub(1, std::memory_order_relaxed) > 0) {
+            const char* nm = work_rva ? CyberpunkVR_ProfNodeName(work_rva) : nullptr;
+            log("[rebind-trace] dispatching vrcam node rva=0x%X name=%s depth=%d scene=%u budget=%d",
+                work_rva, (nm && *nm) ? nm : "?", static_cast<int>(t_prof_disp_depth),
+                static_cast<unsigned>(scene_rtid), budget - 1);
+        }
+    }
+
     const uint8_t result = g_node_dispatch_orig(node, work_context, args);
     // Give the slot back before anything else can run on this view.
     if (hud_block_slot) {
