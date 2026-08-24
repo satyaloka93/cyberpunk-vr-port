@@ -1097,10 +1097,23 @@ extern "C" __declspec(dllexport) uint32_t CyberpunkVR_DebugRttDtexH = 0;
 std::atomic<uintptr_t> g_vrcam_comp{0};
 // Second-eye blind window after a VRCAM component re-bind. See the skip in NodeDispatch.cpp.
 std::atomic<uint64_t> g_vrcam_rebind_blind_until_ms{0};
-// 400 ms: long enough to cover the re-create burst -- 42 indirect replays landed inside a single
-// frame -- with room for the rebuild to finish, and short enough that a mid-gameplay resolution
-// switch costs a few mono frames instead of a visible blackout. 0 disables the skip entirely.
-extern "C" __declspec(dllexport) int32_t  CyberpunkVR_VrcamRebindBlindMs = 400;
+// DEFAULT 0 -- THE SKIP IS OFF, AND IT IS OFF BECAUSE IT MADE THINGS WORSE.
+//
+// Shipped at 400 ms on 2026-08-24. It did suppress the symptom it targeted: the 42-call
+// NULL-argument indirect burst went to ZERO on the next run. But the process then died at the
+// FIRST save load, two log lines after the re-bind, having previously survived 4-15 minutes of
+// play -- so the change traded a late crash for an earlier one.
+//
+// The likely reason is the one the rule at the top of NodeDispatch.cpp already warns about. This
+// skipped EVERY second-eye node in the window, producers included, and a node that is skipped is a
+// node that did not ALLOCATE or REGISTER what it was going to. An unallocated slot reads back as
+// the engine's -1 sentinel -- which is precisely the value that kills it at +0x1F51F5. Suppressing
+// the replay may therefore have been manufacturing the condition it was meant to avoid.
+//
+// Kept rather than deleted because the burst going to zero is a real measurement and the mechanism
+// behind it is still the best lead. Any retry must be NARROW -- the specific consuming nodes, or
+// the indirect draws alone -- never the whole second eye.
+extern "C" __declspec(dllexport) int32_t  CyberpunkVR_VrcamRebindBlindMs = 0;
 extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugVrcamRebindSkips = 0;
 // Its AUTHORED fov, captured at bind before anything of ours writes to it.
 float g_vrcam_base_fov = 0.f;
