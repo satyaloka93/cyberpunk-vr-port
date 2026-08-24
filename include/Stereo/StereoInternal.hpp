@@ -388,6 +388,12 @@ extern float g_vrcam_base_fov;
 extern std::atomic<uintptr_t> g_main_view_ctx;
 extern std::atomic<uintptr_t> g_main_view_obj;
 extern std::atomic<uintptr_t> g_vrcam_comp;
+// SECOND-EYE BLIND WINDOW AFTER A VRCAM COMPONENT RE-BIND. Set by the re-bind site in
+// FrameGraph.cpp, read by the node dispatcher. See the note at the dispatcher's skip for why.
+extern std::atomic<uint64_t> g_vrcam_rebind_blind_until_ms;
+// How long that window lasts, in ms. 0 disables the skip entirely and restores the old behaviour.
+extern "C" __declspec(dllexport) extern int32_t  CyberpunkVR_VrcamRebindBlindMs;
+extern "C" __declspec(dllexport) extern uint64_t CyberpunkVR_DebugVrcamRebindSkips;
 extern uint8_t g_vrcam_dlss_cache[DLSS_CACHE_SZ];
 extern thread_local bool t_vrcam_dlss_post;
 extern thread_local bool t_vrcam_sl_active;

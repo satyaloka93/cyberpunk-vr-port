@@ -1095,6 +1095,13 @@ extern "C" __declspec(dllexport) uint32_t CyberpunkVR_DebugRttDtexH = 0;
 // The bound VRCAM component. Resolved ONCE (by the selected resolution) and then reused, so
 // the per-frame writes never have to re-decide which component they are talking to.
 std::atomic<uintptr_t> g_vrcam_comp{0};
+// Second-eye blind window after a VRCAM component re-bind. See the skip in NodeDispatch.cpp.
+std::atomic<uint64_t> g_vrcam_rebind_blind_until_ms{0};
+// 400 ms: long enough to cover the re-create burst -- 42 indirect replays landed inside a single
+// frame -- with room for the rebuild to finish, and short enough that a mid-gameplay resolution
+// switch costs a few mono frames instead of a visible blackout. 0 disables the skip entirely.
+extern "C" __declspec(dllexport) int32_t  CyberpunkVR_VrcamRebindBlindMs = 400;
+extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugVrcamRebindSkips = 0;
 // Its AUTHORED fov, captured at bind before anything of ours writes to it.
 float g_vrcam_base_fov = 0.f;
 extern "C" __declspec(dllexport) float    CyberpunkVR_DebugVrcamBaseFov = 0.f;

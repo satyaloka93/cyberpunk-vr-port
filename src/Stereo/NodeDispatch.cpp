@@ -852,6 +852,43 @@ uint8_t __fastcall Detour_NodeDispatch(
         t_current_node_work = previous_node_work;
         return static_cast<uint8_t>(CyberpunkVR_NodeCutRetVal);
     }
+
+    // THE SECOND EYE DOES NOT RUN NODES AGAINST RESOURCES THAT WERE JUST DESTROYED.
+    //
+    // Evidence, 2026-08-24, four reproductions and one full ProcDump. The log ends with
+    //   [rtt] re-bound vrcam component A -> B
+    //   Overlay load guard engaged -- full drain.
+    //   [EI-DIAG] skipped ExecuteIndirect with NULL argument buffer ... vrcamNode=1
+    //             node=AutoSpawnOnTerrain argOff=620,640,...,820   (42 of them, log ends mid-burst)
+    // and the process dies at Cyberpunk2077.exe+0x1F51F5 with RDX=0xFFFFFFFF:
+    //   mov r14,[table]; dec edx; imul r15,rdx,0B0h; cmp qword ptr [r15+r14+5C0B60h],0
+    // That routine takes a ONE-BASED index and scales it by 0xB0, so -1 -- the engine's
+    // "unallocated" sentinel -- can never be valid: dec gives 0xFFFFFFFE, the multiply gives
+    // r15=0xAFFFFFFF50, and the compare reads unmapped memory. Byte-identical on a build from
+    // BEFORE the 0.1.4 merge, so it is not a regression from it.
+    //
+    // Both symptoms are one thing: the component is destroyed and re-created, the frame graph still
+    // holds work referencing what it had, and only the SECOND EYE replays it -- vrcamNode=1 on all
+    // 42, the main view never does it. The NULL argument buffers we can see and skip; the -1
+    // descriptor is consumed inside the engine's own table lookup where we cannot.
+    //
+    // So stop feeding it. For a short window after a re-bind the second eye's nodes do not run,
+    // which is strictly safer than running them against freed resources: the eye goes stale and the
+    // existing staleness path submits MONO for those frames -- already what happens across a load.
+    // Set CyberpunkVR_VrcamRebindBlindMs to 0 to restore the old behaviour.
+    //
+    // Same exit and same documented return value as the node cut above, and it deliberately leaves
+    // feature bits alone for the reason given at the top of this file.
+    if (vrcam_node && CyberpunkVR_VrcamRebindBlindMs > 0) {
+        const uint64_t blind_until = g_vrcam_rebind_blind_until_ms.load(std::memory_order_relaxed);
+        if (blind_until && GetTickCount64() < blind_until) {
+            InterlockedIncrement64(reinterpret_cast<volatile LONG64*>(
+                &CyberpunkVR_DebugVrcamRebindSkips));
+            t_current_node_work = previous_node_work;
+            return static_cast<uint8_t>(CyberpunkVR_NodeCutRetVal);
+        }
+    }
+
     // Mirror: detect the vrcam CopyToTexture node and arm per-node capture state.
     const bool mirror_copy_node = is_vrcam_copy_to_texture(node, work_context);
     const bool previous_mirror_active = t_mirror_copy_node_active;
