@@ -1,5 +1,6 @@
 # Fixes
 
+* [Orientation-provider and PhysicalRay hot-path frame collapse](provider-hot-path-frame-collapse.md) — A `VirtualQuery` ahead of every cheap test made security cameras and turrets cost most of the frame; both paths now reject foreign callers before the syscall.
 * [PSVR2 Triangle-touch D-pad shifting](psvr2-triangle-dpad.md) — Triangle capacitive touch substitutes for left thumbrest while the right stick emits D-pad directions.
 * [VR HUD layout and scanner-details placement](center-overlay-scaling.md) — HUDitor owns standard widgets while a one-shot wrapper moves the complete dynamic scanner/quickhack details panel into view.
 * [Overlay load-transition guard](overlay-load-transition-guard.md) — Restores the full drain only inside resource-churn windows, removing the DXGI_ERROR_DEVICE_HUNG faults that middle-ground pacing introduced while keeping its throughput.

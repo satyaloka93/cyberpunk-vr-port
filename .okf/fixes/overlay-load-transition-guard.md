@@ -2,14 +2,14 @@
 type: Fix
 title: Overlay load-transition guard
 description: Restore the full GPU drain only inside resource-churn windows, removing the DXGI_ERROR_DEVICE_HUNG faults that middle-ground pacing introduced without giving up its throughput.
-resource: https://github.com/satyaloka93/cyberpunk-vr-port/blob/psvr2-tweaks/src/vr/overlay/imgui_overlay.cpp
+resource: https://github.com/satyaloka93/cyberpunk-vr-port/blob/upstream-0.1.3-psvr2/src/Overlay/ImGuiOverlay.cpp
 tags: [performance, dxgi, d3d12, frame-pacing, overlay, crash, device-hung]
 timestamp: 2026-08-11T15:10:00+09:00
 ---
 
 # Outcome
 
-`kOverlayPacingMode = 3` in [imgui_overlay.cpp](../../src/vr/overlay/imgui_overlay.cpp):
+`kOverlayPacingMode = 3` in [ImGuiOverlay.cpp](../../src/Overlay/ImGuiOverlay.cpp):
 [middle-ground pacing](overlay-middle-ground-pacing.md) during normal rendering, and Mode 0's
 full queue drain for a bounded 5-second window after any event that signals the game is
 churning render resources. Each event refreshes the deadline, so a transition that emits a
@@ -71,10 +71,10 @@ sounded load-like.
 
 | Site | Signal |
 |---|---|
-| [vr_core.cpp](../../src/vr/core/vr_core.cpp) | save-load transition |
-| [imgui_overlay.cpp](../../src/vr/overlay/imgui_overlay.cpp) | swapchain invalidate |
-| [sync_stereo.cpp](../../src/vr/stereo/sync_stereo.cpp) | VRCAM component re-bind |
-| [sync_stereo.cpp](../../src/vr/stereo/sync_stereo.cpp) | sight PSO substitution, both graphics-desc and stream-desc paths |
+| [VrCore.cpp](../../src/Core/VrCore.cpp) | save-load transition |
+| [ImGuiOverlay.cpp](../../src/Overlay/ImGuiOverlay.cpp) | swapchain invalidate |
+| [SyncStereo.cpp](../../src/Stereo/SyncStereo.cpp) | VRCAM component re-bind |
+| [SyncStereo.cpp](../../src/Stereo/SyncStereo.cpp) | sight PSO substitution, both graphics-desc and stream-desc paths |
 
 The save-load signal alone is insufficient: it fires only for respawn-type loads and only
 *after* the load completes, so menu loads of a different save were never covered.
