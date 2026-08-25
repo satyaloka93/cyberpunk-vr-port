@@ -37,6 +37,12 @@
 #include <cstdint>
 #include <cstddef>
 
+// Defined in Stereo/SyncStereo.cpp (namespace cvr::detail). Declared locally because this is a
+// Hooks translation unit and does not pull in StereoInternal.hpp.
+namespace cvr { namespace detail { extern std::atomic<bool> g_main_vrcam_split; } }
+extern "C" __declspec(dllexport) extern float    CyberpunkVR_ViewSplitMetres;
+extern "C" __declspec(dllexport) extern uint64_t CyberpunkVR_DebugViewSplitFrames;
+
 extern "C" void __fastcall OnPatchCameraCallback(float* cameraState, void* ownerState) {
     g_patchCameraHits++;
 
@@ -90,6 +96,33 @@ extern "C" void __fastcall OnPatchCameraCallback(float* cameraState, void* owner
     // This site fires ~196M times a session against ~54k camera writes, so a "% 600" on the raw
     // count is hundreds of formatted file writes per second, issued from engine job threads.
     // That is not a diagnostic, it is a stutter source of its own.
+    // IS MAIN EVEN IN THE SAME PLACE AS VRCAM? Checked every camera write, not on the throttle
+    // below, because the answer gates the second eye and must not lag a hacked camera by 900 hits.
+    //
+    // A quickhacked security camera moves MAIN to the camera and leaves VRCAM on the player, so the
+    // two eyes show unrelated scenes -- reported in the field as "left/right eye have different view
+    // and seems laggy". Laptops, shards and anything else that parks the view on a remote entity do
+    // the same thing. Nothing here tries to move VRCAM to follow: the second eye is a render-to-
+    // texture component attached to the player and has no notion of the game switching cameras.
+    // Instead the eye is disowned, and the submit's existing staleness path turns that into MONO --
+    // the file's own rule being that "one eye live and one eye stuck is far worse than plain mono".
+    if (CyberpunkVR_ViewSplitMetres > 0.0f) {
+        const float kk = 1.0f / 131072.0f;
+        const float sx = (s_vrcamPosFP[0] - s_mainPosFP[0]) * kk;
+        const float sy = (s_vrcamPosFP[1] - s_mainPosFP[1]) * kk;
+        const float sz = (s_vrcamPosFP[2] - s_mainPosFP[2]) * kk;
+        const float lim = CyberpunkVR_ViewSplitMetres;
+        const bool split = (sx*sx + sy*sy + sz*sz) > (lim * lim);
+        if (split != cvr::detail::g_main_vrcam_split.exchange(split, std::memory_order_relaxed)) {
+            Log("PatchCamera: MAIN/VRCAM %s -- separation %.1f m (limit %.1f). %s\n",
+                split ? "SPLIT" : "rejoined",
+                std::sqrt(sx*sx + sy*sy + sz*sz), lim,
+                split ? "Second eye disowned; submitting mono until they rejoin."
+                      : "Stereo resumed.");
+        }
+        if (split) ++CyberpunkVR_DebugViewSplitFrames;
+    }
+
     if ((CyberpunkVR_DebugPatchCamMain % 900) == 1 && camKind == 1) {
         const float k = 1.0f / 131072.0f;
         // THE NUMBER THAT SAYS WHETHER THE TWO EYES ARE ALIGNED is `resid`, not `sep`.

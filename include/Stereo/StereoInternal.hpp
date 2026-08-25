@@ -387,6 +387,11 @@ extern float g_main_proj_yy;
 extern float g_vrcam_base_fov;
 extern std::atomic<uintptr_t> g_main_view_ctx;
 extern std::atomic<uintptr_t> g_main_view_obj;
+// MAIN AND VRCAM ARE LOOKING AT DIFFERENT PLACES. Set by the camera patch site; read by the
+// second-eye freshness gate, which turns it into mono. See CyberpunkVR_ViewSplitMetres.
+extern std::atomic<bool> g_main_vrcam_split;
+extern "C" __declspec(dllexport) extern float    CyberpunkVR_ViewSplitMetres;
+extern "C" __declspec(dllexport) extern uint64_t CyberpunkVR_DebugViewSplitFrames;
 extern std::atomic<uintptr_t> g_vrcam_comp;
 // WHEN THE VRCAM COMPONENT WAS LAST RE-BOUND (GetTickCount64 ms), or 0 if never. Set
 // unconditionally by the re-bind site in FrameGraph.cpp so that each consumer below can own its own

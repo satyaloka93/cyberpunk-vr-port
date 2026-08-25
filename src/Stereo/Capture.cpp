@@ -1170,6 +1170,16 @@ extern "C" __declspec(dllexport) ID3D12Resource* CyberpunkVR_GetVrcamEyeTexture(
 // than dropping to mono. Age also drives the overlay's status line.
 
 extern "C" __declspec(dllexport) ID3D12Resource* CyberpunkVR_GetVrcamEyeTextureFresh() {
+    // MAIN IS SOMEWHERE ELSE -> THERE IS NO SECOND EYE TO HAND BACK.
+    // A quickhacked camera, a laptop or a shard parks MAIN on a remote entity while VRCAM stays on
+    // the player, and the snapshot is then a picture of a different place -- perfectly fresh and
+    // completely wrong. Freshness cannot see that, so it is asked here. Returning null takes the
+    // same mono path as staleness, which is the behaviour this function already documents as
+    // preferable to one live eye and one wrong one.
+    if (g_main_vrcam_split.load(std::memory_order_relaxed)) {
+        CyberpunkVR_DebugVrcamEyeAgeMs = 0xFFFFFFFFu;
+        return nullptr;
+    }
     const uint64_t last = g_stable_tick.load(std::memory_order_acquire);
     if (!last) { CyberpunkVR_DebugVrcamEyeAgeMs = 0xFFFFFFFFu; return nullptr; }
     // THE GATE RUNS ON THE COARSE CLOCK, exactly as it did before: same unit, same epoch, same

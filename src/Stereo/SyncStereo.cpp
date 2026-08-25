@@ -154,6 +154,25 @@ std::atomic<uint64_t> g_vrcam_ctx_key{0x8D23967F656EA945ULL};  // cname_hash("vr
 // MAIN_PRESENT_WORK_RVA moved to Stereo/StereoInternal.hpp.
 // MAIN_STARTRENDER_WORK_RVA moved to Stereo/StereoInternal.hpp.
 std::atomic<uintptr_t> g_main_view_obj{0};
+std::atomic<bool> g_main_vrcam_split{false};
+// HOW FAR APART THE TWO EYES MAY BE BEFORE THE SECOND ONE IS DISOWNED, in metres.
+//
+// Measured 2026-08-25. Normal stereo puts MAIN and VRCAM exactly one IPD apart -- logged
+// mainPos=(-768.382,63.775,9.483) vrcamPos=(-768.356,63.722,9.482), a separation of 0.06 m, and
+// 0.059 at the menu, which is the runtime IPD to three decimals. While a security camera was
+// quickhacked the same pair read mainPos=(-738.917,2159.969,53.945) against
+// vrcamPos=(-1657.001,2029.694,19.964): 928 METRES, with mainPos frozen at the camera while
+// vrcamPos went on tracking the player. Four orders of magnitude apart.
+//
+// 5 m is chosen well above the noise this quantity is known to carry. PatchCamera's own comment
+// warns that raw `sep` is not an alignment metric -- it also contains the head displacement and
+// whatever distance the player covered between the two writes, and was seen swinging to 45 cm
+// while standing still. That warning is about CENTIMETRES and is right; it does not reach 5 m,
+// which no head movement or single-frame sprint can produce. This is not asking "are the eyes
+// aligned", it is asking "is MAIN even in the same place", and only the second question is being
+// answered here.
+extern "C" __declspec(dllexport) float    CyberpunkVR_ViewSplitMetres = 5.0f;   // 0 disables
+extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugViewSplitFrames = 0;
 std::atomic<uintptr_t> g_main_view_ctx{0};
 extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugMainObjBinds = 0;
 extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugMainCtxBinds = 0;
