@@ -751,9 +751,62 @@ static bool sight_is_target(const D3D12_SHADER_BYTECODE& ps, const D3D12_SHADER_
            sight_blob_ready();
 }
 
+// PSO BURST = THE CHURN ITSELF, AND IT IS THE TRIGGER THE GUARD HAS ALWAYS BEEN MISSING.
+//
+// The load-transition guard has four arms and a hole its own concept file names: "the save-load
+// signal ... fires only for respawn-type loads and only AFTER the load completes, so menu loads of
+// a different save were never covered." Two crashes now land squarely in that hole, both with the
+// guard NOT engaged and both with menu=1:
+//   2026-08-24 10:04  opening the settings menu
+//   2026-08-25 18:31  changing ambient occlusion High -> Medium; guard had closed ~3000 log lines
+//                     earlier, breadcrumbs show 'Lighting' In progress and every later list Not
+//                     started, Device Removed Reason 0x887a0006
+// That is the unguarded-pacing failure the guard exists to prevent, in a window nothing arms it in.
+//
+// `menu=1` itself was MEASURED AND REJECTED as a trigger: true in 59 of 103 sampled lines, over half
+// of runtime, which collapses Mode 3 into Mode 0 and costs about a third of the frame rate. So the
+// trigger has to be the churn, not the screen it happens behind. Pipeline-state creation IS that
+// churn -- heavyweight D3D12 work, near zero once a scene is warm, arriving in tight bursts exactly
+// while render targets and shader permutations are rebuilt. A graphics-setting change is a PSO
+// burst by construction, which is why the existing sight-PSO arm never fires for one: it only sees
+// the handful of pipelines we substitute, not the hundreds the engine rebuilds.
+//
+// THE FAILURE MODE IF THE THRESHOLD IS TOO LOW IS BENIGN AND VISIBLE: more full drains, i.e. lower
+// frame rate, in the configuration already measured stable at 43.8 fps -- and the log shows it as
+// guard engage/release churn. Both numbers are live exports, so it is tunable without a rebuild,
+// and every arm is logged with the rate that caused it so the threshold can be judged on data.
+extern "C" __declspec(dllexport) int32_t  CyberpunkVR_PsoBurstArm      = 16;   // PSOs within the window
+extern "C" __declspec(dllexport) int32_t  CyberpunkVR_PsoBurstWindowMs = 500;
+extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugPsoBurstArms = 0;
+
+static void pso_note_creation() {
+    const int32_t arm_at = CyberpunkVR_PsoBurstArm;
+    if (arm_at <= 0) return;
+    const int32_t win = CyberpunkVR_PsoBurstWindowMs > 0 ? CyberpunkVR_PsoBurstWindowMs : 500;
+    static std::atomic<uint64_t> s_window_start{0};
+    static std::atomic<int32_t>  s_in_window{0};
+    const uint64_t now = GetTickCount64();
+    const uint64_t start = s_window_start.load(std::memory_order_relaxed);
+    if (now - start > static_cast<uint64_t>(win)) {
+        // New window. Two threads may both reset it; harmless, the count simply restarts.
+        s_window_start.store(now, std::memory_order_relaxed);
+        s_in_window.store(1, std::memory_order_relaxed);
+        return;
+    }
+    const int32_t n = s_in_window.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (n != arm_at) return;   // arm exactly once per window, on the crossing
+    const uint64_t arms = ++CyberpunkVR_DebugPsoBurstArms;
+    OverlayArmLoadGuard("pso burst");
+    if (arms <= 12 || (arms % 100) == 0) {
+        log("[pso] burst: %d pipeline states in %llu ms -> load guard armed (arm #%llu)",
+            n, (unsigned long long)(now - start), (unsigned long long)arms);
+    }
+}
+
 static HRESULT STDMETHODCALLTYPE Hook_CreateGraphicsPipelineState(
         ID3D12Device* self, const D3D12_GRAPHICS_PIPELINE_STATE_DESC* desc,
         REFIID riid, void** out) {
+    pso_note_creation();
     if (desc && desc->PS.pShaderBytecode && desc->PS.BytecodeLength &&
         fnv1a(desc->PS.pShaderBytecode, desc->PS.BytecodeLength) == CyberpunkVR_SightPsHash) {
         rootsig_dump(desc->pRootSignature);
@@ -870,6 +923,7 @@ static void pso_stream_find(const uint8_t* p, size_t len, size_t* psoff, size_t*
 static HRESULT STDMETHODCALLTYPE Hook_CreatePipelineState(
         ID3D12Device* self, const D3D12_PIPELINE_STATE_STREAM_DESC* desc,
         REFIID riid, void** out) {
+    pso_note_creation();
     // Same substitution as the classic path, but the stream is the caller's memory, so it is
     // COPIED first and the copy is patched -- writing into the engine's own description would
     // outlive this call and be visible to whatever else reads it.
