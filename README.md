@@ -223,12 +223,25 @@ VR controller input is merged into the native CP2077 gamepad, so the in-game
 | Right trigger / Left trigger | Fire / Aim (left trigger is also melee block) |
 | Right grip | Hand-to-holster equip / unequip; melee power modifier |
 | Left grip at a reload part | **Grab and hold the magazine/slide** immediately; this takes priority over scanner |
+| Left hand to your **left ear** + **left grip** | **Scanner**, *toggled* — squeeze to open, squeeze again to close |
+| Right trigger / Left trigger | Fire / Aim (left trigger is also melee block) |
+| Right grip | Hand-to-holster equip / unequip; melee power modifier |
+| Left grip | **Grab the magazine** during a reload (at the ear it is the scanner) |
+| Left stick **up / down, to the stop** | Page the quickhack list *while the scanner is open* |
 | A | Jump (double jump and charge jump unchanged) |
 | B, **weapon in hand** | **Drop the magazine** (physical reload) — not dodge |
 | B, **holstered** | The game's own B again — close the phone, back out |
 | X / Y | Reload·interact / Weapon switch |
 | Left menu button | Pause menu |
 | Swing a melee weapon | VR motion melee (native attack along the blade) |
+
+While the scanner is open the same hand works it: the **left stick to the stop**
+pages the quickhack list (below the stop it still walks, so you can read and move),
+**X** applies the selected hack, the **right trigger** tags the target instead of
+firing, the **right stick click** changes the tab and **left trigger + right stick**
+zooms. The list used to sit on X and Y, which meant reaching across the face buttons
+with the hand that is already holding a grip at your ear — the very reach a one-hand
+scanner exists to avoid.
 
 B is the port's only while a weapon is actually in your hand, because a magazine
 drop is the only thing the port needs it for. Holstered, it reaches the game — so
@@ -247,6 +260,10 @@ While **driving**, the same controllers do something else:
 | Right-stick click, weapon drawn | Toggle the latched throttle between idle and its remembered level |
 | **B / Sense Circle** | **Get out** (the game's native vehicle binding) |
 | **X / Sense Square** | Horn |
+| Left stick forward / back, weapon drawn | Trim the latched throttle |
+| **X, held** | **Get out.** B is never the exit in a car, so no stray press can eject you |
+| Perspective toggle | **Does nothing** — the camera is held in first person |
+| A | **Confirm a dialogue line** (it is X on foot, and X is the exit in here) — the handbrake still fires |
 
 Each hand is independent, so you can hold the wheel with one and keep the other on
 a gun. With a weapon equipped the right hand shoots and cannot grab the wheel;
@@ -261,6 +278,17 @@ down / left / right. The left-stick click remains the fallback modifier on every
 runtime. While a modifier is held the right stick is taken out of the camera, so
 selecting a direction cannot snap-turn you. Releasing the L3 fallback without
 choosing a direction still emits the normal L3 press.
+The exit is a HOLD rather than a tap on purpose. The game's `ExitVehicle_Button`
+carries no hold of its own, so the vehicle acts on the first frame it sees the
+action — and at speed acting on it means throwing you out of the car.
+
+**D-pad chord.** Hold the **left stick clicked in**, then pick the direction with
+the **right stick** — up / down / left / right, **to the stop**, the same full push
+every other gesture here asks for so that a resting thumb cannot step a list. While
+the chord is held the right stick is taken out of the camera, so selecting a
+direction cannot snap-turn you.
+Release the left stick *without* having chosen a direction and it emits the normal
+L3 press instead, so nothing is lost by using it.
 
 Buttons follow each runtime's interaction profile (Touch / Index / Vive / WMR);
 customise the actual actions in the game's *Settings → Key Bindings → Controller*.
