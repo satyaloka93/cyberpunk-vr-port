@@ -167,6 +167,56 @@ foreach ($name in @("CyberpunkVRPort_Smoking", "CyberpunkVRPort_Holster", "Cyber
     }
 }
 
+# 3b. THE REDSCRIPT MODS, AND THE CET MODS THIS REPO HAS BUT THE GAME DOES NOT YET.
+#
+# Added after upstream 0.1.5 shipped its device-camera fix as redscript
+# (CyberpunkVRPort_DeviceCam) and two new CET mods, and a deploy reported success while installing
+# NONE of them: the CET loop above is a hardcoded refresh list that skips folders the game lacks,
+# and redscript was never copied at all. The fix was merged, built and deployed, and the game still
+# did not have it -- which is the failure mode where a green deploy means nothing.
+#
+# Redscript is copied wholesale because r6\scripts is where the compiler looks and a missing file
+# there is a silently absent feature, not an error. New CET folders are CREATED rather than skipped,
+# and say so, because "the repo has a mod the game does not" is the exact case a dev deploy exists
+# to close. Existing folders keep the old refresh behaviour.
+$RedsSrcRoot = Join-Path $RepoRoot "mods\redscript"
+if (Test-Path $RedsSrcRoot) {
+    $RedsDst = Join-Path $GameRoot "r6\scripts"
+    New-Item -ItemType Directory -Path $RedsDst -Force | Out-Null
+    $n = 0
+    foreach ($d in Get-ChildItem $RedsSrcRoot -Directory) {
+        $dst = Join-Path $RedsDst $d.Name
+        New-Item -ItemType Directory -Path $dst -Force | Out-Null
+        Get-ChildItem $d.FullName -File | ForEach-Object {
+            Copy-Item $_.FullName (Join-Path $dst $_.Name) -Force; $n++
+        }
+    }
+    Write-Host "[+] Redscript: $n file(s) into r6\scripts"
+}
+
+foreach ($d in Get-ChildItem (Join-Path $RepoRoot "mods\cet") -Directory) {
+    $dst = Join-Path $BinX64 "plugins\cyber_engine_tweaks\mods\$($d.Name)"
+    if (Test-Path $dst) { continue }   # already handled by the refresh loop above
+    New-Item -ItemType Directory -Path $dst -Force | Out-Null
+    Get-ChildItem $d.FullName -Recurse | ForEach-Object {
+        $rel = $_.FullName.Substring($d.FullName.Length).TrimStart('\')
+        $t = Join-Path $dst $rel
+        if ($_.PSIsContainer) { New-Item -ItemType Directory -Path $t -Force | Out-Null }
+        else { New-Item -ItemType Directory -Path (Split-Path $t) -Force | Out-Null; Copy-Item $_.FullName $t -Force }
+    }
+    Write-Host "[+] INSTALLED the $($d.Name) CET mod (new in this repo, absent from the game)"
+}
+
+$InputSrc = Join-Path $RepoRoot "mods\config\input"
+if (Test-Path $InputSrc) {
+    $InputDst = Join-Path $GameRoot "r6\input"
+    New-Item -ItemType Directory -Path $InputDst -Force | Out-Null
+    Get-ChildItem $InputSrc -File | ForEach-Object {
+        Copy-Item $_.FullName (Join-Path $InputDst $_.Name) -Force
+        Write-Host "[+] Input config: $($_.Name)"
+    }
+}
+
 # 4. The TweakXL yamls and the packed archives. They are edited game-side (by hand, and by
 #    WolvenKit's packer) but the repo copy is what a fresh install has to get, so the deploy pushes
 #    them out. Pull them back with: pwsh scripts\sync_assets.ps1 -GameRoot <path>
