@@ -171,7 +171,24 @@ std::atomic<bool> g_main_vrcam_split{false};
 // which no head movement or single-frame sprint can produce. This is not asking "are the eyes
 // aligned", it is asking "is MAIN even in the same place", and only the second question is being
 // answered here.
-extern "C" __declspec(dllexport) float    CyberpunkVR_ViewSplitMetres = 5.0f;   // 0 disables
+// DEFAULT 0 -- DISABLED, BECAUSE THE FIRST ATTEMPT WAS WRONG AND SHIPPED MONO.
+//
+// The detector read s_mainPosFP against s_vrcamPosFP on EVERY camera write. Those two are only
+// mutually consistent when the write being handled is MAIN, which is exactly why the diagnostic
+// next to them gates on `camKind == 1`. Without that gate the difference is a fresh position
+// against a stale one, and it alternated SPLIT/rejoined on consecutive frames -- 915.1 m, 0.1 m,
+// 915.1 m, 0.1 m -- disowning the second eye roughly half the time and loading the game in mono.
+//
+// The measurement that motivated it is now also in doubt. The 928 m "camera hack" separation was
+// read from the same unsynchronised pair, and mainPos sat at (-738.9, 2160, 53.9) in sessions with
+// no camera hack at all, so it is more likely the same artefact than a real split. PatchCamera's
+// own warning -- that raw sep carries head displacement and inter-write motion and is not an
+// alignment metric -- covers this; a large threshold does NOT make an inconsistent pair safe,
+// which is the part that was got wrong.
+//
+// Any retry must sample both positions at one instant (gate on camKind, or snapshot the pair
+// together) and must confirm on evidence gathered WITH a camera actually hacked.
+extern "C" __declspec(dllexport) float    CyberpunkVR_ViewSplitMetres = 0.0f;   // 0 disables
 extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugViewSplitFrames = 0;
 std::atomic<uintptr_t> g_main_view_ctx{0};
 extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugMainObjBinds = 0;
