@@ -190,6 +190,11 @@ std::atomic<bool> g_main_vrcam_split{false};
 // together) and must confirm on evidence gathered WITH a camera actually hacked.
 extern "C" __declspec(dllexport) float    CyberpunkVR_ViewSplitMetres = 0.0f;   // 0 disables
 extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugViewSplitFrames = 0;
+// How far `resid` may stray from one IPD before the probe calls the pair anomalous, in metres.
+// 1.0 is far above the ~45 cm of head/inter-write noise PatchCamera documents, and far below the
+// hundreds of metres a genuinely relocated MAIN would show. Reporting only unless ViewSplitMetres
+// is also set non-zero.
+extern "C" __declspec(dllexport) float    CyberpunkVR_ViewProbeMetres = 1.0f;
 std::atomic<uintptr_t> g_main_view_ctx{0};
 extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugMainObjBinds = 0;
 extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugMainCtxBinds = 0;

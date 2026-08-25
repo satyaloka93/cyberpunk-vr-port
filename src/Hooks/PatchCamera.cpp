@@ -42,6 +42,7 @@
 namespace cvr { namespace detail { extern std::atomic<bool> g_main_vrcam_split; } }
 extern "C" __declspec(dllexport) extern float    CyberpunkVR_ViewSplitMetres;
 extern "C" __declspec(dllexport) extern uint64_t CyberpunkVR_DebugViewSplitFrames;
+extern "C" __declspec(dllexport) extern float    CyberpunkVR_ViewProbeMetres;
 
 extern "C" void __fastcall OnPatchCameraCallback(float* cameraState, void* ownerState) {
     g_patchCameraHits++;
@@ -96,31 +97,59 @@ extern "C" void __fastcall OnPatchCameraCallback(float* cameraState, void* owner
     // This site fires ~196M times a session against ~54k camera writes, so a "% 600" on the raw
     // count is hundreds of formatted file writes per second, issued from engine job threads.
     // That is not a diagnostic, it is a stutter source of its own.
-    // IS MAIN EVEN IN THE SAME PLACE AS VRCAM? Checked every camera write, not on the throttle
-    // below, because the answer gates the second eye and must not lag a hacked camera by 900 hits.
+    // CAMERA-TAKEOVER PROBE. OBSERVATION ONLY BY DEFAULT -- it gates nothing.
     //
-    // A quickhacked security camera moves MAIN to the camera and leaves VRCAM on the player, so the
-    // two eyes show unrelated scenes -- reported in the field as "left/right eye have different view
-    // and seems laggy". Laptops, shards and anything else that parks the view on a remote entity do
-    // the same thing. Nothing here tries to move VRCAM to follow: the second eye is a render-to-
-    // texture component attached to the player and has no notion of the game switching cameras.
-    // Instead the eye is disowned, and the submit's existing staleness path turns that into MONO --
-    // the file's own rule being that "one eye live and one eye stuck is far worse than plain mono".
-    if (CyberpunkVR_ViewSplitMetres > 0.0f) {
-        const float kk = 1.0f / 131072.0f;
-        const float sx = (s_vrcamPosFP[0] - s_mainPosFP[0]) * kk;
-        const float sy = (s_vrcamPosFP[1] - s_mainPosFP[1]) * kk;
-        const float sz = (s_vrcamPosFP[2] - s_mainPosFP[2]) * kk;
-        const float lim = CyberpunkVR_ViewSplitMetres;
-        const bool split = (sx*sx + sy*sy + sz*sz) > (lim * lim);
-        if (split != cvr::detail::g_main_vrcam_split.exchange(split, std::memory_order_relaxed)) {
-            Log("PatchCamera: MAIN/VRCAM %s -- separation %.1f m (limit %.1f). %s\n",
-                split ? "SPLIT" : "rejoined",
-                std::sqrt(sx*sx + sy*sy + sz*sz), lim,
-                split ? "Second eye disowned; submitting mono until they rejoin."
-                      : "Stereo resumed.");
+    // Written after a detector placed here shipped the game in mono and made the left eye flash.
+    // Two mistakes, both fixed here:
+    //
+    //   1. IT SAMPLED ON EVERY CAMERA WRITE. s_mainPosFP and s_vrcamPosFP are each stored by their
+    //      own write, so off a MAIN write the VRCAM value is fresh and off a VRCAM write the MAIN
+    //      value is. Differencing them at an arbitrary moment compares two different instants, and
+    //      it alternated 915.1 m / 0.1 m on consecutive frames. `camKind == 1` -- the same gate the
+    //      throttled diagnostic below already uses -- is what makes the pair comparable.
+    //   2. IT USED RAW `sep`. The note below says plainly that sep is not an alignment metric: it
+    //      carries the head displacement and whatever the player covered between the two writes,
+    //      and was seen swinging to 45 cm while standing still. `resid` is the number -- head delta
+    //      subtracted, leaving the eye separation, which must be one IPD.
+    //
+    // A large threshold does not rescue either problem, which is what the earlier attempt assumed.
+    // So this CONFIRMS over consecutive samples before it believes anything, and reports rather
+    // than acts. CyberpunkVR_ViewSplitMetres stays 0 until a log taken WITH a camera actually
+    // hacked shows what these numbers really do; setting it non-zero promotes the same confirmed
+    // signal into the mono gate without rewriting any of this.
+    if (camKind == 1) {
+        const float k2 = 1.0f / 131072.0f;
+        const float rx2 = (s_vrcamPosFP[0] - s_mainPosFP[0] - s_vrcamHeadFP[0]) * k2;
+        const float ry2 = (s_vrcamPosFP[1] - s_mainPosFP[1] - s_vrcamHeadFP[1]) * k2;
+        const float rz2 = (s_vrcamPosFP[2] - s_mainPosFP[2] - s_vrcamHeadFP[2]) * k2;
+        const float residMag = std::sqrt(rx2*rx2 + ry2*ry2 + rz2*rz2);
+        const float sepMag = std::sqrt(
+            ((s_vrcamPosFP[0]-s_mainPosFP[0])*k2)*((s_vrcamPosFP[0]-s_mainPosFP[0])*k2) +
+            ((s_vrcamPosFP[1]-s_mainPosFP[1])*k2)*((s_vrcamPosFP[1]-s_mainPosFP[1])*k2) +
+            ((s_vrcamPosFP[2]-s_mainPosFP[2])*k2)*((s_vrcamPosFP[2]-s_mainPosFP[2])*k2));
+
+        // Confirmation, not a single frame. 30 consecutive MAIN writes either side, so a transient
+        // cannot latch it -- the previous version had no hysteresis at all and flapped every frame.
+        static int  s_hi = 0, s_lo = 0;
+        static bool s_anom = false;
+        const bool over = residMag > CyberpunkVR_ViewProbeMetres;
+        if (over) { ++s_hi; s_lo = 0; } else { ++s_lo; s_hi = 0; }
+        if (!s_anom && s_hi >= 30) {
+            s_anom = true;
+            Log("PatchCamera[probe]: stereo pair ANOMALOUS -- resid=%.3f m (ipd=%.4f, limit=%.1f) "
+                "sep=%.1f m mainPos=(%.3f,%.3f,%.3f) vrcamPos=(%.3f,%.3f,%.3f). Observation only.\n",
+                residMag, OpenXRManager::Get().GetRuntimeIpd(), CyberpunkVR_ViewProbeMetres, sepMag,
+                s_mainPosFP[0]*k2, s_mainPosFP[1]*k2, s_mainPosFP[2]*k2,
+                s_vrcamPosFP[0]*k2, s_vrcamPosFP[1]*k2, s_vrcamPosFP[2]*k2);
+        } else if (s_anom && s_lo >= 30) {
+            s_anom = false;
+            Log("PatchCamera[probe]: stereo pair normal again -- resid=%.3f m (ipd=%.4f) sep=%.1f m\n",
+                residMag, OpenXRManager::Get().GetRuntimeIpd(), sepMag);
         }
-        if (split) ++CyberpunkVR_DebugViewSplitFrames;
+        if (s_anom) ++CyberpunkVR_DebugViewSplitFrames;
+        // Promotion path, off by default: only a CONFIRMED anomaly can reach the mono gate.
+        if (CyberpunkVR_ViewSplitMetres > 0.0f)
+            cvr::detail::g_main_vrcam_split.store(s_anom, std::memory_order_relaxed);
     }
 
     if ((CyberpunkVR_DebugPatchCamMain % 900) == 1 && camKind == 1) {

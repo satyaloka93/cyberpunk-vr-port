@@ -350,6 +350,24 @@ extern "C" void __fastcall OnLocateCameraCallback(float* rbxPtr, float xmm0_val)
                     else if (sz == 2) tier = *static_cast<const int16_t*>(tp);
                     else              tier = *static_cast<const int32_t*>(tp);
                 }
+                // LOG THE EDGE. This value has been sampled every frame since it was added and
+                // never written down, so no session log has ever recorded what the game's own
+                // state machine was doing -- which is why "did the camera takeover change player
+                // state?" could not be answered from any capture we had.
+                //
+                // GameplayTier: 1 full gameplay, 2 staged, 3 limited, 4 FPP cinematic, 5 cinematic.
+                // A device takeover locks movement, so it should show as a tier above 1; if it does
+                // and the tier is distinctive, THAT is the trigger to hang a mono fallback on --
+                // an explicit state the game itself publishes, rather than a distance inferred
+                // from two camera positions sampled at different instants.
+                {
+                    static int s_lastTier = -999;
+                    if (tier != s_lastTier) {
+                        Log("[VR][tier] sceneTier %d -> %d (1=full 2=staged 3=limited 4=fppCine 5=cine)\n",
+                            s_lastTier == -999 ? tier : s_lastTier, tier);
+                        s_lastTier = tier;
+                    }
+                }
                 g_sceneTier.store(tier, std::memory_order_relaxed);
             }
         }
