@@ -1061,7 +1061,12 @@ uint8_t __fastcall Detour_NodeDispatch(
         int32_t budget = g_rebind_trace_remaining.load(std::memory_order_relaxed);
         if (budget > 0 && g_rebind_trace_remaining.fetch_sub(1, std::memory_order_relaxed) > 0) {
             const char* nm = work_rva ? CyberpunkVR_ProfNodeName(work_rva) : nullptr;
-            log("[rebind-trace] dispatching vrcam node rva=0x%X name=%s depth=%d scene=%u budget=%d",
+            // THE THREAD ID IS NOT DECORATION. The budget is shared, so several render threads
+            // interleave into this trace and the LAST LINE IS NOT NECESSARILY THE FAULTING NODE --
+            // which is exactly the ambiguity the 19:08 capture hit. With the tid here, the faulting
+            // thread from the dump (or simply the thread whose lines stop) can be followed alone.
+            log("[rebind-trace] tid=%lu dispatching vrcam node rva=0x%X name=%s depth=%d scene=%u budget=%d",
+                GetCurrentThreadId(),
                 work_rva, (nm && *nm) ? nm : "?", static_cast<int>(t_prof_disp_depth),
                 static_cast<unsigned>(scene_rtid), budget - 1);
         }
