@@ -17,6 +17,42 @@ timestamp: 2026-08-23T11:40:00+09:00
 
 For [PSVR2 through SteamVR](../hardware/psvr2-steamvr.md), the active compatibility profile is expected to be Oculus Touch. Capacitive actions also provide [Triangle-touch D-pad shifting](../fixes/psvr2-triangle-dpad.md).
 
+# Synthesised buttons collide with the game's own chords
+
+Step 4 above emits real XInput buttons, and the game's bindings do not know they were synthesised.
+`XInput.cpp` emits `LEFT_THUMB` for **sprint** and `RIGHT_THUMB` for the **crouch** gesture and for
+the scanner **tag** — and it emits them **in the same frame** when the gestures overlap. The game
+declares a chord `IK_PAD_LR_THUMB` (`buttonGroup`, `timeWindow="0.1f"`) meaning both stick clicks
+together, so any same-frame pair satisfies it outright and the time window offers no protection.
+Stock, that chord opened **photo mode**, which sliding therefore triggered by itself.
+
+**Before adding or reusing a synthesised button, check the merged cache for chords that contain it.**
+The declarations live in `r6\cache\inputUserMappings.xml`; a `buttonGroup` is a chord definition and
+grepping for its id finds both the definition and every mapping that binds it.
+
+## input_loader replaces on a name collision
+
+Measured 2026-08-26, and it is the general rule for this layer, not a fact about one binding. A mod
+XML in `r6\input\` whose `mapping name=` matches an existing one **replaces** the game's entry
+wholesale — it is not merged into it and the game's buttons are not retained. Verified by shipping
+`mods/config/input/CyberpunkVRPort_NoPadPhotoMode.xml` with `TogglePhotoModeButton` carrying only
+`IK_N`, then reading the merged cache: exactly one such mapping, one button, and no mapping anywhere
+still binding `IK_PAD_LR_THUMB`.
+
+This is worth stating because input_loader's own log shows **only merge operations and never a
+removal**, which invites the opposite conclusion. Two consequences:
+
+* A binding can be removed from the pad without touching the port's gesture synthesis — the correct
+  fix when suppressing the input itself would cost a real move (here, suppressing the two clicks
+  would have cost **slide**, which *is* sprint plus crouch).
+* Redeclaring a name means owning **every** button on it. Anything omitted is gone, so the game's
+  own bindings must be copied forward deliberately if they are still wanted.
+
+One further property of the same cache, learned the hard way and easy to reach for when a binding
+misbehaves: **it is not self-healing.** Deleting the merged XML does not force a clean rebuild — it
+silently drops every mod binding instead. Do not treat deletion as a reset. To re-measure a change,
+launch once and read the cache; to undo one, remove the mod XML from `r6\input\` and launch again.
+
 # Early XInput hook and falsified capabilities hypothesis
 
 The first PSVR2 retest proved both hands reached the Oculus Touch interaction profile and logged a non-zero Sense action, but Cyberpunk remained in keyboard mode at the first screen. A device-capabilities cache was initially suspected.

@@ -3,10 +3,11 @@
   CyberpunkVRPort. Take photo mode off the pad, leave it on the keyboard.
 
   WHY. The game binds TogglePhotoModeButton to IK_N and to IK_PAD_LR_THUMB, and that second one is
-  both stick clicks with no time window on it. This port synthesises LEFT_THUMB for sprint
-  (XInput.cpp, wantSprint) and RIGHT_THUMB for the right stick down crouch gesture (wantCrouch), so
-  sliding sends the game exactly that chord and photo mode opens on its own. The screen goes flat,
-  camera controls appear, and the way out is not obvious in a headset.
+  both stick clicks inside a 0.1 s window. This port synthesises LEFT_THUMB for sprint (XInput.cpp,
+  wantSprint) and RIGHT_THUMB for the right stick down crouch gesture (wantCrouch), and it emits
+  them in the SAME FRAME, so the window is no protection at all -- sliding sends the game exactly
+  that chord and photo mode opens on its own. The screen goes flat, camera controls appear, and the
+  way out is not obvious in a headset.
 
   WHY THE BINDING AND NOT A BUTTON. Suppressing the two clicks from co-occurring was the first idea
   and it is wrong: sprint plus crouch IS the slide, so that trade buys a fix by removing a move the
@@ -19,12 +20,17 @@
   NOTE ON STYLE: no double hyphen anywhere in these comments. XML forbids it inside a comment and
   the game parser swallows that quietly, which is the worst way to be wrong.
 
-  UNVERIFIED AS OF WRITING. input_loader merges r6\input\*.xml into r6\cache\inputUserMappings.xml
-  at launch, and its log shows only merge operations, never a removal. Whether a mod mapping that
-  reuses an existing name REPLACES the game entry or is appended to it is exactly what this file
-  measures. After one launch, read TogglePhotoModeButton out of the merged cache: ONE button means
-  replace, and this works. TWO means append, and it does not, in which case delete this file and
-  the binding has to be dealt with in redscript instead.
+  VERIFIED 2026-08-26. input_loader REPLACES on a name collision; it does not append. Measured in
+  the merged r6\cache\inputUserMappings.xml after one launch: exactly ONE TogglePhotoModeButton
+  mapping, carrying only IK_N, and no mapping anywhere still binds IK_PAD_LR_THUMB. Confirmed in
+  play -- clicking both sticks no longer opens photo mode. Slide is unaffected, since nothing about
+  sprint or crouch was touched.
+
+  The IK_PAD_LR_THUMB buttonGroup itself still EXISTS in the cache. That is correct and is not a
+  leftover: it is the chord's declaration, not a binding. Nothing maps to it any more.
+
+  Escape hatch confirmed intact in the same read: ExitPhotoModeButton still carries IK_Escape, IK_N
+  and IK_Pad_B_CIRCLE, so anyone who reaches photo mode by any other route still leaves with Circle.
 -->
 <bindings>
 	<mapping name="TogglePhotoModeButton" type="Button">
