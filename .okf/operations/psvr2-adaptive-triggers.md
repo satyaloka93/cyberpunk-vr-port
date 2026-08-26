@@ -4,7 +4,7 @@ title: PSVR2 Sense adaptive triggers and grip haptics
 description: Optional integration of Enhanced DualSense Support gameplay profiles with the PSVR2Toolkit bridge, including VR melee motion haptics and the single-owner rule for the controller-effect path.
 resource: https://github.com/satyaloka93/PSVR2Toolkit/tree/cyberpunk-dsx-bridge-slot-guard
 tags: [psvr2, sense, adaptive-triggers, haptics, melee, cyberpunk, dependencies]
-timestamp: 2026-08-11T15:40:00+09:00
+timestamp: 2026-08-26T09:10:00+09:00
 ---
 
 # Dependency boundary
@@ -53,6 +53,57 @@ wrong hand. The pulses themselves were valid — the runtime accepted every one 
 haptic output and Toolkit CAPI compete for the same Sense actuators.
 
 The upstream-0.1.3 PSVR2 plugin creates a generic vibration action for compatibility with Quest/Touch and other headsets but rejects all requests when the detected system is PSVR2. Sense motion haptics therefore still go only through the bridge's own effect engine so they mix with its audio, weapon, and vehicle layers rather than fighting them.
+
+# The bridge runs THREE haptic layers, and they compete
+
+Undocumented until 2026-08-26, which is why a report of "haptics reverted to ambient stereo rather
+than the DualSense mod" took a source dive to explain. The bridge mixes three independent sources
+onto the same Sense actuators, and each has its own switch and gain:
+
+| Layer | Source | Default | Switch |
+|---|---|---|---|
+| DSX trigger effects | Enhanced DualSense Support, via `DualSenseXConfig.txt` | always on | — |
+| Full-game audio haptics | stereo game audio, loopback-derived | **gain 1.35** | `--no-game-audio-haptics`, `--audio-haptics-gain 0..3` |
+| VR motion haptics | the plugin's shared slots `[157..160]` | gain 1.0 | `--no-vr-motion-haptics`, `--vr-motion-gain 0..3` |
+
+The startup banner names all three, and that banner is the fastest way to see what is actually
+running:
+
+```
+Cyberpunk grip PCM haptics enabled.
+Full-game audio haptics enabled at gain 1.35.
+VR motion haptics watcher enabled at gain 1 (waits for Cyberpunk).
+```
+
+**The audio layer is broadband and continuous; the DSX layer is sparse and event-shaped.** At gain
+1.35 the audio layer can mask the trigger effects, which reads exactly as "everything feels like
+ambient rumble and the weapon character is gone". `--no-game-audio-haptics` is the clean A/B: with
+it off, anything still felt is the DSX and motion layers alone.
+
+`1.35` is the **compiled-in default**, identical on `cyberpunk-dsx-bridge` and
+`cyberpunk-dsx-bridge-slot-guard`, so it does not drift between builds and is not a setting that can
+be silently lost. If the balance changed, the variable is the launch arguments, not the binary.
+
+# An automatic weapon is not a semi-automatic
+
+`firingBreaks` is set when the mod flips a loaded Bow/Weapon profile to `Resistance` or `Machine` --
+the shot edge. On that edge the bridge sets the trigger to `SCE_PAD_TRIGGER_EFFECT_MODE_OFF` and
+fires a recoil pulse, on the stated reasoning that "the best PSVR2 gun implementations ramp and
+plateau while pulling, then drop resistance at the actual shot."
+
+That is right for a semi-auto. On a submachine gun at roughly ten rounds a second the motor is
+re-loaded and switched off continuously -- observed as the console alternating `R2 <- Bow` with
+`R2 <- Machine -> firing release` -- so no sustained resistance ever establishes and the trigger
+reads as flat. **The effect is weapon-class specific**, which is why some weapons keep their
+character while automatics lose it.
+
+# L2 and R2 are two CONTROLLERS, not two triggers
+
+`sideValue` 1/2 routes to Left/Right. Enhanced DualSense Support authors LT as aim and RT as fire on
+a single pad; on PSVR2 those land on **opposite hands**. A weapon profile whose character lives on
+LT therefore puts it in the hand that is not holding the gun. Read the console side labels before
+concluding an effect is missing -- `L2 <- Choppy` means the effect is being produced, just not where
+it is being looked for.
 
 # Native launcher boundary
 
