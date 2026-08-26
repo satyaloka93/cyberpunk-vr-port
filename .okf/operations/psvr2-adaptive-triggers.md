@@ -84,6 +84,49 @@ it off, anything still felt is the DSX and motion layers alone.
 `cyberpunk-dsx-bridge-slot-guard`, so it does not drift between builds and is not a setting that can
 be silently lost. If the balance changed, the variable is the launch arguments, not the binary.
 
+# Launching it: run_bridge.cmd -> run_bridge.ps1
+
+`run_bridge.cmd` only echoes the two warnings and calls `run_bridge.ps1`; **every knob lives in the
+PowerShell script's param block**, and it never passes `--no-game-audio-haptics`, so the audio layer
+is always on at whatever gain is given:
+
+| Parameter | Default | Effect |
+|---|---|---|
+| `-AudioHapticsGain` | **1.35** | full-game audio layer, 0..3. `0` silences it -- the clean A/B |
+| `-VRMotionGain` | 1.0 | melee swing/impact pulses; `0` passes `--no-vr-motion-haptics` |
+| `-Port` | 6969 | DSX UDP port |
+| `-GameRoot` | auto-detected | Cyberpunk install |
+
+To isolate the DualSense-mod layer from the ambient audio layer:
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File run_bridge.ps1 -AudioHapticsGain 0
+```
+
+Anything still felt is then the DSX trigger effects and the motion layer alone.
+
+## The launcher also enforces policy, which is easy to miss
+
+`Sync-DualSenseSettings` runs before the bridge starts and does two things beyond launching:
+
+* it **patches `UDPautostart` to false automatically** if it finds it on -- a fourth lock beyond the
+  three listed above;
+* it **warns on any weapon category that is not Default**, printing "Stock effects are recommended
+  on PS VR2 Sense; overrides give inconsistent triggers." It deliberately **warns rather than
+  rewrites** ("category overrides are the user's call"), so an override does persist -- but the
+  advice on screen is the 2026-08-11 reversal, and that reversal was measured under a UDP conflict
+  which this same script now prevents. Treat the warning as historical, not as a diagnosis.
+
+## Where the melee whoosh is expected to come from
+
+The two layers disagree on paper and both notes are worth knowing. `vr_motion_haptics.h` states the
+audio layer **cannot** carry a swing: "the weapon whoosh sits outside the 28-320 Hz tactile band and
+is inaudible to it even at high gain, and being stereo-derived it buzzes both grips rather than the
+weapon hand" -- which is why the motion layer exists at all. `run_bridge.ps1` offers raising
+`-AudioHapticsGain` to "test whether quiet sources -- such as the VR melee whoosh replayed on a
+physical katana slash -- survive the 28-320 Hz tactile band". So a missing katana swing is a
+**motion-layer** question first; the audio layer is not expected to substitute for it.
+
 # An automatic weapon is not a semi-automatic
 
 `firingBreaks` is set when the mod flips a loaded Bow/Weapon profile to `Resistance` or `Machine` --
