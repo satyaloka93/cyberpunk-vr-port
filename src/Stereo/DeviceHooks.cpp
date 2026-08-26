@@ -779,6 +779,9 @@ extern "C" __declspec(dllexport) int32_t  CyberpunkVR_PsoBurstArm      = 16;   /
 extern "C" __declspec(dllexport) int32_t  CyberpunkVR_PsoBurstWindowMs = 500;
 extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugPsoBurstArms = 0;
 
+// A burst arriving this long after the previous one is always logged -- see pso_note_creation.
+static constexpr uint64_t kPsoBurstQuietMs = 2000;
+
 static void pso_note_creation() {
     const int32_t arm_at = CyberpunkVR_PsoBurstArm;
     if (arm_at <= 0) return;
@@ -797,9 +800,22 @@ static void pso_note_creation() {
     if (n != arm_at) return;   // arm exactly once per window, on the crossing
     const uint64_t arms = ++CyberpunkVR_DebugPsoBurstArms;
     OverlayArmLoadGuard("pso burst");
-    if (arms <= 12 || (arms % 100) == 0) {
-        log("[pso] burst: %d pipeline states in %llu ms -> load guard armed (arm #%llu)",
-            n, (unsigned long long)(now - start), (unsigned long long)arms);
+
+    // THROTTLE ON QUIET, NOT ON COUNT. The old rule was `arms <= 12 || arms % 100 == 0`, which
+    // logged the twelve boring arms during startup shader warm-up and then went silent for the
+    // next eighty-seven -- including, twice, the arm immediately before a graphics-setting change
+    // took the device down. A session-wide counter is the wrong axis: what makes a burst
+    // interesting is that it arrives after the scene went QUIET, which is exactly the
+    // settings-change and load-transition signature. Startup, where bursts are continuous, stays
+    // throttled by the same rule for free.
+    static std::atomic<uint64_t> s_last_arm_ms{0};
+    const uint64_t prev_arm = s_last_arm_ms.exchange(now, std::memory_order_relaxed);
+    const uint64_t quiet_ms = now - prev_arm;
+    if (arms <= 12 || quiet_ms >= kPsoBurstQuietMs || (arms % 100) == 0) {
+        log("[pso] burst: %d pipeline states in %llu ms -> load guard armed "
+            "(arm #%llu, %llu ms since previous arm)",
+            n, (unsigned long long)(now - start), (unsigned long long)arms,
+            (unsigned long long)quiet_ms);
     }
 }
 

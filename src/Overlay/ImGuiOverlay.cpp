@@ -111,6 +111,9 @@ UINT64 g_fenceValue = 0;
 // The last submission's value, and the guard window. See the pacing block below.
 UINT64 g_previousOverlayFenceValue = 0;
 std::atomic<ULONGLONG> g_loadGuardUntilMs{0};
+// Set by OverlayArmLoadGuard, read on the engage edge. Always a string literal from a call site,
+// so the pointer outlives any reader and no copy or lock is needed.
+std::atomic<const char*> g_loadGuardReason{nullptr};
 std::atomic<bool> g_loadGuardEngaged{false};
 // How long the full drain comes back for after a resource-churn event. Deliberately generous: the
 // hangs it prevents landed within a few frames of the signal but the churn continues past it, and the
@@ -289,8 +292,13 @@ bool ShouldDrainThisFrame() {
     if (mode != 3) return false;
     const bool active = GetTickCount64() < g_loadGuardUntilMs.load(std::memory_order_relaxed);
     if (active != g_loadGuardEngaged.exchange(active, std::memory_order_relaxed)) {
-        Log("Overlay load guard %s.\n",
-            active ? "engaged -- full drain" : "released -- back to previous-overlay pacing");
+        // NAME THE TRIGGER. A guard engage with no reason is unreadable after the fact: five
+        // different call sites arm this, and a settings-menu crash needs to know which one fired.
+        // Only the EDGE is logged, so this costs one line per window, not one per arm.
+        const char* why = g_loadGuardReason.load(std::memory_order_relaxed);
+        Log("Overlay load guard %s (armed by: %s).\n",
+            active ? "engaged -- full drain" : "released -- back to previous-overlay pacing",
+            why ? why : "unknown");
     }
     return active;
 }
@@ -657,12 +665,20 @@ void OverlayRender(IDXGISwapChain* swapChain) {
 }
 
 void OverlayArmLoadGuard(const char* reason) {
-    (void)reason;
-    // COUNTED, NOT LOGGED. One caller is the VRCAM component re-bind, which can fire often -- a
-    // line per arm would be a flood, and the window's own edges are already logged by
+    // COUNTED, NOT LOGGED PER ARM. One caller is the VRCAM component re-bind, which can fire often
+    // -- a line per arm would be a flood, and the window's own edges are already logged by
     // ShouldDrainThisFrame. If this counter climbs steadily while "released" never appears then the
     // guard is permanently open and the pacing is buying nothing: that is the thing to look at.
+    //
+    // BUT THE REASON IS KEPT, because discarding it made a real crash unreadable. Two graphics
+    // settings (DLSS, ambient occlusion) took the device down at a guard engage, and the log could
+    // not say which of the five call sites armed it -- the one fact needed to tell a swapchain
+    // rebuild apart from a PSO burst. ShouldDrainThisFrame prints this on the ENGAGE EDGE only.
+    //
+    // Last writer wins, deliberately: the guard has one window, so whoever most recently extended
+    // it is the honest answer to "why is it open now".
     ++CyberpunkVR_DebugOverlayGuardArms;
+    g_loadGuardReason.store(reason ? reason : "unknown", std::memory_order_relaxed);
     g_loadGuardUntilMs.store(GetTickCount64() + kLoadGuardMs, std::memory_order_relaxed);
 }
 

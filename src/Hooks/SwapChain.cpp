@@ -298,9 +298,13 @@ HRESULT STDMETHODCALLTYPE HookedResizeBuffers(IDXGISwapChain* swapChain, UINT bu
 
     const UINT outWidth = forcedWidth != 0 ? forcedWidth : width;
     const UINT outHeight = forcedHeight != 0 ? forcedHeight : height;
-    if (outWidth != width || outHeight != height) {
-        Log("ResizeBuffers override: %ux%u -> %ux%u\n", width, height, outWidth, outHeight);
-    }
+    // LOGGED UNCONDITIONALLY, not just when the override changes something. A resize that asks for
+    // the size we already force is invisible under the old rule, and it is precisely the call a
+    // graphics-setting change makes -- so the one event that releases every overlay render target
+    // and arms the guard left no trace at all in a crash log. This fires a handful of times a
+    // session; the silence was never worth it.
+    Log("ResizeBuffers: requested %ux%u -> using %ux%u (forced=%ux%u) -- releasing overlay targets\n",
+        width, height, outWidth, outHeight, forcedWidth, forcedHeight);
 
     void** vtable = *reinterpret_cast<void***>(swapChain);
     ResizeBuffersFn originalFn = GetOriginalMethod<ResizeBuffersFn>(vtable, 13);
@@ -318,9 +322,9 @@ HRESULT STDMETHODCALLTYPE HookedResizeBuffers1(IDXGISwapChain3* swapChain, UINT 
 
     const UINT outWidth = forcedWidth != 0 ? forcedWidth : width;
     const UINT outHeight = forcedHeight != 0 ? forcedHeight : height;
-    if (outWidth != width || outHeight != height) {
-        Log("ResizeBuffers1 override: %ux%u -> %ux%u\n", width, height, outWidth, outHeight);
-    }
+    // Unconditional, for the same reason as HookedResizeBuffers above.
+    Log("ResizeBuffers1: requested %ux%u -> using %ux%u (forced=%ux%u) -- releasing overlay targets\n",
+        width, height, outWidth, outHeight, forcedWidth, forcedHeight);
 
     void** vtable = *reinterpret_cast<void***>(swapChain);
     ResizeBuffers1Fn originalFn = GetOriginalMethod<ResizeBuffers1Fn>(vtable, 39);
