@@ -169,7 +169,7 @@ void PollLiveControls() {
     int xrWindowWidth = 0;
     int xrWindowHeight = 0;
     float xrForceFov = 0.0f;
-    int   xrFovMode = g_liveControls.xrFovMode;
+    int   xrFovMode = g_liveControls.xrFovMode;   // seeded to 1 in LauncherConfig
     int xrMenuRect = 0;
     float xrMenuFov = 65.0f;
     float xrMenuFollowDeg = 60.0f;

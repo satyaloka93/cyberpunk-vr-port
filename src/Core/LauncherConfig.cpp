@@ -100,6 +100,9 @@ void InitRuntimePaths() {
     // Default: suspend VRIK during true cinematics (Tier4_FPPCinematic and up). The avatar is
     // driven by the engine authored scene animation there, and VRIK fighting it looks wrong.
     g_liveControls.xrCutsceneSuspendTier = 3;
+    // Sharpness by default: render the lens span rather than a frustum sized to cover the
+    // panel. See CameraFov.cpp for the measurements and the edge it trades away; 0 is upstream.
+    g_liveControls.xrFovMode = 1;
 
     // Default ON: VR controller -> XInput gamepad pipeline. Both the entry-point
     // detour (xrXInputInstall) and the gameplay action set (xrInputActions) are
@@ -157,6 +160,7 @@ void EnsureLiveControlFileExists() {
     // MAIN clear the shared shadow atlas again. Revert to 0 if sun shadows go wrong in one eye.
     fprintf(file, "xr_cascade_save_main=1\n");
     fprintf(file, "xr_force_fov=0\n");
+    fprintf(file, "xr_fov_mode=1\n");
     fprintf(file, "xr_menu_rect=0\n");
     fprintf(file, "xr_menu_fov=65.0\n");
     fprintf(file, "xr_menu_follow_deg=60.0\n");

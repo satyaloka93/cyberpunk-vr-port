@@ -134,7 +134,7 @@ bool DrawFovControl(LiveControlsUiState& state) {
     // sizing it switches is gated the same way -- offering it elsewhere would be a control that
     // silently does nothing. The numbers in the tooltip are this machine's, off the [FOV] and
     // [SUBMITFOV] log lines; they are why the switch exists rather than a taste setting.
-    if (OpenXRManager::Get().IsRuntimePsvr2()) {
+    {
         ImGui::Separator();
         bool spanMode = state.xrFovMode == 1;
         if (ImGui::Checkbox("Sharper: render the lens span, not the panel cover", &spanMode)) {
@@ -145,12 +145,13 @@ bool DrawFovControl(LiveControlsUiState& state) {
             ImGui::SetTooltip(
                 "Cover sizing renders 2 x max(|left|,|right|), so a canted frustum is drawn\n"
                 "together with its own mirror image and half of it is thrown away.\n\n"
-                "PSVR2 measured: frusta L=-61.5 R=+43.4 (9.0 deg of cant), lens 104.9 deg,\n"
-                "cover asks the engine for 123.0 deg. At 3072 px that is 24.98 px/deg\n"
-                "against 29.26 at the lens span -- about 17%% more linear resolution.\n\n"
+                "Measured here: PSVR2 cover 123.0 -> span 104.9 (~17%% linear).\n"
+                "Quest 3 cover 108.0 -> span 94.0 (~15%%). Derived from the headset's\n"
+                "own reported frusta, so it adapts to whatever is connected.\n\n"
                 "Cost: the submitted frustum stays symmetric, so the wide side is short\n"
-                "by the cant and a sliver can appear at the outer edge. That margin is\n"
-                "exactly what the original black-border fix bought.");
+                "by the cant and a sliver can appear. PSVR2 is vertically symmetric so\n"
+                "only its outer edge is exposed; the Quest 3 is canted down too, so its\n"
+                "BOTTOM edge goes ~5 deg short. Unticking restores upstream sizing.");
         }
         if (state.xrForceFov > 0.0f) {
             ImGui::SameLine();

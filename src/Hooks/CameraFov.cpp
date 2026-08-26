@@ -84,7 +84,25 @@ extern "C" void __fastcall OnNormalFovHookCallback(void* cameraState, float orig
             // The Quest 3 reports its true 94 deg span and needs nothing, and a masked runtime
             // (VDXR naming a Pico 4 "Oculus Quest2") must never be guessed at. Widen only on
             // measured evidence from the headset in question.
-            const bool spanMode = GetFovMode() == 1 && OpenXRManager::Get().IsRuntimePsvr2();
+            // UNGATED, AND DEFAULT ON. Span mode was PSVR2-only while PSVR2 was the only headset
+            // measured. It is not a guessed constant -- GetCorrectedGameHorizontalFovDeg derives the
+            // number from the CONNECTED headset's own reported frusta -- so it self-adapts and there
+            // is nothing to get wrong per model. That also sidesteps the naming trap in
+            // kHeadsetFovDefaults, where VDXR reports a Pico 4 as "Oculus Quest2": no name is
+            // consulted here at all.
+            //
+            // Measured on this machine, both headsets, from their own [FOV] lines:
+            //   PSVR2   frusta -61.500/+43.446, cover 123.000 -> span 104.946   ~17% linear
+            //   Quest 3 frusta -54.000/+40.000, cover 108.000 -> span  94.000   ~15% linear
+            // In both cases roughly a third of the rendered SOLID ANGLE was outside the lens.
+            //
+            // THE COST IS REAL AND DIFFERS BY HEADSET. The submitted frustum stays symmetric, so
+            // whichever side the cant favours goes short. PSVR2 is vertically symmetric
+            // (U=D=53.040), so only its outer horizontal edge is exposed. The Quest 3 is canted down
+            // as well (U=44.000 D=-55.000, correctionPitch -5.5), so at span its BOTTOM edge is
+            // about 5 deg short while the top gains 6. xr_fov_mode=0 restores upstream cover sizing
+            // exactly, and xr_force_fov takes a middle value if the edge is unwelcome.
+            const bool spanMode = GetFovMode() == 1;
             targetHDeg = spanMode
                 ? GetCorrectedGameHorizontalFovDeg(ComputeRuntimeFovCorrection(lf, rf))
                 : GetPanelCoveringHorizontalFovDeg(lf, rf, aspect);
