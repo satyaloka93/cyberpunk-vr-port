@@ -105,6 +105,30 @@ powershell -NoProfile -ExecutionPolicy Bypass -File run_bridge.ps1 -AudioHaptics
 
 Anything still felt is then the DSX trigger effects and the motion layer alone.
 
+## Quest 3 does not use this bridge at all
+
+There is deliberately **no `run_bridge_openxr.cmd`**, and adding one would be a mistake. The bridge
+exists to drive PSVR2 Sense actuators through PSVR2Toolkit CAPI; a Quest 3 has neither, so there is
+nothing for it to do. Quest haptics are produced **inside the VR plugin** by its own OpenXR
+vibration output and tuned in `vrport.ini` / F10 Controls:
+
+| Key | Covers |
+|---|---|
+| `xr_openxr_haptic_gain` | guns, melee |
+| `xr_openxr_vehicle_haptic_gain` | engine and road |
+
+The plugin **rejects that OpenXR path when it detects PSVR2**, which is what keeps the two backends
+from ever running together — see [Nothing else may drive the actuators](#nothing-else-may-drive-the-actuators)
+and [Generic OpenXR controller haptics](generic-openxr-haptics.md). One bridge for PSVR2, in-plugin
+output for everything else, and never both on the same actuators.
+
+## Setting the gains in run_bridge.cmd
+
+`run_bridge.cmd` now sets `AUDIO_GAIN` and `MOTION_GAIN` at the top and passes them through, so the
+balance is editable without remembering parameter names. `AUDIO_GAIN=0` is the setting that restored
+per-weapon trigger feel by taking the masking layer out; raise it toward `0.4` if world texture is
+missed, and `1.35` returns to the bridge default and to the masking.
+
 ## The launcher also enforces policy, which is easy to miss
 
 `Sync-DualSenseSettings` runs before the bridge starts and does two things beyond launching:
