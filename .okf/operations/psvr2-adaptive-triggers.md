@@ -103,7 +103,9 @@ To isolate the DualSense-mod layer from the ambient audio layer:
 powershell -NoProfile -ExecutionPolicy Bypass -File run_bridge.ps1 -AudioHapticsGain 0
 ```
 
-Anything still felt is then the DSX trigger effects and the motion layer alone.
+Anything still felt is then the DSX trigger effects and the motion layer alone. This is a
+**diagnostic**, not a setting to leave in place — see
+[`AUDIO_GAIN=0` is what makes the driving engine one-handed](#audio_gain0-is-what-makes-the-driving-engine-one-handed).
 
 ## Quest 3 does not use this bridge at all
 
@@ -124,10 +126,28 @@ output for everything else, and never both on the same actuators.
 
 ## Setting the gains in run_bridge.cmd
 
-`run_bridge.cmd` now sets `AUDIO_GAIN` and `MOTION_GAIN` at the top and passes them through, so the
-balance is editable without remembering parameter names. `AUDIO_GAIN=0` is the setting that restored
-per-weapon trigger feel by taking the masking layer out; raise it toward `0.4` if world texture is
-missed, and `1.35` returns to the bridge default and to the masking.
+`run_bridge.cmd` sets `AUDIO_GAIN` and `MOTION_GAIN` at the top and passes them through, so the
+balance is editable without remembering parameter names. Both current values were set from play at
+**both ends of each dial**, not chosen:
+
+| | Value | Why |
+|---|---|---|
+| `AUDIO_GAIN` | **0.5** | `1.35` (bridge default) masks weapon character — it is why changing a weapon category looked like it did nothing, the change being real but inaudible under a continuous broadband layer. `0` restores that character **but costs the driving engine and the left hand** (see below). `0.5` sits between two measured ends. |
+| `MOTION_GAIN` | **2.0** | Melee was barely felt at `1.0`. The bridge computes `amplitude = raw * gain` clamped to 1, and the plugin sends a threshold swing at raw `0.45` — so `1.0` delivered 0.45 of full scale. `2.0` puts a threshold swing near 0.9 and a hard one at the clamp. `0` disables melee. |
+
+### `AUDIO_GAIN=0` is what makes the driving engine one-handed
+
+This was reported as a fault and is not one. **The engine rumble in both grips *is* the audio
+layer** — `vr_motion_haptics.h` describes it as "stereo-derived, it buzzes both grips". With the
+layer at 0 the only vehicle feedback left is the DSX **trigger** effect on R2, which is one hand by
+construction. The symptom is therefore diagnostic: engine felt in the right hand only means the
+audio layer is off or too low, not that a controller or the bridge has failed.
+
+The layers are independent and verified so: `HapticsEngine` (grip PCM) is the transport and starts
+on its own; `gameAudioGain` scales only `AudioHapticsCapture`.
+
+**An earlier revision of this file recommended `AUDIO_GAIN=0`.** That was measured only against
+weapon triggers, before the driving case was tested, and it is superseded.
 
 ## The launcher also enforces policy, which is easy to miss
 
@@ -150,6 +170,9 @@ weapon hand" -- which is why the motion layer exists at all. `run_bridge.ps1` of
 `-AudioHapticsGain` to "test whether quiet sources -- such as the VR melee whoosh replayed on a
 physical katana slash -- survive the 28-320 Hz tactile band". So a missing katana swing is a
 **motion-layer** question first; the audio layer is not expected to substitute for it.
+
+Borne out in play: melee reported as barely felt was fixed by `MOTION_GAIN` `1.0 -> 2.0`, with the
+audio layer untouched. Raise `MOTION_GAIN`, not `AUDIO_GAIN`, when swings are weak.
 
 # An automatic weapon is not a semi-automatic
 

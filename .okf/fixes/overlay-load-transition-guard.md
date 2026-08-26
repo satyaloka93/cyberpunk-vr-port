@@ -190,5 +190,14 @@ during a menu load, at a VRCAM component re-bind that was **not** inside a guard
 a different failure from the hang — no device removal, no breadcrumbs — and has not recurred.
 That crash class also predates this work.
 
+**Do not read load crashes as guard failures by default.** A second, open failure lives in the same
+window and is routinely mistaken for this one: the
+[second-eye load crash](second-eye-load-crash.md), an access violation at
+`Cyberpunk2077.exe+0x1F51F5` from a `-1` descriptor index. It is separable on evidence — this hang
+writes a `gpucrash-*.log`, logs `nvlddmkm` events and **two** `Overlay fence wait timed out` lines,
+and leaves a pass *In progress* in the breadcrumbs; the descriptor crash produces none of those.
+Check those markers before attributing a crash to guard tuning.
+
 Related: [middle-ground frame pacing](overlay-middle-ground-pacing.md),
+[second-eye load crash](second-eye-load-crash.md),
 [ray-tracing stereo limitations](../architecture/ray-tracing-stereo-limitations.md).
