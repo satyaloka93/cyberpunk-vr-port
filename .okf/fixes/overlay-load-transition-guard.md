@@ -190,6 +190,35 @@ during a menu load, at a VRCAM component re-bind that was **not** inside a guard
 a different failure from the hang — no device removal, no breadcrumbs — and has not recurred.
 That crash class also predates this work.
 
+# Open: DEVICE_HUNG at a graphics-setting change
+
+A third family, distinct from both the hang this guard fixes and the descriptor crash. DLSS and,
+separately, ambient occlusion each took the device down from the settings menu.
+
+| Marker | This family |
+|---|---|
+| Device Removed Reason | `0x887A0001` (`DEVICE_HUNG`) |
+| `gpucrash-*.log` | none |
+| `Overlay fence wait timed out` | none |
+| DRED breadcrumbs | unavailable — `GetAutoBreadcrumbsOutput` returns `0x887A0004` |
+| `nvlddmkm` at the crash minute | **none** — the kernel driver logged no reset |
+| Dump | **none exists and none can** — a device-removed shutdown raises no exception, so neither REDEngine nor ProcDump fires. The log is the entire evidence base |
+
+Sequence was `SetFullscreenState` → `Overlay load guard engaged` → dead, six lines. Established
+since: `SetFullscreenState(FALSE)` passes straight through (only `TRUE` is refused), and it is
+always followed by `ResizeBuffers`, which releases every overlay render target and arms the guard.
+
+**The leading hypothesis was tested and weakened.** "The PSO-burst arm holds a full drain open
+through shader recompilation and kills the device" fits the sequence, but an instrumented session
+ran **107 PSO bursts and 76 guard engagements** — including several settings changes, a save load,
+and a mid-session `SetFullscreenState`+`ResizeBuffers` pair — with no crash. Arming is therefore not
+fatal by itself and the trigger is intermittent. Recorded as a negative result so it is not
+re-adopted on the original correlation alone.
+
+Next capture will name the trigger: the engage edge now prints `armed by:` — see
+[diagnostic logging discipline](../operations/diagnostic-logging-discipline.md) for why it did not
+before.
+
 **Do not read load crashes as guard failures by default.** A second, open failure lives in the same
 window and is routinely mistaken for this one: the
 [second-eye load crash](second-eye-load-crash.md), an access violation at

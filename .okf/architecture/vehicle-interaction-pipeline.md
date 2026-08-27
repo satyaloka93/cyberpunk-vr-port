@@ -27,6 +27,25 @@ Do not apply a fixed 90° or 180° skeleton rotation. Heading diagnostics compar
 
 A Quest 3/VDXR car test confirmed `mounted=1`, `bike=0`, and the arms-only branch. Final-view heading settled positive (`1.000`, `0.987`, `0.923`, `0.919`), so that run does not show the old full-body ownership regression or a backwards body. A complaint about bad **position** should first record whether the body is left/right, ahead/behind, or high/low and A/B the saved car offsets against zero; heading evidence alone cannot diagnose translation.
 
+# Player limb collision was removed on purpose — do not restore it
+
+Upstream backed per-bone player collision out in 0.1.2 (`c875672`), taking 16 `VRPortBody_*`
+colliders off the ep1 male player entity along with every weapon collider. **Mounting a vehicle
+threw the player into the air.** Turning queries off hides the capsules from the movement system
+but leaves the simulation contacts, and a body parked inside the seat, door and dashboard is all
+interpenetration — the player cannot move, so the only thing the solver can push is the car.
+
+This surfaces as a false gap: `sync_assets.ps1` reports `vrport_player_body.archive` as *missing at
+source*. It is missing from every branch, because that entry was added in the same commit as
+scaffolding for an opt-in archive that was never shipped; `tools/make_player_body_ep1.py` was never
+committed either. The CET scripts still look for `VRPortBody_` components defensively
+([HandCollision](../../mods/cet/CyberpunkVRPort_HandCollision/init.lua),
+[Basketball](../../mods/cet/CyberpunkVRPort_Basketball/init.lua)), so the runtime side is inert
+rather than broken.
+
+**Do not regenerate the archive to "restore" limb collision** without first solving the mounted
+interpenetration case.
+
 # The wheel hub is per-vehicle state
 
 `g_wheelCenter` / `g_wheelSpan` are globals, and for a long time `WheelReset()` had exactly one

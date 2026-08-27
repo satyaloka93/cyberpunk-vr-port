@@ -32,14 +32,28 @@ Use full URLs only for external projects, releases, and citations. Relative repo
 
 # Link repair and validation
 
-From the repository root:
+`scripts/check_okf_links.py` is referenced in older revisions of this file but **does not exist in
+this tree**. Until it does, check relative links from the repository root with:
 
 ```bash
-python3 scripts/check_okf_links.py --fix-root-links
-python3 scripts/check_okf_links.py
+python3 - <<'EOF'
+import os, re
+bad = 0
+for root, _, files in os.walk('.okf'):
+    for f in (x for x in files if x.endswith('.md')):
+        p = os.path.join(root, f)
+        for m in re.finditer(r'\[[^\]]*\]\(([^)]+)\)', open(p, encoding='utf-8').read()):
+            t = m.group(1).split('#')[0]
+            if not t or t.startswith(('http', 'mailto')):
+                continue
+            if not os.path.exists(os.path.normpath(os.path.join(root, t))):
+                print('BROKEN', p, '->', t); bad += 1
+print('broken:', bad)
+EOF
 ```
 
-The first command converts resolvable `/...` destinations to paths relative to each document. The second fails on GitHub-unsafe root links, missing local targets, or links that escape the repository.
+Three hits in `okf-maintenance.md` itself are expected — they are the illustrative examples in the
+link-policy section above, not real targets.
 
 Then run the deterministic OKF v0.1 validator in strict mode. Link correctness is an additional publication rule for this repository; the OKF specification itself permits broken links.
 
