@@ -17,12 +17,20 @@ which upstream has always had. Cover sizing itself arrived upstream in PR #24; t
 # The problem upstream is solving, and what it costs
 
 The engine renders **one symmetric frustum** per eye and derives the vertical from the render
-aspect. Real headsets are not symmetric: the lenses are **canted** outward, so each eye's frustum
-leans, and `angleLeft` and `angleRight` differ.
+aspect. What the runtime reports is **not** symmetric: `angleLeft` and `angleRight` differ, each eye
+seeing further toward its own temple than toward the nose.
+
+> **On the word "cant".** The codebase calls this asymmetry *cant* — `deCantedHFov`,
+> `ComputeRuntimeFovCorrection`, `correctionYaw` — and this page follows that vocabulary because the
+> code does. It is a name for the **measured frustum asymmetry**, not a claim about the physical
+> optics. Asymmetric per-eye frusta are normal on nearly every headset and generally reflect the eye
+> sitting off the lens axis and the nose occluding the inner field, rather than physically toed-in
+> panels. Nothing here depends on the cause: the sizing math operates on the reported angles
+> whatever produces them.
 
 The submit layer recentres that frustum on the eye axis but **never rotates the pose to match the
-cant**. So a frustum sized to the panel's actual angular *span* leaves the outer edge — and on some
-headsets the bottom — unrendered, which is the black border upstream fixed.
+asymmetry**. So a frustum sized to the panel's actual angular *span* leaves the outer edge — and on
+some headsets the bottom — unrendered, which is the black border upstream fixed.
 
 Their fix sizes to **cover**:
 
@@ -35,7 +43,19 @@ The border goes, and so does a large fraction of the pixel density — this is t
 
 # Measured on this machine, both headsets
 
-Taken from each headset's own `OpenXRManager[FOV]` line, not from a table:
+Taken from each headset's own `OpenXRManager[FOV]` line in `bin\x64\cyberpunkvrport.log`, not from
+a table. The PSVR2 row reproduces verbatim as:
+
+```
+systemName="SteamVR/OpenXR : playstation_vr2"
+raw left =(L=-61.500 R=43.446 U=53.040 D=-53.040)
+    right=(L=-43.446 R=61.500 U=53.040 D=-53.040)
+runtimeHFov=104.946  deCantedHFov=104.946  correctionYaw=9.027  correctionPitch=0.000
+```
+
+`correctionYaw` is half the left/right difference — `(61.500 - 43.446) / 2`. Anyone reproducing this
+should read their own line rather than trusting the table, since these are per-headset **and** vary
+with IPD.
 
 | Headset | Eye frusta (L/R) | Cover | De-canted span | Linear px/deg lost |
 |---|---|---|---|---|
