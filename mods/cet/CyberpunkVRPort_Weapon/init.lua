@@ -61,12 +61,26 @@ local MELEE_BOX = 0.22         -- blade hit radius (m) — tight to NPC body sil
 -- Motion haptics are REQUESTS to the external PSVR2Toolkit bridge, never OpenXR output. The bridge
 -- is the sole Sense actuator owner and mixes these with gun, audio and vehicle feedback. Swing is
 -- one pulse per whoosh episode; impact is emitted only when VRMeleeBladeHit returns an actual hit.
+-- DURATION IS THE ONLY REMAINING STRENGTH LEVER, so tune these before touching MOTION_GAIN.
+-- The bridge computes amplitude = raw * MOTION_GAIN and then HARD CLAMPS it to 1.0
+-- (haptics_engine.cpp, HapticsEngine::Pulse). At the current gain of 2.0 the impact pulse is
+-- 1.00 * 2.0 -> clamped, so raising the gain further changes impact by exactly nothing, and the
+-- swing range 0.45..0.85 collapses to 0.90..1.00 and loses most of its speed nuance. What the
+-- clamp does NOT bound is how long the pulse runs: the engine renders durationMs * 3 samples, so
+-- perceived strength is amplitude x duration and only duration has headroom left.
+--
+-- Raised 2026-08-27 after melee was still reported light at MOTION_GAIN 2.0: swing 45 -> 85 ms,
+-- impact 90 -> 150 ms. Amplitudes deliberately unchanged -- both are already at or above the
+-- clamp once the gain is applied, so raising them would only flatten the swing curve further.
 local HAPTIC_HAND        = 1     -- 1 = right (the port's weapon hand), 0 = left
 local HAPTIC_SWING_MIN   = 0.45
 local HAPTIC_SWING_MAX   = 0.85
-local HAPTIC_SWING_MS    = 45
+local HAPTIC_SWING_MS    = 85
 local HAPTIC_HIT_AMP     = 1.00
-local HAPTIC_HIT_MS      = 90
+local HAPTIC_HIT_MS      = 150
+-- Now SHORTER than HAPTIC_HIT_MS, which is intentional: a retrigger inside the window replaces the
+-- pulse in flight (Pulse() takes the new one when amplitude >= the current, and impact is always
+-- 1.0), so rapid hits restart the thump instead of being swallowed.
 local HAPTIC_HIT_MIN_GAP = 0.12
 local hapticHitLast      = -1.0
 
