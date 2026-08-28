@@ -32,6 +32,10 @@
 // FinishFrame (xrEndFrame) once per frame and never skips the cycle, and RealVR's CP2077
 // loop is the same shape. The invariant they both keep is that the pose in the projection
 // layer is the one the image was rendered against -- not one located at submit time.
+// Owned by Anim/TwoHandGrip.cpp. Read here so the left-grip scanner hold can tell that the support
+// hand is on the weapon -- see the claim note at the scanner gate below.
+extern "C" float CyberpunkVR_TwoHandBlend;
+
 extern "C" __declspec(dllexport) int CyberpunkVR_XrPaceByRuntime = 1;
 
 // The hand filter's speed, in UEVR's units: the follow fraction per second, multiplied by delta time
@@ -1691,7 +1695,24 @@ DWORD OpenXRManager::FrameThreadMain() {
                         const bool reloadOwnsLeft = reloadOwner > -0.5f && reloadOwner < 0.5f;
                         const bool scannerHold = leftGripHeld && s_leftGripDownSinceMs != 0 &&
                             gripNowMs - s_leftGripDownSinceMs >= 180;
-                        if (IsRuntimePsvr2() && scannerHold && !mounted && !reloadOwnsLeft) {
+
+                        // THE SUPPORT GRIP CLAIMS THIS HAND TOO, on exactly the terms the reload does.
+                        // Taking a two-handed hold on a pistol IS a sustained left-grip squeeze, so it
+                        // satisfied scannerHold as well and the scanner opened underneath the hold --
+                        // the same collision the reload exclusion above already exists to prevent, with
+                        // the third claimant simply missing from the list.
+                        //
+                        // BLEND, NOT TwoHandActive, and the difference matters. Active is only true once
+                        // the squeeze has engaged, and the fingers are OFFERED the hold from the moment
+                        // the hand arrives in radius -- so a player reaching for the grip and squeezing
+                        // as they land would still trip the 180 ms scanner in the gap. Blend is non-zero
+                        // across both the offer and the hold, which is precisely "this hand is at the
+                        // gun". Its 0.15 s fade-out also covers the release, so letting go of the
+                        // support grip cannot flick the scanner open on the way out.
+                        const bool twoHandOwnsLeft = CyberpunkVR_TwoHandBlend > 0.01f;
+
+                        if (IsRuntimePsvr2() && scannerHold && !mounted && !reloadOwnsLeft &&
+                            !twoHandOwnsLeft) {
                             ctrl.buttons |= XB_LEFT_SHOULDER;
                         } else if (IsRuntimePsvr2() && leftGripHeld && mounted) {
                             static bool s_leftGripVehicleLogged = false;
