@@ -55,9 +55,11 @@ motion-vector scaling, transfer strength, UI correction, `NeuralUplift`, and
 A second ordering defect made `overlay_widgets=1` misleading: the host built the ImGui table from
 its compiled default before reading the INI, so the addon retained recording stubs for the whole
 launch even though F10 reported real widgets enabled. The host now loads config before constructing
-the table. F10's **DLSS 5 / Debug** section directly embeds the addon's live page; Natural/Cinematic,
-preset, masks, and structure controls apply in the current scene. Raw config fields remain only as
-a next-launch fallback.
+the table. F10 directly embeds the addon's live page; Natural/Cinematic, preset, masks, and structure
+controls apply in the current scene. The publish-facing layout keeps status and NR coverage visible
+while collapsing image tuning, native color and diagnostics. Slider forwarding renders each addon
+label above a full-width hidden-ID slider because ImGui's default trailing labels are difficult to
+read at the far edge of the wide VR panel. Raw config fields remain only as a fallback.
 
 # Model controls
 

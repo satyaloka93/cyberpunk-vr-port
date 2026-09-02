@@ -27,6 +27,7 @@
 #include <cstring>
 #include <cstdarg>
 #include <cstdlib>
+#include <cfloat>
 #include <share.h>
 #include <string>
 #include <vector>
@@ -410,8 +411,17 @@ bool ImplSliderFloat(const char* label, float* v, float vmin, float vmax,
     if (!ReadableString(label, 128) || !v) return false;
     const char* f = ReadableString(fmt, 32) ? fmt : "%.3f";
     if (!(vmin < vmax)) { vmin = 0.0f; vmax = 1.0f; }   // junk range = unusable widget
-    const bool changed = ImGui::SliderFloat(label, v, vmin, vmax, f, flags);
+
+    // ImGui normally places a slider's label after the frame. That works on a desktop but pushes
+    // long RenoDX names to the far edge of the wide VR panel. Draw the visible part above a
+    // full-width, hidden-label slider; PushID retains the addon's complete stable identifier.
+    const char* hidden = strstr(label, "##");
+    ImGui::TextUnformatted(label, hidden ? hidden : nullptr);
+    ImGui::PushID(label);
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    const bool changed = ImGui::SliderFloat("##value", v, vmin, vmax, f, flags);
     DrawDlss5ControlHelp(label);
+    ImGui::PopID();
     return changed;
 }
 
