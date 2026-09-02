@@ -471,6 +471,15 @@ void DrawReShadeAddonHostPanel() {
                                "Per-eye NR census active");
             ImGui::Text("Feature 18 evaluations: MAIN %llu  VRCAM %llu  other %llu",
                         nr.evals[0], nr.evals[1], nr.evals[2]);
+            if (nr.foveationEnabled) {
+                ImGui::TextColored(ImVec4(0.45f, 0.90f, 0.55f, 1.0f),
+                                   "Nasal-open slabs: %.0f%% width, full height",
+                                   nr.fovealCoverage * 100.0f);
+                ImGui::Text("Applied/copied/rejected: MAIN %llu/%llu/%llu  VRCAM %llu/%llu/%llu",
+                            nr.fovealApplies[0], nr.fovealCopies[0], nr.fovealRejects[0],
+                            nr.fovealApplies[1], nr.fovealCopies[1], nr.fovealRejects[1]);
+                ImGui::TextDisabled("The only transition is at each eye's temporal outer edge; no live size toggle.");
+            }
             ImGui::Text("Creates: MAIN %llu  VRCAM %llu  | releases: %llu / %llu",
                         nr.creates[0], nr.creates[1], nr.releases[0], nr.releases[1]);
             ImGui::Text("Menu evaluations: MAIN %llu  VRCAM %llu  | shared handle: %llu",
@@ -520,9 +529,9 @@ void DrawReShadeAddonHostPanel() {
                             nr.parameterSamples[0], nr.parameterGetFailures[0],
                             nr.parameterSamples[1], nr.parameterGetFailures[1]);
                 ImGui::Text("Recursive evaluations observed: %llu", nr.recursiveEvals);
-                ImGui::TextWrapped("Read-only: the hook forwards the original command list, handle, "
-                                   "parameters, callback, and result unchanged. Different eye images "
-                                   "are expected; this census tests lifecycle and cadence parity.");
+                ImGui::TextWrapped("The tail-jump preserves the addon's caller and feature result. "
+                                   "When foveation is active it changes only the four feature-18 "
+                                   "horizontal subrects and seeds the single untreated temporal band.");
                 ImGui::TreePop();
             }
         } else if (nr.state == 0) {

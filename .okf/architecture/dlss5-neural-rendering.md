@@ -3,7 +3,7 @@ type: Experimental Rendering Integration
 title: DLSS 5 Neural Rendering in stereo VR
 description: Measured behavior, safe operating boundary, eliminated stereo hypotheses, and unresolved load-transition lifecycle of the closed RenoDX DLSS5 addon hosted without ReShade.
 tags: [dlss, neural-rendering, renodx, ngx, streamline, stereo, vrcam, performance, experimental]
-timestamp: 2026-09-02T14:41:02+09:00
+timestamp: 2026-09-02T15:05:24+09:00
 ---
 
 # Scope and components
@@ -396,6 +396,23 @@ through `34800/34798/2` cycles/submits/misses. Ordinary active-NR teardown compl
 `destroy_device`, addon NR release/re-arm, successful NGX unhooks, OpenXR shutdown, plugin unload and
 addon unregister, with no fresh crash report. Evidence: `20260902-143911-renodx455-clean-stereo-2048`.
 This proves ordinary process teardown only, not save/menu or same-size swapchain transitions.
+
+Experimental foveation is now implemented separately from the rollback checkpoint `847b2f6`. It
+uses the proven signed-runtime tail-jump and measured slot-1 resource Set ABI, but identifies eyes
+from the attributed outer scope rather than parity. Both eyes retain a full-height 65% horizontal
+slab open toward the nasal/binocular side: MAIN/right keeps the left 65%, while VRCAM/left keeps the
+right 65%. At 2048² this is `1328x2048`; 683² guides become `440x683`. Only the single untreated
+temporal band is copied from current Color to persistent Output before each feature-18 evaluation;
+whole-resource copies remain prohibited. All four Color/Depth/MVec/Output subrect widths and BaseX
+values are rewritten only after the complete contract and exact full Output rect validate. Menu
+calls, unknown views, pre-takeover calls and missing/mismatched resources fail closed.
+
+This first foveated build intentionally has no post-NR ring shader or ControlMask. The UEVR
+worktree's uncommitted ring is armed in a prehook and slot 0 currently fires on NR's own first
+`SetDescriptorHeaps`, before inference completes; Close is already proven too late. Copying that
+insertion search would risk stale/frozen eyes and pipeline-state clobber. The only initial hard edge
+is therefore in each eye's temporal periphery; centre/nasal overlap, top and bottom have no seam.
+An outer-edge-only suppression-mask feather remains a later gate after subrect/copy/performance proof.
 
 # Driving DLSSNR without the addon: closed
 

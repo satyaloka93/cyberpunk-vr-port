@@ -64,6 +64,11 @@ struct DlssNrDiagSnapshot {
     uintptr_t outputResource[3];
     uintptr_t motionResource[3];
     uintptr_t depthResource[3];
+    int foveationEnabled;
+    float fovealCoverage;
+    unsigned long long fovealApplies[3];
+    unsigned long long fovealCopies[3];
+    unsigned long long fovealRejects[3];
 };
 
 void NgxTryInstallDlssNrDiagnostics();

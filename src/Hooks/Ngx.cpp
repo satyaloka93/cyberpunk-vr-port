@@ -32,6 +32,7 @@
 #include <mutex>
 #include <atomic>
 #include <array>
+#include <algorithm>
 #include <MinHook.h>
 
 #include "Core/VrCoreShared.hpp"
@@ -423,6 +424,18 @@ std::atomic<uint64_t> g_nrPostTakeoverSlot[3];
 std::atomic<bool> g_nrVrcamOuterSeen{false};
 std::atomic<uint64_t> g_nrSlot1UnknownNames{0};
 
+// Experimental stereo-safe foveation. Each eye keeps a full-height slab that is open toward the
+// nasal/binocular side, so the shared centre has NR in both eyes and the only hard transition is
+// in each eye's temporal periphery. Coverage changes the feature-18 subrect size and is therefore
+// fixed for the first run rather than exposed as a live lifecycle control.
+constexpr float kNrFovealCoverage = 0.65f;
+std::atomic<bool> g_nrFoveationEnabled{true};
+std::atomic<ID3D12Resource*> g_nrFovealColor[3];
+std::atomic<ID3D12Resource*> g_nrFovealOutput[3];
+std::atomic<uint64_t> g_nrFovealApplies[3];
+std::atomic<uint64_t> g_nrFovealCopies[3];
+std::atomic<uint64_t> g_nrFovealRejects[3];
+
 bool CopyNrParameterName(const char* src, char (&dst)[80]) {
     if (!src) return false;
     __try {
@@ -454,7 +467,14 @@ void __fastcall RecordNrSetResource(void* self, const char* name, void* value) {
         g_nrPostTakeoverSlot[postSide].fetch_add(1, std::memory_order_relaxed);
     char safeName[80]{};
     const bool named = CopyNrParameterName(name, safeName);
-    if (!named) g_nrSlot1UnknownNames.fetch_add(1, std::memory_order_relaxed);
+    if (!named) {
+        g_nrSlot1UnknownNames.fetch_add(1, std::memory_order_relaxed);
+    } else if (side >= 0 && side < 3) {
+        if (_stricmp(safeName, "DLSSNR.Color") == 0)
+            g_nrFovealColor[side].store(static_cast<ID3D12Resource*>(value), std::memory_order_release);
+        else if (_stricmp(safeName, "DLSSNR.Output") == 0)
+            g_nrFovealOutput[side].store(static_cast<ID3D12Resource*>(value), std::memory_order_release);
+    }
     if (n <= 16 || (n % 601) == 0) {
         Log("[DLSSNR-DIAG][slot1] view=%s key=0x%llX count=%llu name=%s value=%p "
             "outer=%d outerSeq=%llu outerSide=%s\n",
@@ -528,6 +548,118 @@ void InstallNrSlot1Recorder(const void* params) {
         params, reinterpret_cast<void*>(g_nrSetResourceOriginal));
 }
 
+struct NrSubrect {
+    uint32_t x = 0, y = 0, w = 0, h = 0;
+    bool valid = false;
+};
+
+void NrSubrectName(char (&out)[64], const char* plane, const char* field) {
+    _snprintf_s(out, sizeof(out), _TRUNCATE, "DLSSNR.%sSubrect%s", plane, field);
+}
+
+NrSubrect ReadNrSubrect(const void* params, const char* plane) {
+    NrSubrect r{};
+    char name[64]{};
+    NrSubrectName(name, plane, "BaseX");  const bool a = NrParamGetUInt(params, name, &r.x);
+    NrSubrectName(name, plane, "BaseY");  const bool b = NrParamGetUInt(params, name, &r.y);
+    NrSubrectName(name, plane, "Width");  const bool c = NrParamGetUInt(params, name, &r.w);
+    NrSubrectName(name, plane, "Height"); const bool d = NrParamGetUInt(params, name, &r.h);
+    r.valid = a && b && c && d && r.w >= 64 && r.h >= 64 && r.w <= 16384 && r.h <= 16384;
+    return r;
+}
+
+bool SetNrUInt(void* params, const char* name, uint32_t value) {
+    if (!params || !name) return false;
+    __try {
+        void** vt = *reinterpret_cast<void***>(params);
+        using Fn = void(__fastcall*)(void*, const char*, uint32_t);
+        reinterpret_cast<Fn>(vt[3])(params, name, value); // measured/documented unsigned Set
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+uint32_t NrAlign8Down(uint32_t value) { return value & ~7u; }
+
+// MAIN is the physical right eye, so its temporal edge is the image's right side: retain [0,w).
+// VRCAM is the physical left eye, so its temporal edge is the image's left side: retain [crop,W).
+// The full height is always retained. The broad nasal/central overlap avoids a disparity-sensitive
+// seam between eyes; no fixed convergence shift is needed.
+bool ApplyNrNasalOpenSlab(void* params, int side, NrSubrect* originalOutput,
+                          uint32_t* activeX, uint32_t* activeW) {
+    if (!params || (side != 0 && side != 1)) return false;
+    static constexpr const char* planes[] = {"Color", "Depth", "MVec", "Output"};
+    NrSubrect rects[4]{};
+    uint32_t widths[4]{}, origins[4]{};
+    // Validate the complete four-plane contract before changing any parameter.
+    for (int i = 0; i < 4; ++i) {
+        rects[i] = ReadNrSubrect(params, planes[i]);
+        if (!rects[i].valid) return false;
+        widths[i] = NrAlign8Down(static_cast<uint32_t>(rects[i].w * kNrFovealCoverage));
+        if (widths[i] < 64 || widths[i] >= rects[i].w) return false;
+        const uint32_t crop = rects[i].w - widths[i];
+        origins[i] = side == 1 ? rects[i].x + crop : rects[i].x;
+        if (origins[i] + widths[i] > rects[i].x + rects[i].w) return false;
+    }
+    for (int i = 0; i < 4; ++i) {
+        char name[64]{};
+        NrSubrectName(name, planes[i], "BaseX");
+        if (!SetNrUInt(params, name, origins[i])) return false;
+        NrSubrectName(name, planes[i], "Width");
+        if (!SetNrUInt(params, name, widths[i])) return false;
+        // BaseY/Height deliberately remain the full original plane.
+    }
+    if (originalOutput) *originalOutput = rects[3];
+    if (activeX) *activeX = origins[3];
+    if (activeW) *activeW = widths[3];
+    return true;
+}
+
+// Seed only the single temporal band outside the active slab. Whole-resource copies are prohibited:
+// the sequential second eye could overwrite the first eye's neural result in the addon's persistent
+// singleton output. Resource states are the measured addon contract (both UAV before/after).
+int RefreshNrTemporalBand(ID3D12GraphicsCommandList* list, ID3D12Resource* color,
+                          ID3D12Resource* output, int side, const NrSubrect& full,
+                          uint32_t activeX, uint32_t activeW) {
+    if (!list || !color || !output || color == output || (side != 0 && side != 1)) return 1;
+    __try {
+        const D3D12_RESOURCE_DESC c = color->GetDesc();
+        const D3D12_RESOURCE_DESC o = output->GetDesc();
+        if (c.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+            o.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+            c.Width != o.Width || c.Height != o.Height || c.Format != o.Format ||
+            full.x != 0 || full.y != 0 || full.w != o.Width || full.h != o.Height)
+            return 2;
+
+        const uint32_t left = side == 1 ? full.x : activeX + activeW;
+        const uint32_t right = side == 1 ? activeX : full.x + full.w;
+        if (right <= left) return 2;
+
+        D3D12_RESOURCE_BARRIER toCopy[2]{};
+        toCopy[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        toCopy[0].Transition.pResource = color;
+        toCopy[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        toCopy[0].Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        toCopy[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        toCopy[1] = toCopy[0];
+        toCopy[1].Transition.pResource = output;
+        toCopy[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+        D3D12_RESOURCE_BARRIER back[2] = {toCopy[0], toCopy[1]};
+        back[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        back[0].Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        back[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+        back[1].Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+
+        D3D12_TEXTURE_COPY_LOCATION dst{}, src{};
+        dst.pResource = output; dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        src.pResource = color; src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        D3D12_BOX box{left, full.y, 0, right, full.y + full.h, 1};
+        list->ResourceBarrier(2, toCopy);
+        list->CopyTextureRegion(&dst, left, full.y, 0, &src, &box);
+        list->ResourceBarrier(2, back);
+        return 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return 3; }
+}
+
 // MinHook's generated trampoline is valid, but CALLing it changes the return address observed by
 // signed DLSSNR. This prehook is reached by CALL from our private thunk; the thunk then restores all
 // four original argument registers and JMPs to MinHook's trampoline. The runtime therefore sees
@@ -559,6 +691,43 @@ void __fastcall NrTailPrehook(ID3D12GraphicsCommandList* list, const void* handl
     if (sideN == 1 || (sideN % 60) == 0)
         SampleNrParameters(params, side, key, menu);
     InstallNrSlot1Recorder(params);
+
+    if (g_nrFoveationEnabled.load(std::memory_order_relaxed) && !menu &&
+        g_nrVrcamOuterSeen.load(std::memory_order_relaxed) && hasOuter &&
+        (side == 0 || side == 1) && outerSide == side) {
+        ID3D12Resource* color = g_nrFovealColor[side].load(std::memory_order_acquire);
+        ID3D12Resource* output = g_nrFovealOutput[side].load(std::memory_order_acquire);
+        const NrSubrect full = ReadNrSubrect(params, "Output");
+        const uint32_t width = full.valid
+            ? NrAlign8Down(static_cast<uint32_t>(full.w * kNrFovealCoverage)) : 0;
+        const uint32_t x = full.valid && side == 1 ? full.x + (full.w - width) : full.x;
+        const int copied = full.valid && width >= 64 && width < full.w
+            ? RefreshNrTemporalBand(list, color, output, side, full, x, width) : 2;
+        NrSubrect appliedFull{}; uint32_t appliedX = 0, appliedW = 0;
+        const bool applied = copied == 0 && ApplyNrNasalOpenSlab(
+            const_cast<void*>(params), side, &appliedFull, &appliedX, &appliedW);
+        if (applied) {
+            const uint64_t n = g_nrFovealApplies[side].fetch_add(1, std::memory_order_relaxed) + 1;
+            g_nrFovealCopies[side].fetch_add(1, std::memory_order_relaxed);
+            if (n <= 4 || (n % 601) == 0) {
+                const NrSubrect back = ReadNrSubrect(params, "Output");
+                Log("[DLSSNR-FOV] view=%s apply=%llu full=(%u,%u %ux%u) active=(%u,%u %ux%u) "
+                    "coverage=%.2f copy=temporal-band readback=%s\n",
+                    NrDiagSideName(side), static_cast<unsigned long long>(n),
+                    appliedFull.x, appliedFull.y, appliedFull.w, appliedFull.h,
+                    appliedX, appliedFull.y, appliedW, appliedFull.h, kNrFovealCoverage,
+                    back.valid && back.x == appliedX && back.w == appliedW &&
+                    back.y == appliedFull.y && back.h == appliedFull.h ? "OK" : "MISMATCH");
+            }
+        } else {
+            const uint64_t n = g_nrFovealRejects[side].fetch_add(1, std::memory_order_relaxed) + 1;
+            if (n <= 8 || (n % 601) == 0) {
+                Log("[DLSSNR-FOV] view=%s rejected=%llu resources=%p/%p fullValid=%d copy=%d\n",
+                    NrDiagSideName(side), static_cast<unsigned long long>(n), color, output,
+                    full.valid ? 1 : 0, copied);
+            }
+        }
+    }
 
     if (sideN <= 8 || (sideN % 601) == 0) {
         Log("[DLSSNR-DIAG][tail-eval] total=%llu view=%s key=0x%llX sideCount=%llu "
@@ -1898,11 +2067,11 @@ unsigned int NgxGetEvalCount() { return g_evalCount.load(std::memory_order_relax
 
 void NgxTryInstallDlssNrDiagnostics() {
     // The addon is loaded lazily by our host, usually one Present before its first DLSS feature
-    // creation. The clean build retains only the exact-build conditional bypass. The signed-runtime
-    // tail/slot recorder was forensic and is deliberately not installed.
+    // creation. Foveation uses the proven return-address-preserving tail path to rewrite only
+    // feature-18 subrects; ordinary CALL forwarding remains prohibited.
     TryInstallReno455OuterDiagnostics();
-    constexpr bool kEnableSignedRuntimeForensics = false;
-    if (!kEnableSignedRuntimeForensics) {
+    constexpr bool kEnableSignedRuntimeFoveation = true;
+    if (!kEnableSignedRuntimeFoveation) {
         int expected = 0;
         g_nrDiagState.compare_exchange_strong(expected, -4, std::memory_order_acq_rel);
         return;
@@ -2013,9 +2182,9 @@ void NgxTryInstallDlssNrDiagnostics() {
     g_nrTailStub = stub;
     g_nrTailTarget = eval;
     g_nrDiagState.store(2, std::memory_order_release);
-    Log("[DLSSNR-DIAG][hook] read-only return-address-preserving tail-jump census installed "
-        "target=%p thunk=%p trampoline=%p; slot1 forwarding only, no substitutions/copies\n",
-        eval, stub, reinterpret_cast<void*>(g_nrEvaluateOrig));
+    Log("[DLSSNR-FOV] return-address-preserving feature-18 hook installed target=%p thunk=%p "
+        "trampoline=%p; nasal-open coverage=%.2f, full height, temporal-band refresh\n",
+        eval, stub, reinterpret_cast<void*>(g_nrEvaluateOrig), kNrFovealCoverage);
 }
 
 bool NgxGetDlssNrDiagSnapshot(DlssNrDiagSnapshot* out) {
@@ -2055,7 +2224,12 @@ bool NgxGetDlssNrDiagSnapshot(DlssNrDiagSnapshot* out) {
         out->outputResource[i] = g_nrOutputResource[i].load(std::memory_order_relaxed);
         out->motionResource[i] = g_nrMotionResource[i].load(std::memory_order_relaxed);
         out->depthResource[i] = g_nrDepthResource[i].load(std::memory_order_relaxed);
+        out->fovealApplies[i] = g_nrFovealApplies[i].load(std::memory_order_relaxed);
+        out->fovealCopies[i] = g_nrFovealCopies[i].load(std::memory_order_relaxed);
+        out->fovealRejects[i] = g_nrFovealRejects[i].load(std::memory_order_relaxed);
     }
+    out->foveationEnabled = g_nrFoveationEnabled.load(std::memory_order_relaxed) ? 1 : 0;
+    out->fovealCoverage = kNrFovealCoverage;
     out->sharedHandleEvals = g_nrSharedHandleEvals.load(std::memory_order_relaxed);
     out->recursiveEvals = g_nrRecursiveEvals.load(std::memory_order_relaxed);
     out->totalEvalMicroseconds = g_nrTotalEvalUs.load(std::memory_order_relaxed);
