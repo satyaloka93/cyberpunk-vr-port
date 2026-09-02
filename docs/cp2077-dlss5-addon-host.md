@@ -1,12 +1,26 @@
 # Hosting ReShade addons in the plugin, and what DLSS 5 Neural Rendering cost
 
-Work of 2026-08-29 / 2026-08-30 on `upstream-0.1.3-psvr2`. Two connected investigations: a crash
-that arrived with a leaked DLSS 5 drop, and a ReShade-addon host built so the DLSS 5 addon could
-run without ReShade in the process.
-
-Nothing here is committed yet. Files touched are listed under [Current state](#current-state).
-Durable conclusions are also summarized in the OKF concept
+This is the engineering record for Cyberpunk's experimental native host for the RenoDX DLSS5
+addon. The host runs inside `CyberpunkVR_Stereo.dll`; it does **not** load ReShade and is not a
+general ReShade implementation. Durable conclusions are summarized in
 [DLSS 5 Neural Rendering in stereo VR](../.okf/architecture/dlss5-neural-rendering.md).
+
+## Current publication status
+
+- Exact supported addon: RenoDX DLSS5 Generic v4.1.5 / file version `0.2026.0828.0517`, SHA-256
+  `9150097cdee2953cdc9894d2e5606ea5100e6c8f95fc7bb1b407328b4391a07a`.
+- Exact NR runtime: `nvngx_dlssnr.dll` 310.8, SHA-256
+  `8270b350cd82de5ce89806872cdd6b6a9249b80836b91bbeb3573470744cc206`.
+- The port's exact-build duplicate-output bypass is required for binocular output because
+  Cyberpunk's sequential eyes reuse one ordinary DLSS Output pointer in an addon frame.
+- F10 offers live 35%/50% center-box and 65%/80% full-height stereo-slab performance profiles.
+  Changes latch on a MAIN-to-VRCAM gameplay boundary and defer while a menu/loading state is active.
+- `Enable Upscaling` must remain off. ReShade and `nvngx_dlssg.dll` must remain absent.
+- **Release blocker:** active NR can still hang the GPU across pause/map/inventory/save transitions.
+  The matched signature is `0x887A0006` with `HologramDepth_and_Distortion` and
+  `DecoupledParticleLighting` stopped at final barriers. Prefer one save per process.
+
+The remainder is the chronological investigation that produced those constraints.
 
 ### Superseding results from the final 2026-08-30 runs
 
@@ -23,9 +37,8 @@ Later tests corrected three conclusions in the chronological investigation below
    `ResizeBuffers(2560²)` left the addon in 71,978 consecutive incompatible-guide skips without
    recreating feature 18. The later 90 FPS was ordinary DLSS after NR had stopped, not a speedup.
 
-The required addon remains the user's RTX 4000-patched Discord build, SHA-256
-`87aef9ddd937c7241e6bf8d8efea0045d63559135e254c60dab316db3d3a4aee`; do not replace it from public
-version metadata alone.
+The older Discord addon discussed below is preserved only as historical evidence. It is superseded
+for current builds by the exact public addon identity listed under **Current publication status**.
 
 ---
 

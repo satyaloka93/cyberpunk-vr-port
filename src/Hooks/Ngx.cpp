@@ -425,10 +425,10 @@ std::atomic<uint64_t> g_nrPostTakeoverSlot[3];
 std::atomic<bool> g_nrVrcamOuterSeen{false};
 std::atomic<uint64_t> g_nrSlot1UnknownNames{0};
 
-// Restart-scoped foveation presets. The two centre boxes mirror UEVR's maximum-performance shape;
-// the two full-height slabs preserve the successful Cyberpunk stereo geometry with only one
-// temporal transition per eye. Subrect size participates in the closed addon's cache key, so F10
-// writes the NEXT process's preset and never changes this process's active one.
+// Live foveation presets. The two centre boxes mirror UEVR's maximum-performance shape; the two
+// full-height slabs preserve the successful Cyberpunk stereo geometry with only one temporal
+// transition per eye. F10 writes a requested preset; the feature-18 prehook latches it only on a
+// gameplay MAIN boundary so MAIN and the following VRCAM evaluation use identical geometry.
 struct NrFovealPresetDef { int percent; bool nasalOpenSlab; const char* label; };
 constexpr NrFovealPresetDef kNrFovealPresets[] = {
     {35, false, "35% Center Box (maximum performance)"},
@@ -439,7 +439,7 @@ constexpr NrFovealPresetDef kNrFovealPresets[] = {
 std::once_flag g_nrFovealConfigOnce;
 char g_nrFovealConfigPath[MAX_PATH]{};
 std::atomic<int> g_nrFovealActivePreset{2};
-std::atomic<int> g_nrFovealNextPreset{2};
+std::atomic<int> g_nrFovealSelectedPreset{2};
 std::atomic<bool> g_nrFoveationEnabled{true};
 std::atomic<ID3D12Resource*> g_nrFovealColor[3];
 std::atomic<ID3D12Resource*> g_nrFovealOutput[3];
@@ -602,12 +602,12 @@ void LoadNrFovealConfig() {
         int preset = GetPrivateProfileIntA("DLSSNRFoveation", "Preset", 2, g_nrFovealConfigPath);
         if (preset < 0 || preset >= static_cast<int>(std::size(kNrFovealPresets))) preset = 2;
         g_nrFovealActivePreset.store(preset, std::memory_order_relaxed);
-        g_nrFovealNextPreset.store(preset, std::memory_order_relaxed);
+        g_nrFovealSelectedPreset.store(preset, std::memory_order_relaxed);
         if (GetFileAttributesA(g_nrFovealConfigPath) == INVALID_FILE_ATTRIBUTES) {
             char value[8]{}; _snprintf_s(value, sizeof(value), _TRUNCATE, "%d", preset);
             WritePrivateProfileStringA("DLSSNRFoveation", "Preset", value, g_nrFovealConfigPath);
         }
-        Log("[DLSSNR-FOV] preset %d: %s (restart-scoped, config=%s)\n", preset,
+        Log("[DLSSNR-FOV] initial preset %d: %s (live pair-latched, config=%s)\n", preset,
             kNrFovealPresets[preset].label, g_nrFovealConfigPath);
     });
 }
@@ -619,10 +619,24 @@ const NrFovealPresetDef& ActiveNrFovealPreset() {
     return kNrFovealPresets[p];
 }
 
-bool ComputeNrRegion(const NrSubrect& r, int side, uint32_t* x, uint32_t* y,
-                     uint32_t* w, uint32_t* h) {
+void LatchNrFovealPresetAtPairBoundary(int side, bool menu, bool hasOuter, int outerSide) {
+    // MAIN is always the first physical eye in the proven steady sequence. Never latch from the UI
+    // thread or from VRCAM: one atomic update here keeps the complete MAIN->VRCAM pair coherent.
+    if (menu || side != 0 || !hasOuter || outerSide != 0 ||
+        !g_nrVrcamOuterSeen.load(std::memory_order_relaxed)) return;
+    LoadNrFovealConfig();
+    const int selected = g_nrFovealSelectedPreset.load(std::memory_order_acquire);
+    const int active = g_nrFovealActivePreset.load(std::memory_order_relaxed);
+    if (selected == active || selected < 0 ||
+        selected >= static_cast<int>(std::size(kNrFovealPresets))) return;
+    g_nrFovealActivePreset.store(selected, std::memory_order_release);
+    Log("[DLSSNR-FOV] live preset latched at MAIN boundary: %d (%s), previous=%d (%s)\n",
+        selected, kNrFovealPresets[selected].label, active, kNrFovealPresets[active].label);
+}
+
+bool ComputeNrRegion(const NrSubrect& r, int side, const NrFovealPresetDef& preset,
+                     uint32_t* x, uint32_t* y, uint32_t* w, uint32_t* h) {
     if (!r.valid || (side != 0 && side != 1) || !x || !y || !w || !h) return false;
-    const auto& preset = ActiveNrFovealPreset();
     const float fraction = static_cast<float>(preset.percent) * 0.01f;
     *w = NrAlign8Down(static_cast<uint32_t>(r.w * fraction));
     *h = preset.nasalOpenSlab ? r.h : NrAlign8Down(static_cast<uint32_t>(r.h * fraction));
@@ -644,8 +658,8 @@ bool ComputeNrRegion(const NrSubrect& r, int side, uint32_t* x, uint32_t* y,
     return *x >= r.x && *y >= r.y && *x + *w <= r.x + r.w && *y + *h <= r.y + r.h;
 }
 
-bool ApplyNrFovealRegion(void* params, int side, NrSubrect* originalOutput,
-                         uint32_t* activeX, uint32_t* activeY,
+bool ApplyNrFovealRegion(void* params, int side, const NrFovealPresetDef& preset,
+                         NrSubrect* originalOutput, uint32_t* activeX, uint32_t* activeY,
                          uint32_t* activeW, uint32_t* activeH) {
     if (!params || (side != 0 && side != 1)) return false;
     static constexpr const char* planes[] = {"Color", "Depth", "MVec", "Output"};
@@ -653,7 +667,7 @@ bool ApplyNrFovealRegion(void* params, int side, NrSubrect* originalOutput,
     uint32_t xs[4]{}, ys[4]{}, widths[4]{}, heights[4]{};
     for (int i = 0; i < 4; ++i) {
         rects[i] = ReadNrSubrect(params, planes[i]);
-        if (!ComputeNrRegion(rects[i], side, &xs[i], &ys[i], &widths[i], &heights[i])) return false;
+        if (!ComputeNrRegion(rects[i], side, preset, &xs[i], &ys[i], &widths[i], &heights[i])) return false;
     }
     for (int i = 0; i < 4; ++i) {
         char name[64]{};
@@ -746,6 +760,7 @@ void __fastcall NrTailPrehook(ID3D12GraphicsCommandList* list, const void* handl
         g_nrPostTakeoverInner[side].fetch_add(1, std::memory_order_relaxed);
     const bool menu = g_menuModeValue != 0;
     if (menu) g_nrMenuEvals[side].fetch_add(1, std::memory_order_relaxed);
+    LatchNrFovealPresetAtPairBoundary(side, menu, hasOuter, outerSide);
     if (sideN == 1 || (sideN % 60) == 0)
         SampleNrParameters(params, side, key, menu);
     InstallNrSlot1Recorder(params);
@@ -756,20 +771,20 @@ void __fastcall NrTailPrehook(ID3D12GraphicsCommandList* list, const void* handl
         ID3D12Resource* color = g_nrFovealColor[side].load(std::memory_order_acquire);
         ID3D12Resource* output = g_nrFovealOutput[side].load(std::memory_order_acquire);
         const NrSubrect full = ReadNrSubrect(params, "Output");
+        const NrFovealPresetDef preset = ActiveNrFovealPreset();
         uint32_t x = 0, y = 0, width = 0, height = 0;
-        const bool region = ComputeNrRegion(full, side, &x, &y, &width, &height);
+        const bool region = ComputeNrRegion(full, side, preset, &x, &y, &width, &height);
         const int copied = region
             ? RefreshNrPeripheryBands(list, color, output, full, x, y, width, height) : 2;
         NrSubrect appliedFull{}; uint32_t appliedX = 0, appliedY = 0, appliedW = 0, appliedH = 0;
         const bool applied = copied == 0 && ApplyNrFovealRegion(
-            const_cast<void*>(params), side, &appliedFull,
+            const_cast<void*>(params), side, preset, &appliedFull,
             &appliedX, &appliedY, &appliedW, &appliedH);
         if (applied) {
             const uint64_t n = g_nrFovealApplies[side].fetch_add(1, std::memory_order_relaxed) + 1;
             g_nrFovealCopies[side].fetch_add(1, std::memory_order_relaxed);
             if (n <= 4 || (n % 601) == 0) {
                 const NrSubrect back = ReadNrSubrect(params, "Output");
-                const auto& preset = ActiveNrFovealPreset();
                 Log("[DLSSNR-FOV] view=%s apply=%llu preset=%s full=(%u,%u %ux%u) "
                     "active=(%u,%u %ux%u) copy=bands readback=%s\n",
                     NrDiagSideName(side), static_cast<unsigned long long>(n), preset.label,
@@ -2302,9 +2317,9 @@ int NgxGetDlssNrFovealActivePreset() {
     return g_nrFovealActivePreset.load(std::memory_order_relaxed);
 }
 
-int NgxGetDlssNrFovealNextPreset() {
+int NgxGetDlssNrFovealSelectedPreset() {
     LoadNrFovealConfig();
-    return g_nrFovealNextPreset.load(std::memory_order_relaxed);
+    return g_nrFovealSelectedPreset.load(std::memory_order_acquire);
 }
 
 const char* NgxGetDlssNrFovealPresetLabel(int preset) {
@@ -2312,7 +2327,7 @@ const char* NgxGetDlssNrFovealPresetLabel(int preset) {
     return kNrFovealPresets[preset].label;
 }
 
-bool NgxSetDlssNrFovealNextPreset(int preset) {
+bool NgxSetDlssNrFovealSelectedPreset(int preset) {
     LoadNrFovealConfig();
     if (preset < 0 || preset >= static_cast<int>(std::size(kNrFovealPresets)) ||
         !g_nrFovealConfigPath[0]) return false;
@@ -2320,8 +2335,8 @@ bool NgxSetDlssNrFovealNextPreset(int preset) {
     _snprintf_s(value, sizeof(value), _TRUNCATE, "%d", preset);
     if (!WritePrivateProfileStringA("DLSSNRFoveation", "Preset", value,
                                     g_nrFovealConfigPath)) return false;
-    g_nrFovealNextPreset.store(preset, std::memory_order_relaxed);
-    Log("[DLSSNR-FOV] next-launch preset saved: %d (%s); active preset unchanged\n",
+    g_nrFovealSelectedPreset.store(preset, std::memory_order_release);
+    Log("[DLSSNR-FOV] live preset requested: %d (%s); waiting for a gameplay MAIN boundary\n",
         preset, kNrFovealPresets[preset].label);
     return true;
 }

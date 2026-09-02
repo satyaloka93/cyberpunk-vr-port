@@ -73,11 +73,12 @@ struct DlssNrDiagSnapshot {
 
 void NgxTryInstallDlssNrDiagnostics();
 bool NgxGetDlssNrDiagSnapshot(DlssNrDiagSnapshot* out);
-// Foveation selection is persisted to bin/x64/nr-foveated.ini for the next process. It never
-// changes the active feature-18 region live because the closed addon caches region-sized state.
+// Foveation selection is persisted to bin/x64/nr-foveated.ini and applied live at a MAIN eye
+// boundary. The requested preset is deferred while the engine is in menu/loading mode, and the
+// active preset changes only once per complete MAIN->VRCAM frame pair.
 int NgxGetDlssNrFovealActivePreset();
-int NgxGetDlssNrFovealNextPreset();
-bool NgxSetDlssNrFovealNextPreset(int preset);
+int NgxGetDlssNrFovealSelectedPreset();
+bool NgxSetDlssNrFovealSelectedPreset(int preset);
 const char* NgxGetDlssNrFovealPresetLabel(int preset);
 
 // Live snapshot accessors (lock-free, AddRef'd; caller must Release).

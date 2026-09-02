@@ -428,7 +428,7 @@ timeouts and stale-VRCAM mono fallback followed the stall. This strengthens the 
 menu/lifecycle warning but neither proves nor exonerates an earlier foveation command. Evidence:
 `20260902-182546-foveation65-matched-menu-gpu-hang`.
 
-Four restart-scoped presets are now exposed in F10 and persisted in `bin/x64/nr-foveated.ini`:
+Four live presets are exposed in F10 and persisted in `bin/x64/nr-foveated.ini`:
 
 ```text
 35% Center Box   = 35% width x 35% height = about 12.25% model pixels
@@ -441,8 +441,12 @@ The centre boxes use mirrored 4% horizontal offsets (VRCAM/left toward the right
 the left) and copy four non-overlapping peripheral bands before NR. This is why UEVR's foveation is
 square: applying the fraction to both axes multiplies the saving, while a full-height Cyberpunk slab
 spends more model pixels to eliminate top/bottom boundaries and retain only one temporal boundary.
-The UI changes only the next-launch preset; active subrect geometry never changes live because the
-closed addon caches region-sized state.
+UEVR proves evaluation subrects can change without recreating feature 18; an earlier claim that the
+closed addon necessarily caches region-sized state was unsupported. Cyberpunk therefore applies the
+selection live, but never directly from the UI thread: the request is atomically latched only at a
+validated gameplay MAIN boundary, and the following VRCAM evaluation reads the same active preset.
+Requests made during menu/loading mode remain pending until gameplay resumes. No addon setting,
+feature handle or allocation is recreated.
 
 There is still no post-NR ring shader or proven ControlMask. UEVR's uncommitted ring is armed in a
 prehook and slot 0 fires on NR's own first `SetDescriptorHeaps`, before inference completes; Close is

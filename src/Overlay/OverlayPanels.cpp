@@ -414,25 +414,24 @@ void UpdateImGuiMouseFromCursor(HWND hwnd, float backbufferWidth, float backbuff
     io.AddMouseButtonEvent(2, (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0);
 }
 
-// The ReShade-addon host panel. The addon's own API-18 page is the authoritative LIVE control
-// surface: style, preset, masks and structure values update the feature in the current scene and
-// persist through our config ABI. Raw ini keys remain available only as a next-launch fallback.
+// Publish-facing Neural Rendering controls use progressive disclosure: users see one status,
+// one performance profile, one lifecycle warning and the addon's image controls. Host internals
+// and per-eye counters stay available under Advanced diagnostics.
 void DrawReShadeAddonHostPanel() {
     CyberpunkVRAddonHostStatus st{};
     if (!CyberpunkVR_AddonHostGetStatus(&st)) return;
 
-    ImGui::SeparatorText("DLSS 5 Neural Rendering  (renodx ReShade addon)");
+    ImGui::SeparatorText("DLSS 5 Neural Rendering  (Experimental)");
 
     int enabled = st.enabled;
-    if (CheckboxInt("Host the addon in-process  (applies on next launch)", &enabled)) {
+    if (CheckboxInt("Enable DLSS 5 Neural Rendering  (restart required)", &enabled)) {
         CyberpunkVR_AddonHostSetEnabled(enabled);
     }
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip(
-            "Loads bin\\x64\\*.addon64 with no ReShade in the process, by exporting the ReShade\n"
-            "addon entry points it looks for. Written for renodx-dlss5.addon64, which drives\n"
-            "nvngx_dlssnr.dll -- a different NGX feature from the game's own ray reconstruction.\n"
-            "Saved to bin\\x64\\reshade-addons.ini. Stands down if ReShade is also loaded.");
+            "Loads the bundled RenoDX DLSS5 addon directly; ReShade is not loaded.\n"
+            "This is DLSS Neural Rendering, separate from ordinary DLSS Super Resolution.\n"
+            "The master switch is applied on the next game launch.");
     }
 
     // ---- one line that says where this actually got to -----------------------------------------
@@ -459,48 +458,66 @@ void DrawReShadeAddonHostPanel() {
         tint  = ImVec4(0.45f, 0.90f, 0.55f, 1.0f);
     }
     ImGui::TextColored(tint, "Status: %s", state);
-    if (st.presentArmed) {
-        ImGui::Text("Frames delivered to the addon: %llu", st.presentCalls);
+    if (st.enabled) {
+        ImGui::TextColored(ImVec4(1.0f, 0.70f, 0.28f, 1.0f),
+                           "Experimental: menu and save transitions are not yet lifecycle-safe.");
+        ImGui::TextWrapped("Save once per launch when possible. If a pause, map, inventory or save "
+                           "screen stalls, restart the game; this is a known DLSSNR device-hang family.");
     }
 
     DlssNrDiagSnapshot nr{};
     if (NgxGetDlssNrDiagSnapshot(&nr)) {
         if (nr.state == 2) {
             const unsigned long long total = nr.evals[0] + nr.evals[1] + nr.evals[2];
-            ImGui::TextColored(ImVec4(0.45f, 0.90f, 0.55f, 1.0f),
-                               "Per-eye NR census active");
-            ImGui::Text("Feature 18 evaluations: MAIN %llu  VRCAM %llu  other %llu",
-                        nr.evals[0], nr.evals[1], nr.evals[2]);
+            const unsigned long long statusNow = GetTickCount64();
+            const bool stereoActive = nr.fovealApplies[0] > 0 && nr.fovealApplies[1] > 0 &&
+                nr.lastEvalTickMs[0] && nr.lastEvalTickMs[1] &&
+                statusNow - nr.lastEvalTickMs[0] < 2000 && statusNow - nr.lastEvalTickMs[1] < 2000;
+            ImGui::TextColored(stereoActive ? ImVec4(0.45f, 0.90f, 0.55f, 1.0f)
+                                            : ImVec4(1.0f, 0.78f, 0.35f, 1.0f),
+                               stereoActive ? "Stereo Neural Rendering: active in both eyes"
+                                            : "Stereo Neural Rendering: waiting for both eyes");
             if (nr.foveationEnabled) {
                 const int activePreset = NgxGetDlssNrFovealActivePreset();
-                int nextPreset = NgxGetDlssNrFovealNextPreset();
-                ImGui::TextColored(ImVec4(0.45f, 0.90f, 0.55f, 1.0f),
-                                   "Active: %s", NgxGetDlssNrFovealPresetLabel(activePreset));
+                int selectedPreset = NgxGetDlssNrFovealSelectedPreset();
+                static const char* kFovealPresets[] = {
+                    "35% Center Box  | Fastest",
+                    "50% Center Box  | Performance",
+                    "65% Stereo Slab | Balanced",
+                    "80% Stereo Slab | Quality",
+                };
+                ImGui::Spacing();
+                ImGui::Text("Neural Rendering coverage");
+                ImGui::SetNextItemWidth(330.0f);
+                if (ImGui::Combo("##nrCoverage", &selectedPreset, kFovealPresets,
+                                 IM_ARRAYSIZE(kFovealPresets))) {
+                    NgxSetDlssNrFovealSelectedPreset(selectedPreset);
+                }
+                if (selectedPreset != activePreset) {
+                    ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.35f, 1.0f),
+                                       "Queued for the next safe gameplay stereo pair...");
+                } else {
+                    ImGui::TextDisabled("Applied live to both eyes; no restart required.");
+                }
+                if (selectedPreset == 0)
+                    ImGui::TextDisabled("Processes about 12%% of full-frame pixels; four peripheral boundaries.");
+                else if (selectedPreset == 1)
+                    ImGui::TextDisabled("Processes 25%% of full-frame pixels; four peripheral boundaries.");
+                else if (selectedPreset == 2)
+                    ImGui::TextDisabled("Processes 65%%; validated smooth mode with one outer edge per eye.");
+                else
+                    ImGui::TextDisabled("Processes 80%%; widest high-quality stereo region.");
+            }
+            if (ImGui::TreeNode("Advanced stereo NR diagnostics")) {
+                ImGui::Text("Feature 18 evaluations: MAIN %llu  VRCAM %llu  other %llu",
+                            nr.evals[0], nr.evals[1], nr.evals[2]);
                 ImGui::Text("Applied/copied/rejected: MAIN %llu/%llu/%llu  VRCAM %llu/%llu/%llu",
                             nr.fovealApplies[0], nr.fovealCopies[0], nr.fovealRejects[0],
                             nr.fovealApplies[1], nr.fovealCopies[1], nr.fovealRejects[1]);
-                static const char* kFovealPresets[] = {
-                    "35% Center Box (maximum performance)",
-                    "50% Center Box (performance)",
-                    "65% Stereo Slab (balanced)",
-                    "80% Stereo Slab (quality)",
-                };
-                ImGui::SetNextItemWidth(310.0f);
-                if (ImGui::Combo("Next-launch NR region", &nextPreset, kFovealPresets,
-                                 IM_ARRAYSIZE(kFovealPresets))) {
-                    NgxSetDlssNrFovealNextPreset(nextPreset);
-                }
-                if (nextPreset != activePreset)
-                    ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.30f, 1.0f),
-                                       "Restart required; this process remains on %s",
-                                       NgxGetDlssNrFovealPresetLabel(activePreset));
-                ImGui::TextDisabled("Center boxes maximize savings; stereo slabs avoid top/bottom and nasal boundaries.");
-            }
-            ImGui::Text("Creates: MAIN %llu  VRCAM %llu  | releases: %llu / %llu",
-                        nr.creates[0], nr.creates[1], nr.releases[0], nr.releases[1]);
-            ImGui::Text("Menu evaluations: MAIN %llu  VRCAM %llu  | shared handle: %llu",
-                        nr.menuEvals[0], nr.menuEvals[1], nr.sharedHandleEvals);
-            if (ImGui::TreeNode("Per-eye NR evaluation details")) {
+                ImGui::Text("Creates: MAIN %llu  VRCAM %llu  | releases: %llu / %llu",
+                            nr.creates[0], nr.creates[1], nr.releases[0], nr.releases[1]);
+                ImGui::Text("Menu evaluations: MAIN %llu  VRCAM %llu  | shared handle: %llu",
+                            nr.menuEvals[0], nr.menuEvals[1], nr.sharedHandleEvals);
                 const unsigned long long avg = total ? nr.totalEvalMicroseconds / total : 0;
                 const unsigned long long now = GetTickCount64();
                 const unsigned long long mainAge = nr.lastEvalTickMs[0]
@@ -545,21 +562,21 @@ void DrawReShadeAddonHostPanel() {
                             nr.parameterSamples[0], nr.parameterGetFailures[0],
                             nr.parameterSamples[1], nr.parameterGetFailures[1]);
                 ImGui::Text("Recursive evaluations observed: %llu", nr.recursiveEvals);
-                ImGui::TextWrapped("The tail-jump preserves the addon's caller and feature result. "
-                                   "When foveation is active it changes only the four feature-18 "
-                                   "horizontal subrects and seeds the single untreated temporal band.");
+                ImGui::TextWrapped("The return-address-preserving hook changes only feature-18 "
+                                   "subrects and refreshes the untreated peripheral bands. Live "
+                                   "profile changes latch once at the MAIN-to-VRCAM pair boundary.");
                 ImGui::TreePop();
             }
         } else if (nr.state == 0) {
-            ImGui::TextDisabled("Per-eye NR census: waiting for nvngx_dlssnr.dll (normal while NR is off)");
+            ImGui::TextDisabled("Neural Rendering is waiting for nvngx_dlssnr.dll (normal while disabled).");
         } else if (nr.state == -1) {
             ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.35f, 1.0f),
-                               "Per-eye NR census refused: runtime version mismatch or hook collision");
+                               "Stereo Neural Rendering unavailable: runtime mismatch or hook collision");
         } else if (nr.state == -4) {
-            ImGui::TextDisabled("Direct NR census disabled: the signed runtime rejects detoured caller context");
+            ImGui::TextDisabled("Stereo Neural Rendering diagnostics are disabled for this runtime.");
         } else if (nr.state < 0) {
             ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.35f, 1.0f),
-                               "Per-eye NR census installation failed (state %d)", nr.state);
+                               "Stereo Neural Rendering setup failed (state %d)", nr.state);
         }
     }
 
@@ -571,28 +588,12 @@ void DrawReShadeAddonHostPanel() {
         ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.35f, 1.0f), "Problem: %s", st.lastError);
     }
 
-    // ---- why there is nothing to tune yet ------------------------------------------------------
-    if (st.enabled && st.addonsRegistered > 0 && st.wantsPresent && !st.presentArmed) {
-        ImGui::Spacing();
-        ImGui::TextWrapped(
-            "It has the real D3D12 device and its NGX hooks are not installed yet: it does that "
-            "work from a per-frame 'present' callback the host does not send. Its own controls "
-            "(NR Preset, HDR Transfer Strength, Enable Upscaling, depth inversion) live in an "
-            "ImGui overlay rather than in config, so until that callback exists it runs at its "
-            "built-in defaults and there is nothing here to move.");
-    }
-
-    // ---- the addon's own settings page: live and visible, not hidden behind discovery flags ----
+    // The closed addon's many appearance controls are useful but not required for ordinary use.
     if (st.hasOverlay) {
         ImGui::Spacing();
-        ImGui::SeparatorText("Live Neural Rendering controls");
-        ImGui::TextWrapped(
-            "These are the addon's real controls and apply immediately in the current scene. "
-            "For a face comparison, keep Enable Upscaling OFF, look at one nearby face, then "
-            "change Automatic Mask / Skin Structure Strength or switch Natural/Cinematic. "
-            "Change one control at a time and wait a moment for its feature reset.");
-        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.35f, 1.0f),
-                           "Do not load a second save in this process: the closed addon still loses its guides after ResizeBuffers.");
+        if (ImGui::TreeNode("Image style and advanced NR tuning")) {
+        ImGui::TextWrapped("Optional RenoDX controls. Keep Enable Upscaling OFF. Natural/Cinematic "
+                           "and strength controls apply live; change one at a time.");
 
         if (!st.drawOverlay || !st.overlayWidgets) {
             ImGui::TextDisabled("Live controls are disabled in the host configuration.");
@@ -609,8 +610,10 @@ void DrawReShadeAddonHostPanel() {
             CyberpunkVR_AddonHostDrawOverlay();
             ImGui::Separator();
         }
+        ImGui::TreePop();
+        }
 
-        if (ImGui::TreeNode("Overlay host diagnostics")) {
+        if (ImGui::TreeNode("Advanced addon-host diagnostics")) {
             int draw = st.drawOverlay;
             if (CheckboxInt("Dispatch the addon settings page", &draw)) {
                 CyberpunkVR_AddonHostSetDrawOverlay(draw);
@@ -651,7 +654,7 @@ void DrawReShadeAddonHostPanel() {
     // This is intentionally not an arbitrary .fx loader and does not call into the closed addon:
     // it runs after NR on our own Present/capture command list, identically for MAIN and VRCAM.
     ImGui::Spacing();
-    ImGui::SeparatorText("Native ReShade color pass  (independent of NR)");
+    if (ImGui::TreeNode("Optional native color grading  (independent of NR)")) {
     NativePostSettings np = NativePostGetSettings();
     bool npChanged = false;
     npChanged |= CheckboxInt("Enable native color pass", &np.enabled);
@@ -715,9 +718,11 @@ void DrawReShadeAddonHostPanel() {
         NativePostSaveSettings();
         s_nativePostDirty = false;
     }
+    ImGui::TreePop();
+    }
 
     // ---- the measurements, for whoever is extending this ---------------------------------------
-    if (ImGui::TreeNode("Diagnostics (what the addon asked the host for)")) {
+    if (ImGui::TreeNode("Advanced host integration diagnostics")) {
         ImGui::Text("Scanning:  %s", st.scanDir[0] ? st.scanDir : "(unresolved)");
         ImGui::Text("Addons:    %d found, %d loaded, %d registered",
                     st.addonsFound, st.addonsLoaded, st.addonsRegistered);
