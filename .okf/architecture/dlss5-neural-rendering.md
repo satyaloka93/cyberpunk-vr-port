@@ -414,8 +414,19 @@ Below-60 gameplay samples had median `43.8 FPS` (range `37.3..50.1`) versus `33.
 full-region binocular run at the same resolution, approximately 31% observed uplift. Scene matching
 was imperfect, so this is strong directional evidence rather than a controlled GPU-time benchmark.
 OpenXR remained healthy at `16200/16198/2` cycles/submits/misses and no fresh WER/REDEngine report
-appeared. The run logged XR session end but not full plugin/addon teardown. Evidence:
+appeared in that first run. It logged XR session end but not full plugin/addon teardown. Evidence:
 `20260902-151427-dlssnr-foveation65-2560-success`.
+
+A later 65% run produced a real `DXGI_ERROR_DEVICE_HUNG` after 296 seconds. It is not a new
+foveation-specific signature: the engine breakpoint/stack prefix and DRED endpoint exactly match
+pre-foveation reports `20260830-192912` and `20260830-194318`. Gameplay had sustained exact slabs
+through 4,207 sampled applies per eye before engine menu mode became active. Foveation then stopped
+issuing copies/subrect rewrites as designed, while feature-18 calls continued with menu parameter
+samples reporting null resources. GPU progress stopped at
+`HologramDepth_and_Distortion/FinalFlushBarriers` and `DecoupledParticleLighting`; overlay fence
+timeouts and stale-VRCAM mono fallback followed the stall. This strengthens the existing active-NR
+menu/lifecycle warning but neither proves nor exonerates an earlier foveation command. Evidence:
+`20260902-182546-foveation65-matched-menu-gpu-hang`.
 
 Four restart-scoped presets are now exposed in F10 and persisted in `bin/x64/nr-foveated.ini`:
 
