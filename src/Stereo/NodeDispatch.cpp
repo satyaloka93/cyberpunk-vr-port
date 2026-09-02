@@ -46,9 +46,8 @@
 #include <vector>
 #include "MinHook.h"
 #include "Utils/LogThrottle.hpp"
-#include "Stereo/StereoInternal.hpp"
-#include "Stereo/EngineRvas.hpp"
-#include "Stereo/DetourRegistry.hpp"
+#include "Camera/CameraState.hpp"
+#include "Core/VrCoreShared.hpp"
 #include "Stereo/StereoInternal.hpp"
 #include "Stereo/EngineRvas.hpp"
 #include "Stereo/DetourRegistry.hpp"
@@ -111,25 +110,33 @@ void __fastcall Detour_InvalidRenderDescriptor(void* descriptor) {
         read = false;
     }
 
-    // Restrict the intervention to the second-eye dispatch where every matched crash occurs.
-    // MAIN and non-eye views retain the engine's exact behavior. This skips one invalid resource
-    // operation, not the whole frame-graph node; the earlier broad post-rebind node skip prevented
-    // producers from allocating their outputs and manufactured a different near-null crash.
-    if (CyberpunkVR_InvalidRenderDescriptorGuard && t_vrcam_node_active && read &&
-            index == 0xFFFFFFFFu) {
+    // Normal gameplay remains VRCAM-only. During a save load, however, the renderer dispatches
+    // async work after the parent NodeDispatch scope has restored this thread's TLS attribution.
+    // The 2026-09-03 dump reached this detour with the exact -1 sentinel and t_vrcam_node_active=0
+    // immediately after sceneTier 1->0 and an explicit VRCAM component rebind. Permit that one
+    // measured attribution gap only while all three transition signals agree, for at most 15 s.
+    const uint64_t rebound = g_vrcam_rebind_at_ms.load(std::memory_order_relaxed);
+    const uint64_t rebindAge = rebound ? GetTickCount64() - rebound : UINT64_MAX;
+    const bool vrcamAttributed = t_vrcam_node_active;
+    const bool loadingRebindFallback = !vrcamAttributed && g_menuModeValue != 0 &&
+        g_sceneTier.load(std::memory_order_relaxed) == 0 && rebound && rebindAge <= 15000;
+
+    // This skips one exact invalid resource operation, never a frame-graph node. The earlier broad
+    // post-rebind node skip prevented producers from allocating outputs and is still prohibited.
+    if (CyberpunkVR_InvalidRenderDescriptorGuard && read && index == 0xFFFFFFFFu &&
+            (vrcamAttributed || loadingRebindFallback)) {
         const uint64_t n = InterlockedIncrement64(reinterpret_cast<volatile LONG64*>(
             &CyberpunkVR_DebugInvalidRenderDescriptorSkips));
         if (n <= 8 || (n & (n - 1)) == 0) {
-            const uint64_t rebound = g_vrcam_rebind_at_ms.load(std::memory_order_relaxed);
-            const uint64_t age = rebound ? GetTickCount64() - rebound : UINT64_MAX;
             const uintptr_t base = reinterpret_cast<uintptr_t>(g_exe_base);
             const uint32_t nodeRva = (base && t_current_node_work > base)
                 ? static_cast<uint32_t>(t_current_node_work - base) : 0;
             const char* name = nodeRva ? CyberpunkVR_ProfNodeName(nodeRva) : nullptr;
-            log("[descguard] skipped VRCAM render descriptor index=-1 caller=0x774384 "
-                "node=0x%X/%s rebindAge=%llums count=%llu",
+            log("[descguard] skipped render descriptor index=-1 caller=0x774384 "
+                "reason=%s node=0x%X/%s rebindAge=%llums count=%llu",
+                vrcamAttributed ? "VRCAM" : "loading-rebind",
                 nodeRva, (name && *name) ? name : "?",
-                static_cast<unsigned long long>(age),
+                static_cast<unsigned long long>(rebindAge),
                 static_cast<unsigned long long>(n));
         }
         return;

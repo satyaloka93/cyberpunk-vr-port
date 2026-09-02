@@ -509,6 +509,11 @@ void DrawReShadeAddonHostPanel() {
                     ImGui::TextDisabled("Processes 80%%; widest high-quality stereo region.");
             }
             if (ImGui::TreeNode("Advanced stereo NR diagnostics")) {
+                { int vl = g_verboseLog;
+                  if (CheckboxInt("Verbose diagnostic log", &vl)) g_verboseLog = vl; }
+                ImGui::Text("Save-load descriptor guard: %s  | skips: %llu",
+                            CyberpunkVR_InvalidRenderDescriptorGuard ? "armed" : "disabled",
+                            static_cast<unsigned long long>(CyberpunkVR_DebugInvalidRenderDescriptorSkips));
                 ImGui::Text("Feature 18 evaluations: MAIN %llu  VRCAM %llu  other %llu",
                             nr.evals[0], nr.evals[1], nr.evals[2]);
                 ImGui::Text("Applied/copied/rejected: MAIN %llu/%llu/%llu  VRCAM %llu/%llu/%llu",
@@ -1088,29 +1093,8 @@ bool DrawLiveControls(LiveControlsUiState& state) {
                 ImGui::SliderFloat("Locator scale", &g_handLocatorScale, 0.50f, 2.00f, "%.2f");
             }
 
-            if (ImGui::CollapsingHeader("DLSS 5 / Debug", ImGuiTreeNodeFlags_DefaultOpen)) {
-        { int vl = g_verboseLog; if (CheckboxInt("Verbose log (spammy diag)", &vl)) g_verboseLog = vl; }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Off by default for a clean cyberpunkvrport.log. Enable only\n"
-                              "when capturing ClipCursor / depth / hook diagnostics.");
-        }
-        { int dg = CyberpunkVR_InvalidRenderDescriptorGuard;
-          if (CheckboxInt("Guard VRCAM descriptor -1 during save loads", &dg))
-              CyberpunkVR_InvalidRenderDescriptorGuard = dg;
-        }
-        ImGui::SameLine();
-        ImGui::TextDisabled("skips: %llu",
-                            static_cast<unsigned long long>(CyberpunkVR_DebugInvalidRenderDescriptorSkips));
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Targets the repeated Cyberpunk2077.exe+0x1F51F5 CPU crash. The engine\n"
-                              "passes an unallocated one-based render descriptor (-1) to a function\n"
-                              "that subtracts one and indexes a 0xB0-stride table without validating it.\n"
-                              "The guard skips only that invalid VRCAM resource operation, not a whole node.\n"
-                              "Disable only for an A/B crash capture.");
-        }
-
-        ImGui::Separator();
-        DrawReShadeAddonHostPanel();
+            if (ImGui::CollapsingHeader("DLSS 5", ImGuiTreeNodeFlags_DefaultOpen)) {
+                DrawReShadeAddonHostPanel();
             }
             ImGui::EndTabItem();
         }
