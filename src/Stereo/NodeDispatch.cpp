@@ -46,8 +46,6 @@
 #include <vector>
 #include "MinHook.h"
 #include "Utils/LogThrottle.hpp"
-#include "Camera/CameraState.hpp"
-#include "Core/VrCoreShared.hpp"
 #include "Stereo/StereoInternal.hpp"
 #include "Stereo/EngineRvas.hpp"
 #include "Stereo/DetourRegistry.hpp"
@@ -87,79 +85,129 @@ WakeByAddressAllFn      g_wake_by_address_all = nullptr;
 NodeDispatchFn          g_node_dispatch_orig = nullptr;
 std::atomic<bool>       g_node_dispatch_hooked{false};
 
-// The load crash's direct caller, Cyberpunk2077.exe+0x774384, takes a descriptor object whose
-// first DWORD is a ONE-BASED render-table index. Unlike the guarded caller at +0x1F4700, this
-// function does not reject the engine's -1 "unallocated" sentinel before subtracting one and
-// indexing the 0xB0-stride table. Six byte-identical dumps fault at +0x1F51F5 from its call at
-// +0x7743C4. Hook the caller rather than the table helper: returning from the helper would still
-// let +0x774428/+0x77446F use the already-invalid scaled index later in the same function.
-using InvalidRenderDescriptorFn = void(__fastcall*)(void* descriptor);
-InvalidRenderDescriptorFn g_invalid_render_descriptor_orig = nullptr;
-extern "C" __declspec(dllexport) int32_t CyberpunkVR_InvalidRenderDescriptorGuard = 1;
+// Cyberpunk2077.exe+0x774384 takes a descriptor whose first DWORD is a ONE-BASED render-table
+// index. Unlike the guarded caller at +0x1F4700, it does not reject -1 before indexing the
+// 0xB0-stride table. The function-entry guard was intrinsically racy: +0x77439F calls +0x1F405C
+// before reading the descriptor, and that preparation call can replace the entry-time value with
+// -1. Hook the first read AFTER preparation instead. The valid path uses that one captured value
+// for both the table offset and helper argument, closing the second read's TOCTOU window too.
+void* g_invalid_descriptor_post_trampoline = nullptr; // MinHook owns it; valid path is emitted exactly.
+void* g_invalid_descriptor_post_stub = nullptr;
 extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugInvalidRenderDescriptorSkips = 0;
 
-void __fastcall Detour_InvalidRenderDescriptor(void* descriptor) {
-    uint32_t index = 0;
-    bool read = false;
-    __try {
-        if (descriptor) {
-            index = *reinterpret_cast<const uint32_t*>(descriptor);
-            read = true;
-        }
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        read = false;
-    }
-
-    // Normal gameplay remains VRCAM-only. During a save load, however, the renderer dispatches
-    // async work after the parent NodeDispatch scope has restored this thread's TLS attribution.
-    // The 2026-09-03 dump reached this detour with the exact -1 sentinel and t_vrcam_node_active=0
-    // immediately after sceneTier 1->0 and an explicit VRCAM component rebind. Permit that one
-    // measured attribution gap only while all three transition signals agree, for at most 15 s.
+void NoteInvalidRenderDescriptorSkip() {
+    const uint64_t n = InterlockedIncrement64(reinterpret_cast<volatile LONG64*>(
+        &CyberpunkVR_DebugInvalidRenderDescriptorSkips));
     const uint64_t rebound = g_vrcam_rebind_at_ms.load(std::memory_order_relaxed);
     const uint64_t rebindAge = rebound ? GetTickCount64() - rebound : UINT64_MAX;
-    const bool vrcamAttributed = t_vrcam_node_active;
-    const bool loadingRebindFallback = !vrcamAttributed && g_menuModeValue != 0 &&
-        g_sceneTier.load(std::memory_order_relaxed) == 0 && rebound && rebindAge <= 15000;
-
-    // This skips one exact invalid resource operation, never a frame-graph node. The earlier broad
-    // post-rebind node skip prevented producers from allocating outputs and is still prohibited.
-    if (CyberpunkVR_InvalidRenderDescriptorGuard && read && index == 0xFFFFFFFFu &&
-            (vrcamAttributed || loadingRebindFallback)) {
-        const uint64_t n = InterlockedIncrement64(reinterpret_cast<volatile LONG64*>(
-            &CyberpunkVR_DebugInvalidRenderDescriptorSkips));
-        if (n <= 8 || (n & (n - 1)) == 0) {
-            const uintptr_t base = reinterpret_cast<uintptr_t>(g_exe_base);
-            const uint32_t nodeRva = (base && t_current_node_work > base)
-                ? static_cast<uint32_t>(t_current_node_work - base) : 0;
-            const char* name = nodeRva ? CyberpunkVR_ProfNodeName(nodeRva) : nullptr;
-            log("[descguard] skipped render descriptor index=-1 caller=0x774384 "
-                "reason=%s node=0x%X/%s rebindAge=%llums count=%llu",
-                vrcamAttributed ? "VRCAM" : "loading-rebind",
-                nodeRva, (name && *name) ? name : "?",
-                static_cast<unsigned long long>(rebindAge),
-                static_cast<unsigned long long>(n));
-        }
-        return;
-    }
-
-    if (g_invalid_render_descriptor_orig) g_invalid_render_descriptor_orig(descriptor);
+    const uintptr_t base = reinterpret_cast<uintptr_t>(g_exe_base);
+    const uint32_t nodeRva = (base && t_current_node_work > base)
+        ? static_cast<uint32_t>(t_current_node_work - base) : 0;
+    const char* name = nodeRva ? CyberpunkVR_ProfNodeName(nodeRva) : nullptr;
+    log("[descguard] skipped post-prepare descriptor index=-1 caller=0x774384 "
+        "tlsView=%s node=0x%X/%s rebindAge=%llums count=%llu",
+        t_vrcam_node_active ? "VRCAM" : "unattributed",
+        nodeRva, (name && *name) ? name : "?",
+        static_cast<unsigned long long>(rebindAge),
+        static_cast<unsigned long long>(n));
 }
 
-bool InvalidRenderDescriptorHookMatchesBuild() {
+bool InstallInvalidRenderDescriptorGuard() {
+    if (g_invalid_descriptor_post_stub) return true;
     if (!g_exe_base) return false;
+
+    constexpr uintptr_t kReadRva = 0x7743A4;      // immediately after call +0x1F405C
+    constexpr uintptr_t kValidContinueRva = 0x7743C4;
+    constexpr uintptr_t kCleanupRva = 0x1F7164;
+    constexpr uintptr_t kReturnRva = 0x774494;
+    constexpr uintptr_t kRenderTableSlotRva = 0x3438A28;
     static constexpr uint8_t expected[] = {
-        0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x6C, 0x24, 0x18,
-        0x48, 0x89, 0x74, 0x24, 0x20, 0x57, 0x41, 0x56, 0x41, 0x57
+        0x8B, 0x13,                                      // mov edx,[rbx]
+        0x41, 0xB8, 0x08, 0x00, 0x00, 0x00,              // mov r8d,8
+        0x4C, 0x8B, 0x35, 0x75, 0x46, 0xCC, 0x02,        // mov r14,[+0x3438A28]
+        0xFF, 0xCA,                                      // dec edx
+        0x4C, 0x69, 0xFA, 0xB0, 0x00, 0x00, 0x00,        // imul r15,rdx,0xB0
+        0x8B, 0x13,                                      // mov edx,[rbx] (racy second read)
+        0x48, 0x8B, 0xC8,                                // mov rcx,rax
+        0x48, 0x8B, 0xE8                                 // mov rbp,rax
     };
     bool match = false;
-    __try { match = memcmp(g_exe_base + 0x774384, expected, sizeof(expected)) == 0; }
+    __try { match = memcmp(g_exe_base + kReadRva, expected, sizeof(expected)) == 0; }
     __except (EXCEPTION_EXECUTE_HANDLER) { match = false; }
-    if (!match) log("[descguard] +0x774384 prologue does not match Cyberpunk 2.31; guard not installed");
-    return match;
+    if (!match) {
+        log("[descguard] +0x7743A4 post-prepare sequence does not match Cyberpunk 2.31; guard not installed");
+        return false;
+    }
+
+    uint8_t code[160]{};
+    size_t p = 0;
+    const auto e8 = [&](uint8_t v) { code[p++] = v; };
+    const auto e64 = [&](uint64_t v) { memcpy(code + p, &v, sizeof(v)); p += sizeof(v); };
+    const auto movRaxImm = [&](uint64_t v) { e8(0x48); e8(0xB8); e64(v); };
+
+    // Read the descriptor exactly where the engine first consumes the post-prepare value.
+    e8(0x8B); e8(0x13);                                  // mov edx,[rbx]
+    e8(0x83); e8(0xFA); e8(0xFF);                        // cmp edx,-1
+    e8(0x74); const size_t invalidDisp = p++;             // je invalid
+
+    // Valid: preserve the prepared object, derive r15 and helper edx from ONE captured index, then
+    // resume at the original helper call. No descriptor memory is read a second time.
+    e8(0x48); e8(0x8B); e8(0xE8);                        // mov rbp,rax
+    e8(0x41); e8(0xB8); e8(0x08); e8(0); e8(0); e8(0);  // mov r8d,8
+    e8(0x49); e8(0xBE); e64(reinterpret_cast<uint64_t>(g_exe_base + kRenderTableSlotRva));
+    e8(0x4D); e8(0x8B); e8(0x36);                        // mov r14,[r14]
+    e8(0xFF); e8(0xCA);                                  // dec edx
+    e8(0x4C); e8(0x69); e8(0xFA); e8(0xB0); e8(0); e8(0); e8(0); // imul r15,rdx,0xB0
+    e8(0xFF); e8(0xC2);                                  // inc edx (original one-based index)
+    e8(0x48); e8(0x8B); e8(0xCD);                        // mov rcx,rbp
+    movRaxImm(reinterpret_cast<uint64_t>(g_exe_base + kValidContinueRva));
+    e8(0xFF); e8(0xE0);                                  // jmp rax
+
+    const size_t invalid = p;
+    code[invalidDisp] = static_cast<uint8_t>(invalid - (invalidDisp + 1));
+
+    // Invalid: balance the +0x1F405C prepare with the engine's normal cleanup, record the skip,
+    // then use the original epilogue. This abandons one invalid operation, not its frame-graph node.
+    e8(0x48); e8(0x8B); e8(0xE8);                        // mov rbp,rax
+    e8(0x48); e8(0x8B); e8(0xC8);                        // mov rcx,rax
+    e8(0x48); e8(0x83); e8(0xEC); e8(0x20);              // shadow space
+    movRaxImm(reinterpret_cast<uint64_t>(g_exe_base + kCleanupRva));
+    e8(0xFF); e8(0xD0);                                  // call cleanup
+    e8(0x48); e8(0x83); e8(0xC4); e8(0x20);
+    e8(0x48); e8(0x83); e8(0xEC); e8(0x20);
+    movRaxImm(reinterpret_cast<uint64_t>(&NoteInvalidRenderDescriptorSkip));
+    e8(0xFF); e8(0xD0);                                  // call note
+    e8(0x48); e8(0x83); e8(0xC4); e8(0x20);
+    movRaxImm(reinterpret_cast<uint64_t>(g_exe_base + kReturnRva));
+    e8(0xFF); e8(0xE0);                                  // jmp original epilogue
+
+    void* stub = VirtualAlloc(nullptr, p, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!stub) {
+        log("[descguard] failed to allocate post-prepare stub");
+        return false;
+    }
+    memcpy(stub, code, p);
+    DWORD oldProtect = 0;
+    if (!VirtualProtect(stub, p, PAGE_EXECUTE_READ, &oldProtect)) {
+        VirtualFree(stub, 0, MEM_RELEASE);
+        log("[descguard] failed to make post-prepare stub executable");
+        return false;
+    }
+    FlushInstructionCache(GetCurrentProcess(), stub, p);
+
+    void* target = g_exe_base + kReadRva;
+    const MH_STATUS create = MH_CreateHook(target, stub, &g_invalid_descriptor_post_trampoline);
+    const MH_STATUS enable = create == MH_OK ? MH_EnableHook(target) : create;
+    if (create != MH_OK || enable != MH_OK) {
+        if (create == MH_OK) MH_RemoveHook(target);
+        VirtualFree(stub, 0, MEM_RELEASE);
+        log("[descguard] post-prepare hook FAILED create=%d enable=%d", (int)create, (int)enable);
+        return false;
+    }
+    g_invalid_descriptor_post_stub = stub;
+    log("[descguard] post-prepare exact-sentinel hook ok @%p stub=%p bytes=%zu", target, stub, p);
+    return true;
 }
-CVR_DETOUR_IF("[descguard] invalid render descriptor caller", 0x774384,
-              Detour_InvalidRenderDescriptor, g_invalid_render_descriptor_orig,
-              InvalidRenderDescriptorHookMatchesBuild);
 
 static bool is_vrcam_copy_to_texture(uintptr_t* node, uint8_t* work_context) {
     if (!node || !work_context) return false;

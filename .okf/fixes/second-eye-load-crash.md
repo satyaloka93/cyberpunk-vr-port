@@ -17,13 +17,13 @@ present on `psvr2-tweaks`, and no capture from that branch is comparable.
 
 # Status
 
-**Open, with a hardened candidate deployed for retest.** The invalid descriptor and unchecked
-direct consumer are established. The first exact-call guard missed a second-load recurrence because
-its thread-local VRCAM attribution had already been restored while asynchronous load work continued.
-The guard now has a narrowly bounded load/rebind fallback described below; repeated second-load
-validation is still required.
+**Open, with a post-prepare exact-sentinel candidate ready for retest.** The invalid descriptor and
+unchecked direct consumer are established. Both function-entry guards sampled the descriptor before
+the caller's own preparation routine could change it to `-1`. The candidate now intercepts the first
+post-prepare read and uses one captured valid value for all downstream uses. Repeated second-load
+validation is required.
 
-# The fault, identically at least seven times
+# The fault, identically at least eight times
 
 ```
 EXCEPTION 0xC0000005      read at 0x...0AB0
@@ -117,26 +117,37 @@ and `!analyze -v` blaming `Cyberpunk2077.exe!Unknown` is correct but useless for
 The lesson both share: **suppressing a symptom that is cleanly suppressible tells you it was not the
 cause.** Two independent gates achieved that and neither fixed anything.
 
-# Exact guard and the asynchronous-attribution miss
+# Why both function-entry guards missed
 
-The first repair hooked exact caller `+0x774384`, validated its Cyberpunk 2.31 prologue, and skipped
-only descriptor index `0xFFFFFFFF` when `t_vrcam_node_active` was true. It left all valid operations,
-MAIN and unknown views unchanged. On the 2026-09-03 second save load, however, the identical fault
-recurred while `LoadingStage=Spawning player`, `numberOfStateMachines=0`. The hook was installed and
-its detour appears immediately above `+0x7743C9` in the dump, but it forwarded the invalid call and
-had recorded zero skips.
+The first repair hooked exact caller `+0x774384`, validated its Cyberpunk 2.31 prologue, and sampled
+the descriptor at function entry. One version required direct VRCAM TLS attribution; the next added
+a bounded menu/tier/rebind fallback. Both reproduced the identical second-load fault while
+`LoadingStage=Spawning player`, `numberOfStateMachines=0`; both detours appear immediately above
+`+0x7743C9` in their dumps and recorded zero skips. Evidence:
+`20260903-073018-second-load-descriptor-guard-miss` and
+`20260903-075909-second-load-descriptor-context-miss`.
 
-The final log explains the miss: menu mode was active, `sceneTier` changed `1 -> 0`, VRCAM rebound
-to a new `2560x2560` component, and many asynchronous VRCAM nodes dispatched before the crash. The
-invalid descriptor was consumed after the parent NodeDispatch scope had restored worker-thread TLS,
-so `t_vrcam_node_active` was no longer sufficient even though the operation belonged to measured
-load/rebind churn. Evidence: `20260903-073018-second-load-descriptor-guard-miss`.
+The second capture contains every intended context signal, so disassembly was revisited rather than
+adding another attribution guess. It shows the descriptor is prepared *after* function entry:
 
-The hardened candidate remains exact to caller `+0x774384` and sentinel `0xFFFFFFFF`. Normal
-operation still requires direct VRCAM attribution. It accepts missing TLS attribution only when all
-three measured transition signals agree: menu mode active, `sceneTier == 0`, and a VRCAM component
-rebind occurred within 15 seconds. Logs distinguish `reason=VRCAM` from
-`reason=loading-rebind`. It still skips one invalid resource operation, never a frame-graph node.
+```asm
++0x77439C  mov  rbx,rcx
++0x77439F  call +0x1F405C      ; prepare/update descriptor
++0x7743A4  mov  edx,[rbx]      ; first consumed post-prepare value
+...
++0x7743BC  mov  edx,[rbx]      ; second, racy read
++0x7743C4  call +0x1F51C4
+```
+
+The entry detour could read a valid value before `+0x1F405C` replaced it with `-1`. Removing context
+gates at that same location would not close this TOCTOU race.
+
+The next candidate validates the exact Cyberpunk 2.31 bytes through `+0x7743C3` and intercepts
+`+0x7743A4`, after preparation. Its runtime stub captures the index once. A valid value feeds both
+the `0xB0` table offset and helper argument, eliminating the second read. For `0xFFFFFFFF`, it
+balances preparation with the caller's normal cleanup at `+0x1F7164`, records the skip, and uses the
+original epilogue. Eye/rebind context is diagnostic only. Every valid descriptor remains unchanged,
+and the intervention is one invalid operation, never a frame-graph node.
 
 # Validation boundary for a repair
 

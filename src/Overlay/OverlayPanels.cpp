@@ -74,7 +74,6 @@ extern "C" int      CyberpunkVR_ProfSnapshotNodes(uint32_t* rva, double* msv, do
 extern "C" const char* CyberpunkVR_ProfNodeName(uint32_t rva);
 extern "C" uint64_t CyberpunkVR_DebugViewKeyMainNodes;
 extern "C" uint64_t CyberpunkVR_DebugViewKeyOtherNodes;
-extern "C" int32_t CyberpunkVR_InvalidRenderDescriptorGuard;
 extern "C" uint64_t CyberpunkVR_DebugInvalidRenderDescriptorSkips;
 extern volatile int32_t g_lastLocatePosFP[3];
 extern "C" float CyberpunkVRPort_HalfIpd();
@@ -511,8 +510,7 @@ void DrawReShadeAddonHostPanel() {
             if (ImGui::TreeNode("Advanced stereo NR diagnostics")) {
                 { int vl = g_verboseLog;
                   if (CheckboxInt("Verbose diagnostic log", &vl)) g_verboseLog = vl; }
-                ImGui::Text("Save-load descriptor guard: %s  | skips: %llu",
-                            CyberpunkVR_InvalidRenderDescriptorGuard ? "armed" : "disabled",
+                ImGui::Text("Exact invalid-descriptor guard: always armed  | skips: %llu",
                             static_cast<unsigned long long>(CyberpunkVR_DebugInvalidRenderDescriptorSkips));
                 ImGui::Text("Feature 18 evaluations: MAIN %llu  VRCAM %llu  other %llu",
                             nr.evals[0], nr.evals[1], nr.evals[2]);

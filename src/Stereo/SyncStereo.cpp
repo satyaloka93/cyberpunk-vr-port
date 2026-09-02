@@ -1346,6 +1346,9 @@ static void install_desc_ring_probe() {
     }
     // Everything that has moved to the registry, installed in one pass, ascending RVA.
     InstallEngineDetours();
+    // This guard intercepts an internal post-prepare instruction boundary, so its runtime-emitted
+    // register-preserving stub cannot use the function-entry registry.
+    InstallInvalidRenderDescriptorGuard();
 
     // Frame-graph build observers (DLSS upscaler-group capture/force backup for the crop fix).
     // full-build and incr-build are registered at the bottom of this file; see

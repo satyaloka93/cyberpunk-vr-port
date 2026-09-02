@@ -463,6 +463,10 @@ extern thread_local bool t_vrcam_node_active;
 // MAIN's column and made five separate census readings mixtures. Any per-view comparison must
 // ignore -1.
 extern thread_local int32_t t_view_side;
+
+// Installs the exact Cyberpunk 2.31 post-prepare descriptor-sentinel guard.
+bool InstallInvalidRenderDescriptorGuard();
+
 // Which shadow cascade the pass currently executing is for, published by Detour_CascadeNode so a probe on
 // the constant uploads can key on it. -1 outside the cascade pass. See the note at that detour: keying too
 // coarsely is what invalidated three earlier measurements.
