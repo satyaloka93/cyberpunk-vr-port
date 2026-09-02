@@ -73,6 +73,12 @@ struct DlssNrDiagSnapshot {
 
 void NgxTryInstallDlssNrDiagnostics();
 bool NgxGetDlssNrDiagSnapshot(DlssNrDiagSnapshot* out);
+// Foveation selection is persisted to bin/x64/nr-foveated.ini for the next process. It never
+// changes the active feature-18 region live because the closed addon caches region-sized state.
+int NgxGetDlssNrFovealActivePreset();
+int NgxGetDlssNrFovealNextPreset();
+bool NgxSetDlssNrFovealNextPreset(int preset);
+const char* NgxGetDlssNrFovealPresetLabel(int preset);
 
 // Live snapshot accessors (lock-free, AddRef'd; caller must Release).
 ID3D12Resource* NgxAcquireMotionVectors();

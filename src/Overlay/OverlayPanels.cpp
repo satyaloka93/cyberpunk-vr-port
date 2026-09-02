@@ -472,13 +472,29 @@ void DrawReShadeAddonHostPanel() {
             ImGui::Text("Feature 18 evaluations: MAIN %llu  VRCAM %llu  other %llu",
                         nr.evals[0], nr.evals[1], nr.evals[2]);
             if (nr.foveationEnabled) {
+                const int activePreset = NgxGetDlssNrFovealActivePreset();
+                int nextPreset = NgxGetDlssNrFovealNextPreset();
                 ImGui::TextColored(ImVec4(0.45f, 0.90f, 0.55f, 1.0f),
-                                   "Nasal-open slabs: %.0f%% width, full height",
-                                   nr.fovealCoverage * 100.0f);
+                                   "Active: %s", NgxGetDlssNrFovealPresetLabel(activePreset));
                 ImGui::Text("Applied/copied/rejected: MAIN %llu/%llu/%llu  VRCAM %llu/%llu/%llu",
                             nr.fovealApplies[0], nr.fovealCopies[0], nr.fovealRejects[0],
                             nr.fovealApplies[1], nr.fovealCopies[1], nr.fovealRejects[1]);
-                ImGui::TextDisabled("The only transition is at each eye's temporal outer edge; no live size toggle.");
+                static const char* kFovealPresets[] = {
+                    "35% Center Box (maximum performance)",
+                    "50% Center Box (performance)",
+                    "65% Stereo Slab (balanced)",
+                    "80% Stereo Slab (quality)",
+                };
+                ImGui::SetNextItemWidth(310.0f);
+                if (ImGui::Combo("Next-launch NR region", &nextPreset, kFovealPresets,
+                                 IM_ARRAYSIZE(kFovealPresets))) {
+                    NgxSetDlssNrFovealNextPreset(nextPreset);
+                }
+                if (nextPreset != activePreset)
+                    ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.30f, 1.0f),
+                                       "Restart required; this process remains on %s",
+                                       NgxGetDlssNrFovealPresetLabel(activePreset));
+                ImGui::TextDisabled("Center boxes maximize savings; stereo slabs avoid top/bottom and nasal boundaries.");
             }
             ImGui::Text("Creates: MAIN %llu  VRCAM %llu  | releases: %llu / %llu",
                         nr.creates[0], nr.creates[1], nr.releases[0], nr.releases[1]);

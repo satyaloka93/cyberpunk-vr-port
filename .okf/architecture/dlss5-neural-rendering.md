@@ -397,22 +397,48 @@ through `34800/34798/2` cycles/submits/misses. Ordinary active-NR teardown compl
 addon unregister, with no fresh crash report. Evidence: `20260902-143911-renodx455-clean-stereo-2048`.
 This proves ordinary process teardown only, not save/menu or same-size swapchain transitions.
 
-Experimental foveation is now implemented separately from the rollback checkpoint `847b2f6`. It
-uses the proven signed-runtime tail-jump and measured slot-1 resource Set ABI, but identifies eyes
-from the attributed outer scope rather than parity. Both eyes retain a full-height 65% horizontal
-slab open toward the nasal/binocular side: MAIN/right keeps the left 65%, while VRCAM/left keeps the
-right 65%. At 2048² this is `1328x2048`; 683² guides become `440x683`. Only the single untreated
-temporal band is copied from current Color to persistent Output before each feature-18 evaluation;
-whole-resource copies remain prohibited. All four Color/Depth/MVec/Output subrect widths and BaseX
-values are rewritten only after the complete contract and exact full Output rect validate. Menu
-calls, unknown views, pre-takeover calls and missing/mismatched resources fail closed.
+Experimental foveation is implemented separately from rollback checkpoint `847b2f6`. It uses the
+proven signed-runtime tail-jump and measured slot-1 resource Set ABI, but identifies eyes from the
+attributed outer scope rather than parity. The first build retained a full-height 65% horizontal
+slab open toward the nasal/binocular side: MAIN/right kept the left 65%, while VRCAM/left kept the
+right 65%. Only the untreated temporal band was copied from current Color to persistent Output
+before each feature-18 evaluation; whole-resource copies remained prohibited. All four
+Color/Depth/MVec/Output subrects were rewritten only after the complete contract and exact full
+Output rect validated. Menu calls, unknown views, pre-takeover calls and missing/mismatched
+resources fail closed.
 
-This first foveated build intentionally has no post-NR ring shader or ControlMask. The UEVR
-worktree's uncommitted ring is armed in a prehook and slot 0 currently fires on NR's own first
-`SetDescriptorHeaps`, before inference completes; Close is already proven too late. Copying that
-insertion search would risk stale/frozen eyes and pipeline-state clobber. The only initial hard edge
-is therefore in each eye's temporal periphery; centre/nasal overlap, top and bottom have no seam.
-An outer-edge-only suppression-mask feather remains a later gate after subrect/copy/performance proof.
+That 65% slab passed its first structural and visual acceptance at actual `2560x2560`: both eyes
+sustained `1664x2560` active regions, every sampled subrect readback was exact, and MAIN/VRCAM
+advanced 1:1 through 7,800 feature-18 evaluations. The user could not see the temporal transition.
+Below-60 gameplay samples had median `43.8 FPS` (range `37.3..50.1`) versus `33.5 FPS` for the prior
+full-region binocular run at the same resolution, approximately 31% observed uplift. Scene matching
+was imperfect, so this is strong directional evidence rather than a controlled GPU-time benchmark.
+OpenXR remained healthy at `16200/16198/2` cycles/submits/misses and no fresh WER/REDEngine report
+appeared. The run logged XR session end but not full plugin/addon teardown. Evidence:
+`20260902-151427-dlssnr-foveation65-2560-success`.
+
+Four restart-scoped presets are now exposed in F10 and persisted in `bin/x64/nr-foveated.ini`:
+
+```text
+35% Center Box   = 35% width x 35% height = about 12.25% model pixels
+50% Center Box   = 50% width x 50% height = 25% model pixels
+65% Stereo Slab  = 65% width x full height (validated balanced default)
+80% Stereo Slab  = 80% width x full height (quality)
+```
+
+The centre boxes use mirrored 4% horizontal offsets (VRCAM/left toward the right, MAIN/right toward
+the left) and copy four non-overlapping peripheral bands before NR. This is why UEVR's foveation is
+square: applying the fraction to both axes multiplies the saving, while a full-height Cyberpunk slab
+spends more model pixels to eliminate top/bottom boundaries and retain only one temporal boundary.
+The UI changes only the next-launch preset; active subrect geometry never changes live because the
+closed addon caches region-sized state.
+
+There is still no post-NR ring shader or proven ControlMask. UEVR's uncommitted ring is armed in a
+prehook and slot 0 fires on NR's own first `SetDescriptorHeaps`, before inference completes; Close is
+already proven too late. Copying that insertion search would risk stale/frozen eyes and pipeline-state
+clobber. The validated slab therefore retains its single temporal hard edge, while centre-box modes
+have four boundaries and require separate visual/stability acceptance. An outer-edge-only
+suppression-mask feather remains a later gate.
 
 # Driving DLSSNR without the addon: closed
 

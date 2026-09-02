@@ -39,6 +39,7 @@
 
 extern void Log(const char* fmt, ...);
 extern volatile int g_verboseLog;
+extern char g_liveControlPath[MAX_PATH];
 extern "C" int CyberpunkVR_GetDlssEvalViewKey(unsigned long long* out);
 extern "C" int CyberpunkVR_GetSlEvaluateCurrentContext(unsigned long long* sequence, int* side);
 extern "C" uint64_t CyberpunkVR_VrcamCtxKey();
@@ -424,11 +425,21 @@ std::atomic<uint64_t> g_nrPostTakeoverSlot[3];
 std::atomic<bool> g_nrVrcamOuterSeen{false};
 std::atomic<uint64_t> g_nrSlot1UnknownNames{0};
 
-// Experimental stereo-safe foveation. Each eye keeps a full-height slab that is open toward the
-// nasal/binocular side, so the shared centre has NR in both eyes and the only hard transition is
-// in each eye's temporal periphery. Coverage changes the feature-18 subrect size and is therefore
-// fixed for the first run rather than exposed as a live lifecycle control.
-constexpr float kNrFovealCoverage = 0.65f;
+// Restart-scoped foveation presets. The two centre boxes mirror UEVR's maximum-performance shape;
+// the two full-height slabs preserve the successful Cyberpunk stereo geometry with only one
+// temporal transition per eye. Subrect size participates in the closed addon's cache key, so F10
+// writes the NEXT process's preset and never changes this process's active one.
+struct NrFovealPresetDef { int percent; bool nasalOpenSlab; const char* label; };
+constexpr NrFovealPresetDef kNrFovealPresets[] = {
+    {35, false, "35% Center Box (maximum performance)"},
+    {50, false, "50% Center Box (performance)"},
+    {65, true,  "65% Stereo Slab (balanced)"},
+    {80, true,  "80% Stereo Slab (quality)"},
+};
+std::once_flag g_nrFovealConfigOnce;
+char g_nrFovealConfigPath[MAX_PATH]{};
+std::atomic<int> g_nrFovealActivePreset{2};
+std::atomic<int> g_nrFovealNextPreset{2};
 std::atomic<bool> g_nrFoveationEnabled{true};
 std::atomic<ID3D12Resource*> g_nrFovealColor[3];
 std::atomic<ID3D12Resource*> g_nrFovealOutput[3];
@@ -580,59 +591,98 @@ bool SetNrUInt(void* params, const char* name, uint32_t value) {
 
 uint32_t NrAlign8Down(uint32_t value) { return value & ~7u; }
 
-// MAIN is the physical right eye, so its temporal edge is the image's right side: retain [0,w).
-// VRCAM is the physical left eye, so its temporal edge is the image's left side: retain [crop,W).
-// The full height is always retained. The broad nasal/central overlap avoids a disparity-sensitive
-// seam between eyes; no fixed convergence shift is needed.
-bool ApplyNrNasalOpenSlab(void* params, int side, NrSubrect* originalOutput,
-                          uint32_t* activeX, uint32_t* activeW) {
+void LoadNrFovealConfig() {
+    std::call_once(g_nrFovealConfigOnce, [] {
+        strncpy_s(g_nrFovealConfigPath, g_liveControlPath, _TRUNCATE);
+        char* slash = strrchr(g_nrFovealConfigPath, '\\');
+        if (!slash) slash = strrchr(g_nrFovealConfigPath, '/');
+        if (slash) strcpy_s(slash + 1, MAX_PATH - static_cast<size_t>(slash + 1 - g_nrFovealConfigPath),
+                            "nr-foveated.ini");
+        else strcpy_s(g_nrFovealConfigPath, "nr-foveated.ini");
+        int preset = GetPrivateProfileIntA("DLSSNRFoveation", "Preset", 2, g_nrFovealConfigPath);
+        if (preset < 0 || preset >= static_cast<int>(std::size(kNrFovealPresets))) preset = 2;
+        g_nrFovealActivePreset.store(preset, std::memory_order_relaxed);
+        g_nrFovealNextPreset.store(preset, std::memory_order_relaxed);
+        if (GetFileAttributesA(g_nrFovealConfigPath) == INVALID_FILE_ATTRIBUTES) {
+            char value[8]{}; _snprintf_s(value, sizeof(value), _TRUNCATE, "%d", preset);
+            WritePrivateProfileStringA("DLSSNRFoveation", "Preset", value, g_nrFovealConfigPath);
+        }
+        Log("[DLSSNR-FOV] preset %d: %s (restart-scoped, config=%s)\n", preset,
+            kNrFovealPresets[preset].label, g_nrFovealConfigPath);
+    });
+}
+
+const NrFovealPresetDef& ActiveNrFovealPreset() {
+    LoadNrFovealConfig();
+    int p = g_nrFovealActivePreset.load(std::memory_order_relaxed);
+    if (p < 0 || p >= static_cast<int>(std::size(kNrFovealPresets))) p = 2;
+    return kNrFovealPresets[p];
+}
+
+bool ComputeNrRegion(const NrSubrect& r, int side, uint32_t* x, uint32_t* y,
+                     uint32_t* w, uint32_t* h) {
+    if (!r.valid || (side != 0 && side != 1) || !x || !y || !w || !h) return false;
+    const auto& preset = ActiveNrFovealPreset();
+    const float fraction = static_cast<float>(preset.percent) * 0.01f;
+    *w = NrAlign8Down(static_cast<uint32_t>(r.w * fraction));
+    *h = preset.nasalOpenSlab ? r.h : NrAlign8Down(static_cast<uint32_t>(r.h * fraction));
+    if (*w < 64 || *h < 64 || *w >= r.w || *h > r.h) return false;
+    if (preset.nasalOpenSlab) {
+        const uint32_t crop = r.w - *w;
+        *x = side == 1 ? r.x + crop : r.x; // VRCAM/left opens right; MAIN/right opens left
+        *y = r.y;
+    } else {
+        // Match the UEVR/OpenXR-Toolkit starting point: left eye +4%, right eye -4% so the two
+        // centre boxes overlap the same world region better than identical image coordinates.
+        const int shift = static_cast<int>(r.w * 0.04f) * (side == 1 ? 1 : -1);
+        int cx = static_cast<int>(r.x + (r.w - *w) / 2) + shift;
+        cx = std::max<int>(static_cast<int>(r.x),
+                           std::min<int>(cx, static_cast<int>(r.x + r.w - *w)));
+        *x = NrAlign8Down(static_cast<uint32_t>(cx));
+        *y = r.y + NrAlign8Down((r.h - *h) / 2);
+    }
+    return *x >= r.x && *y >= r.y && *x + *w <= r.x + r.w && *y + *h <= r.y + r.h;
+}
+
+bool ApplyNrFovealRegion(void* params, int side, NrSubrect* originalOutput,
+                         uint32_t* activeX, uint32_t* activeY,
+                         uint32_t* activeW, uint32_t* activeH) {
     if (!params || (side != 0 && side != 1)) return false;
     static constexpr const char* planes[] = {"Color", "Depth", "MVec", "Output"};
     NrSubrect rects[4]{};
-    uint32_t widths[4]{}, origins[4]{};
-    // Validate the complete four-plane contract before changing any parameter.
+    uint32_t xs[4]{}, ys[4]{}, widths[4]{}, heights[4]{};
     for (int i = 0; i < 4; ++i) {
         rects[i] = ReadNrSubrect(params, planes[i]);
-        if (!rects[i].valid) return false;
-        widths[i] = NrAlign8Down(static_cast<uint32_t>(rects[i].w * kNrFovealCoverage));
-        if (widths[i] < 64 || widths[i] >= rects[i].w) return false;
-        const uint32_t crop = rects[i].w - widths[i];
-        origins[i] = side == 1 ? rects[i].x + crop : rects[i].x;
-        if (origins[i] + widths[i] > rects[i].x + rects[i].w) return false;
+        if (!ComputeNrRegion(rects[i], side, &xs[i], &ys[i], &widths[i], &heights[i])) return false;
     }
     for (int i = 0; i < 4; ++i) {
         char name[64]{};
-        NrSubrectName(name, planes[i], "BaseX");
-        if (!SetNrUInt(params, name, origins[i])) return false;
-        NrSubrectName(name, planes[i], "Width");
-        if (!SetNrUInt(params, name, widths[i])) return false;
-        // BaseY/Height deliberately remain the full original plane.
+        NrSubrectName(name, planes[i], "BaseX");  if (!SetNrUInt(params, name, xs[i])) return false;
+        NrSubrectName(name, planes[i], "BaseY");  if (!SetNrUInt(params, name, ys[i])) return false;
+        NrSubrectName(name, planes[i], "Width");  if (!SetNrUInt(params, name, widths[i])) return false;
+        NrSubrectName(name, planes[i], "Height"); if (!SetNrUInt(params, name, heights[i])) return false;
     }
     if (originalOutput) *originalOutput = rects[3];
-    if (activeX) *activeX = origins[3];
-    if (activeW) *activeW = widths[3];
+    if (activeX) *activeX = xs[3]; if (activeY) *activeY = ys[3];
+    if (activeW) *activeW = widths[3]; if (activeH) *activeH = heights[3];
     return true;
 }
 
-// Seed only the single temporal band outside the active slab. Whole-resource copies are prohibited:
-// the sequential second eye could overwrite the first eye's neural result in the addon's persistent
-// singleton output. Resource states are the measured addon contract (both UAV before/after).
-int RefreshNrTemporalBand(ID3D12GraphicsCommandList* list, ID3D12Resource* color,
-                          ID3D12Resource* output, int side, const NrSubrect& full,
-                          uint32_t activeX, uint32_t activeW) {
-    if (!list || !color || !output || color == output || (side != 0 && side != 1)) return 1;
+// Seed only bands outside the active region. Whole-resource copies are prohibited because the
+// sequential second eye could overwrite the first eye's neural result in the singleton Output.
+int RefreshNrPeripheryBands(ID3D12GraphicsCommandList* list, ID3D12Resource* color,
+                            ID3D12Resource* output, const NrSubrect& full,
+                            uint32_t ax, uint32_t ay, uint32_t aw, uint32_t ah) {
+    if (!list || !color || !output || color == output) return 1;
     __try {
         const D3D12_RESOURCE_DESC c = color->GetDesc();
         const D3D12_RESOURCE_DESC o = output->GetDesc();
         if (c.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
             o.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
             c.Width != o.Width || c.Height != o.Height || c.Format != o.Format ||
-            full.x != 0 || full.y != 0 || full.w != o.Width || full.h != o.Height)
+            full.x != 0 || full.y != 0 || full.w != o.Width || full.h != o.Height ||
+            ax < full.x || ay < full.y || ax + aw > full.w || ay + ah > full.h)
             return 2;
-
-        const uint32_t left = side == 1 ? full.x : activeX + activeW;
-        const uint32_t right = side == 1 ? activeX : full.x + full.w;
-        if (right <= left) return 2;
 
         D3D12_RESOURCE_BARRIER toCopy[2]{};
         toCopy[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -640,21 +690,29 @@ int RefreshNrTemporalBand(ID3D12GraphicsCommandList* list, ID3D12Resource* color
         toCopy[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         toCopy[0].Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
         toCopy[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
-        toCopy[1] = toCopy[0];
-        toCopy[1].Transition.pResource = output;
+        toCopy[1] = toCopy[0]; toCopy[1].Transition.pResource = output;
         toCopy[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
         D3D12_RESOURCE_BARRIER back[2] = {toCopy[0], toCopy[1]};
         back[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
         back[0].Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
         back[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
         back[1].Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-
         D3D12_TEXTURE_COPY_LOCATION dst{}, src{};
         dst.pResource = output; dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
         src.pResource = color; src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-        D3D12_BOX box{left, full.y, 0, right, full.y + full.h, 1};
+        struct Band { uint32_t l, t, r, b; };
+        const Band bands[4] = {
+            {full.x, full.y, full.x + full.w, ay},
+            {full.x, ay + ah, full.x + full.w, full.y + full.h},
+            {full.x, ay, ax, ay + ah},
+            {ax + aw, ay, full.x + full.w, ay + ah},
+        };
         list->ResourceBarrier(2, toCopy);
-        list->CopyTextureRegion(&dst, left, full.y, 0, &src, &box);
+        for (const Band& band : bands) {
+            if (band.r <= band.l || band.b <= band.t) continue;
+            D3D12_BOX box{band.l, band.t, 0, band.r, band.b, 1};
+            list->CopyTextureRegion(&dst, band.l, band.t, 0, &src, &box);
+        }
         list->ResourceBarrier(2, back);
         return 0;
     } __except (EXCEPTION_EXECUTE_HANDLER) { return 3; }
@@ -698,26 +756,27 @@ void __fastcall NrTailPrehook(ID3D12GraphicsCommandList* list, const void* handl
         ID3D12Resource* color = g_nrFovealColor[side].load(std::memory_order_acquire);
         ID3D12Resource* output = g_nrFovealOutput[side].load(std::memory_order_acquire);
         const NrSubrect full = ReadNrSubrect(params, "Output");
-        const uint32_t width = full.valid
-            ? NrAlign8Down(static_cast<uint32_t>(full.w * kNrFovealCoverage)) : 0;
-        const uint32_t x = full.valid && side == 1 ? full.x + (full.w - width) : full.x;
-        const int copied = full.valid && width >= 64 && width < full.w
-            ? RefreshNrTemporalBand(list, color, output, side, full, x, width) : 2;
-        NrSubrect appliedFull{}; uint32_t appliedX = 0, appliedW = 0;
-        const bool applied = copied == 0 && ApplyNrNasalOpenSlab(
-            const_cast<void*>(params), side, &appliedFull, &appliedX, &appliedW);
+        uint32_t x = 0, y = 0, width = 0, height = 0;
+        const bool region = ComputeNrRegion(full, side, &x, &y, &width, &height);
+        const int copied = region
+            ? RefreshNrPeripheryBands(list, color, output, full, x, y, width, height) : 2;
+        NrSubrect appliedFull{}; uint32_t appliedX = 0, appliedY = 0, appliedW = 0, appliedH = 0;
+        const bool applied = copied == 0 && ApplyNrFovealRegion(
+            const_cast<void*>(params), side, &appliedFull,
+            &appliedX, &appliedY, &appliedW, &appliedH);
         if (applied) {
             const uint64_t n = g_nrFovealApplies[side].fetch_add(1, std::memory_order_relaxed) + 1;
             g_nrFovealCopies[side].fetch_add(1, std::memory_order_relaxed);
             if (n <= 4 || (n % 601) == 0) {
                 const NrSubrect back = ReadNrSubrect(params, "Output");
-                Log("[DLSSNR-FOV] view=%s apply=%llu full=(%u,%u %ux%u) active=(%u,%u %ux%u) "
-                    "coverage=%.2f copy=temporal-band readback=%s\n",
-                    NrDiagSideName(side), static_cast<unsigned long long>(n),
+                const auto& preset = ActiveNrFovealPreset();
+                Log("[DLSSNR-FOV] view=%s apply=%llu preset=%s full=(%u,%u %ux%u) "
+                    "active=(%u,%u %ux%u) copy=bands readback=%s\n",
+                    NrDiagSideName(side), static_cast<unsigned long long>(n), preset.label,
                     appliedFull.x, appliedFull.y, appliedFull.w, appliedFull.h,
-                    appliedX, appliedFull.y, appliedW, appliedFull.h, kNrFovealCoverage,
+                    appliedX, appliedY, appliedW, appliedH,
                     back.valid && back.x == appliedX && back.w == appliedW &&
-                    back.y == appliedFull.y && back.h == appliedFull.h ? "OK" : "MISMATCH");
+                    back.y == appliedY && back.h == appliedH ? "OK" : "MISMATCH");
             }
         } else {
             const uint64_t n = g_nrFovealRejects[side].fetch_add(1, std::memory_order_relaxed) + 1;
@@ -2182,9 +2241,10 @@ void NgxTryInstallDlssNrDiagnostics() {
     g_nrTailStub = stub;
     g_nrTailTarget = eval;
     g_nrDiagState.store(2, std::memory_order_release);
+    const auto& preset = ActiveNrFovealPreset();
     Log("[DLSSNR-FOV] return-address-preserving feature-18 hook installed target=%p thunk=%p "
-        "trampoline=%p; nasal-open coverage=%.2f, full height, temporal-band refresh\n",
-        eval, stub, reinterpret_cast<void*>(g_nrEvaluateOrig), kNrFovealCoverage);
+        "trampoline=%p; preset=%s, periphery-band refresh\n",
+        eval, stub, reinterpret_cast<void*>(g_nrEvaluateOrig), preset.label);
 }
 
 bool NgxGetDlssNrDiagSnapshot(DlssNrDiagSnapshot* out) {
@@ -2229,10 +2289,39 @@ bool NgxGetDlssNrDiagSnapshot(DlssNrDiagSnapshot* out) {
         out->fovealRejects[i] = g_nrFovealRejects[i].load(std::memory_order_relaxed);
     }
     out->foveationEnabled = g_nrFoveationEnabled.load(std::memory_order_relaxed) ? 1 : 0;
-    out->fovealCoverage = kNrFovealCoverage;
+    out->fovealCoverage = static_cast<float>(ActiveNrFovealPreset().percent) * 0.01f;
     out->sharedHandleEvals = g_nrSharedHandleEvals.load(std::memory_order_relaxed);
     out->recursiveEvals = g_nrRecursiveEvals.load(std::memory_order_relaxed);
     out->totalEvalMicroseconds = g_nrTotalEvalUs.load(std::memory_order_relaxed);
     out->maxEvalMicroseconds = g_nrMaxEvalUs.load(std::memory_order_relaxed);
+    return true;
+}
+
+int NgxGetDlssNrFovealActivePreset() {
+    LoadNrFovealConfig();
+    return g_nrFovealActivePreset.load(std::memory_order_relaxed);
+}
+
+int NgxGetDlssNrFovealNextPreset() {
+    LoadNrFovealConfig();
+    return g_nrFovealNextPreset.load(std::memory_order_relaxed);
+}
+
+const char* NgxGetDlssNrFovealPresetLabel(int preset) {
+    if (preset < 0 || preset >= static_cast<int>(std::size(kNrFovealPresets))) return "Unknown";
+    return kNrFovealPresets[preset].label;
+}
+
+bool NgxSetDlssNrFovealNextPreset(int preset) {
+    LoadNrFovealConfig();
+    if (preset < 0 || preset >= static_cast<int>(std::size(kNrFovealPresets)) ||
+        !g_nrFovealConfigPath[0]) return false;
+    char value[8]{};
+    _snprintf_s(value, sizeof(value), _TRUNCATE, "%d", preset);
+    if (!WritePrivateProfileStringA("DLSSNRFoveation", "Preset", value,
+                                    g_nrFovealConfigPath)) return false;
+    g_nrFovealNextPreset.store(preset, std::memory_order_relaxed);
+    Log("[DLSSNR-FOV] next-launch preset saved: %d (%s); active preset unchanged\n",
+        preset, kNrFovealPresets[preset].label);
     return true;
 }
