@@ -2223,6 +2223,10 @@ void OpenXRManager::Shutdown() {
         m_colorBlit->Shutdown();
         m_colorBlit.reset();
     }
+    if (m_nativePostProcess) {
+        m_nativePostProcess->Shutdown();
+        m_nativePostProcess.reset();
+    }
     if (m_monoCapturedFrame.texture) {
         m_monoCapturedFrame.texture->Release();
         m_monoCapturedFrame.texture = nullptr;
@@ -2237,7 +2241,12 @@ void OpenXRManager::Shutdown() {
             m_vrcamEyePool[i]->Release();
             m_vrcamEyePool[i] = nullptr;
         }
+        if (m_vrcamGradePool[i]) {
+            m_vrcamGradePool[i]->Release();
+            m_vrcamGradePool[i] = nullptr;
+        }
         m_vrcamEyePoolSerial[i] = 0;
+        m_vrcamGradePoolSerial[i] = 0;
     }
     m_vrcamEyeSlot = 0;
     m_vrcamEyeW = m_vrcamEyeH = m_vrcamEyeFmt = 0;

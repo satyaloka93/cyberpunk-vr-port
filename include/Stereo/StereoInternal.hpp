@@ -143,6 +143,8 @@ using PFN_DrawIndexedInstanced = void (STDMETHODCALLTYPE*)(ID3D12GraphicsCommand
     UINT, UINT, UINT, INT, UINT);
 using PFN_SetPipelineState = void (STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*,
     ID3D12PipelineState*);
+using PFN_SetComputeRootDescriptorTable = void (STDMETHODCALLTYPE*)(
+    ID3D12GraphicsCommandList*, UINT, D3D12_GPU_DESCRIPTOR_HANDLE);
 using PFN_IASetVertexBuffers = void (STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*,
     UINT, UINT, const D3D12_VERTEX_BUFFER_VIEW*);
 using PFN_CopyTextureRegion = void (STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*,
@@ -209,6 +211,7 @@ struct CommandListVtableHook {
     PFN_SetPipelineState   setpso_original = nullptr;   // slot 25 (hooked, PSO probe)
     PFN_IASetVertexBuffers iavb_original = nullptr;     // slot 44 (hooked, sight axis probe)
     PFN_ClearDepthStencilView cleardsv_original = nullptr;  // slot 47 (hooked, cascade atlas reuse)
+    PFN_SetComputeRootDescriptorTable compute_table_original = nullptr; // slot 31 (scoped NR census)
 };
 
 // Function-pointer types the trampoline pointers are declared in terms of. They have to be here

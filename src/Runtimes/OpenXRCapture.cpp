@@ -92,7 +92,9 @@ bool OpenXRManager::EnsureVrcamEyeTexture(uint32_t width, uint32_t height, DXGI_
     }
     for (int i = 0; i < kVrcamEyeSlots; ++i) {
         if (m_vrcamEyePool[i]) { m_vrcamEyePool[i]->Release(); m_vrcamEyePool[i] = nullptr; }
+        if (m_vrcamGradePool[i]) { m_vrcamGradePool[i]->Release(); m_vrcamGradePool[i] = nullptr; }
         m_vrcamEyePoolSerial[i] = 0;
+        m_vrcamGradePoolSerial[i] = 0;
     }
     m_vrcamEyeSlot = 0;
     m_vrcamEyeSerial = 0;
@@ -126,6 +128,40 @@ bool OpenXRManager::EnsureVrcamEyeTexture(uint32_t width, uint32_t height, DXGI_
     m_vrcamEyeH = height;
     m_vrcamEyeFmt = static_cast<uint32_t>(format);
     Log("OpenXRManager: stereo capture pool ready, %d slots. eye=1 %ux%u fmt=%u\n",
+        kVrcamEyeSlots, width, height, static_cast<unsigned>(format));
+    return true;
+}
+
+bool OpenXRManager::EnsureVrcamGradeTextures(uint32_t width, uint32_t height, DXGI_FORMAT format) {
+    if (!m_d3dDevice || !width || !height || format == DXGI_FORMAT_UNKNOWN) return false;
+    if (m_vrcamGradePool[0] && m_vrcamEyeW == width && m_vrcamEyeH == height &&
+        m_vrcamEyeFmt == static_cast<uint32_t>(format)) return true;
+
+    for (int i = 0; i < kVrcamEyeSlots; ++i) {
+        if (m_vrcamGradePool[i]) { m_vrcamGradePool[i]->Release(); m_vrcamGradePool[i] = nullptr; }
+        m_vrcamGradePoolSerial[i] = 0;
+    }
+    D3D12_RESOURCE_DESC d{};
+    d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    d.Width = width; d.Height = height; d.DepthOrArraySize = 1; d.MipLevels = 1;
+    d.Format = format; d.SampleDesc.Count = 1;
+    d.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    d.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    D3D12_HEAP_PROPERTIES hp{}; hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+    for (int i = 0; i < kVrcamEyeSlots; ++i) {
+        if (FAILED(m_d3dDevice->CreateCommittedResource(
+                &hp, D3D12_HEAP_FLAG_NONE, &d, D3D12_RESOURCE_STATE_COPY_SOURCE, nullptr,
+                IID_PPV_ARGS(&m_vrcamGradePool[i])))) {
+            for (int k = 0; k <= i; ++k) {
+                if (m_vrcamGradePool[k]) { m_vrcamGradePool[k]->Release(); m_vrcamGradePool[k] = nullptr; }
+            }
+            Log("[native-post] failed to create VRCAM grade slot=%d %ux%u fmt=%u\n",
+                i, width, height, static_cast<unsigned>(format));
+            return false;
+        }
+        SetD3DNamef(m_vrcamGradePool[i], L"OpenXR_vrcam_grade_slot%d", i);
+    }
+    Log("[native-post] VRCAM grade pool ready, %d slots %ux%u fmt=%u\n",
         kVrcamEyeSlots, width, height, static_cast<unsigned>(format));
     return true;
 }
@@ -734,16 +770,28 @@ bool OpenXRManager::CaptureMonoPresentedFrame(ID3D12Resource* backBuffer, const 
         return false;
     }
 
+    // ReShade-native color pass. It runs on this proven Present/capture list, after the game and
+    // RenoDX have finished, but before the desktop Present and XR snapshot publication. MAIN is
+    // deliberately round-tripped through our snapshot: raw backbuffer -> snapshot, grade snapshot
+    // -> backbuffer, graded backbuffer -> snapshot. That makes the desktop game window and eye 0
+    // byte-identical at the source instead of grading only the headset copy.
+    const NativePostSettings nativePost = NativePostGetSettings();
+    bool nativePostReady = false;
+    if (nativePost.enabled) {
+        if (!m_nativePostProcess) m_nativePostProcess = std::make_unique<NativePostProcess>();
+        nativePostReady = m_nativePostProcess->EnsureInitialized(
+            m_d3dDevice, sourceDesc.Format,
+            static_cast<uint32_t>(sourceDesc.Width), sourceDesc.Height);
+    }
+
     D3D12_RESOURCE_BARRIER barriers[2] = {};
     UINT barrierCount = 0;
-
     barriers[barrierCount].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barriers[barrierCount].Transition.pResource = backBuffer;
     barriers[barrierCount].Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
     barriers[barrierCount].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
     barriers[barrierCount].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     ++barrierCount;
-
     if (previousSerial != 0) {
         barriers[barrierCount].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         barriers[barrierCount].Transition.pResource = snapshot;
@@ -752,22 +800,75 @@ bool OpenXRManager::CaptureMonoPresentedFrame(ID3D12Resource* backBuffer, const 
         barriers[barrierCount].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         ++barrierCount;
     }
-
     m_captureCmdList->ResourceBarrier(barrierCount, barriers);
     m_captureCmdList->CopyResource(snapshot, backBuffer);
 
-    D3D12_RESOURCE_BARRIER afterCopy[2] = {};
-    afterCopy[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    afterCopy[0].Transition.pResource = snapshot;
-    afterCopy[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    afterCopy[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
-    afterCopy[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    afterCopy[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    afterCopy[1].Transition.pResource = backBuffer;
-    afterCopy[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
-    afterCopy[1].Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-    afterCopy[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    m_captureCmdList->ResourceBarrier(2, afterCopy);
+    if (nativePostReady) {
+        D3D12_RESOURCE_BARRIER toGrade[2]{};
+        toGrade[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        toGrade[0].Transition.pResource = snapshot;
+        toGrade[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+        toGrade[0].Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        toGrade[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        toGrade[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        toGrade[1].Transition.pResource = backBuffer;
+        toGrade[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        toGrade[1].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        toGrade[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        m_captureCmdList->ResourceBarrier(2, toGrade);
+
+        const bool drew = m_nativePostProcess->Record(
+            m_captureCmdList, snapshot, backBuffer, nativePost);
+        if (drew) {
+            static bool s_loggedMainGrade = false;
+            if (!s_loggedMainGrade) {
+                s_loggedMainGrade = true;
+                Log("[native-post] first MAIN draw recorded mix=%.3f exposure=%.3f gamma=%.3f saturation=%.3f\n",
+                    nativePost.mix, nativePost.exposure, nativePost.gamma, nativePost.saturation);
+            }
+            D3D12_RESOURCE_BARRIER toRecopy[2]{};
+            toRecopy[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            toRecopy[0].Transition.pResource = snapshot;
+            toRecopy[0].Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+            toRecopy[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+            toRecopy[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            toRecopy[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            toRecopy[1].Transition.pResource = backBuffer;
+            toRecopy[1].Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            toRecopy[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+            toRecopy[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            m_captureCmdList->ResourceBarrier(2, toRecopy);
+            m_captureCmdList->CopyResource(snapshot, backBuffer);
+        }
+
+        D3D12_RESOURCE_BARRIER done[2]{};
+        done[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        done[0].Transition.pResource = snapshot;
+        done[0].Transition.StateBefore = drew ? D3D12_RESOURCE_STATE_COPY_DEST
+                                              : D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        done[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        done[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        done[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        done[1].Transition.pResource = backBuffer;
+        done[1].Transition.StateBefore = drew ? D3D12_RESOURCE_STATE_COPY_SOURCE
+                                              : D3D12_RESOURCE_STATE_RENDER_TARGET;
+        done[1].Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+        done[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        m_captureCmdList->ResourceBarrier(2, done);
+    } else {
+        D3D12_RESOURCE_BARRIER afterCopy[2]{};
+        afterCopy[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        afterCopy[0].Transition.pResource = snapshot;
+        afterCopy[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+        afterCopy[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        afterCopy[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        afterCopy[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        afterCopy[1].Transition.pResource = backBuffer;
+        afterCopy[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        afterCopy[1].Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+        afterCopy[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        m_captureCmdList->ResourceBarrier(2, afterCopy);
+    }
 
     // ---- right eye: the VRCAM view, converted here and now ---------------------------------
     //
@@ -801,6 +902,7 @@ bool OpenXRManager::CaptureMonoPresentedFrame(ID3D12Resource* backBuffer, const 
     // Deriving these from the XR image instead is what killed the GPU twice: that resource is
     // typeless, and a typeless RTV is invalid.
     bool vrcamEyeCaptured = false;
+    bool vrcamEyeGraded = false;
     const uint32_t eyeW = static_cast<uint32_t>(sourceDesc.Width);
     const uint32_t eyeH = sourceDesc.Height;
     // NOT IN A MENU. The right eye below is VRCAM's view of the WORLD; the menu is not in it,
@@ -1011,10 +1113,50 @@ bool OpenXRManager::CaptureMonoPresentedFrame(ID3D12Resource* backBuffer, const 
                     // that cannot be aliased out from under us and rests in COMMON, promoted
                     // implicitly for the read: no barrier of ours on anything the engine owns.
 
-                    D3D12_RESOURCE_BARRIER toSrc = toRt;
-                    toSrc.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-                    toSrc.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
-                    m_captureCmdList->ResourceBarrier(1, &toSrc);
+                    // Apply the same native grade to VRCAM after its HUD/vision/overlay composition.
+                    // A second pool is intentional: D3D12 cannot sample and render one texture in
+                    // place, and a per-slot output preserves the producer/submit isolation above.
+                    if (vrcamEyeCaptured && nativePostReady &&
+                        EnsureVrcamGradeTextures(eyeW, eyeH, DXGI_FORMAT_R8G8B8A8_TYPELESS)) {
+                        ID3D12Resource* const gradeTex = m_vrcamGradePool[m_vrcamEyeSlot];
+                        D3D12_RESOURCE_BARRIER gp[2]{};
+                        gp[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                        gp[0].Transition.pResource = eyeSlotTex;
+                        gp[0].Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+                        gp[0].Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+                        gp[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                        gp[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                        gp[1].Transition.pResource = gradeTex;
+                        gp[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+                        gp[1].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+                        gp[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                        m_captureCmdList->ResourceBarrier(2, gp);
+                        vrcamEyeGraded = m_nativePostProcess->Record(
+                            m_captureCmdList, eyeSlotTex, gradeTex, nativePost);
+                        static bool s_loggedVrcamGrade = false;
+                        if (vrcamEyeGraded && !s_loggedVrcamGrade) {
+                            s_loggedVrcamGrade = true;
+                            Log("[native-post] first VRCAM draw recorded in matching serial slot\n");
+                        }
+
+                        D3D12_RESOURCE_BARRIER gd[2]{};
+                        gd[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                        gd[0].Transition.pResource = eyeSlotTex;
+                        gd[0].Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+                        gd[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+                        gd[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                        gd[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                        gd[1].Transition.pResource = gradeTex;
+                        gd[1].Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+                        gd[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+                        gd[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                        m_captureCmdList->ResourceBarrier(2, gd);
+                    } else {
+                        D3D12_RESOURCE_BARRIER toSrc = toRt;
+                        toSrc.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+                        toSrc.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+                        m_captureCmdList->ResourceBarrier(1, &toSrc);
+                    }
                 } else {
                     static bool s_blitWarned = false;
                     if (!s_blitWarned) {
@@ -1128,6 +1270,7 @@ bool OpenXRManager::CaptureMonoPresentedFrame(ID3D12Resource* backBuffer, const 
             m_vrcamEyeSerial = vrcamEyeCaptured ? serial : 0;
             if (vrcamEyeCaptured) {
                 m_vrcamEyePoolSerial[m_vrcamEyeSlot] = serial;
+                m_vrcamGradePoolSerial[m_vrcamEyeSlot] = vrcamEyeGraded ? serial : 0;
             }
         }
     }

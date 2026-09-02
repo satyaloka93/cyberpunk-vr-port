@@ -219,6 +219,17 @@ static __int64 __fastcall Detour_DlssConst(void* a1, unsigned int a2) {
     return r;
 }
 
+// Read-only attribution for API-level DLSS/NGX probes. This scope is narrower and more reliable
+// than the render-node TLS: it is set only while the engine's tag+evaluate driver is executing,
+// exactly around the slSetTag/slEvaluateFeature calls that consume this view's resources.
+thread_local bool t_dlss_diag_view_known = false;
+thread_local uint64_t t_dlss_diag_view_key = 0;
+extern "C" __declspec(dllexport) int CyberpunkVR_GetDlssEvalViewKey(unsigned long long* out) {
+    if (!t_dlss_diag_view_known) return 0;
+    if (out) *out = t_dlss_diag_view_key;
+    return 1;
+}
+
 // DLSS tag+eval driver (sub_141D4FDC0). a2 = view spec; key at *(*(a2+0x18)+0x28).
 // Flip to vrcam's own SL viewport around the whole call (covers its internal
 // slSetTag x N + slEvaluateFeature) so vrcam gets a distinct DLSS feature/history.
@@ -244,7 +255,24 @@ static void __fastcall Detour_DlssEval(void* a1, void* a2, int a3, int a4, int a
             }
         } __except (EXCEPTION_EXECUTE_HANDLER) { flipped = false; }
     }
+    const bool prev_diag_known = t_dlss_diag_view_known;
+    const uint64_t prev_diag_key = t_dlss_diag_view_key;
+    t_dlss_diag_view_known = false;
+    if (a2) {
+        __try {
+            const uintptr_t ctx = *reinterpret_cast<uintptr_t*>(
+                reinterpret_cast<uint8_t*>(a2) + 0x18);
+            if (ctx) {
+                t_dlss_diag_view_key = *reinterpret_cast<uint64_t*>(ctx + 0x28);
+                t_dlss_diag_view_known = true;
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            t_dlss_diag_view_known = false;
+        }
+    }
     g_orig_dlss_eval(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14);
+    t_dlss_diag_view_known = prev_diag_known;
+    t_dlss_diag_view_key = prev_diag_key;
     if (flipped) {
         __try {
             // save vrcam's updated cache for next frame, restore main's cache into a1

@@ -27,6 +27,10 @@ extern "C" int CyberpunkVR_ViewKeyHookActive();
 // Stereo per-node profiler (stereo/sync_stereo.cpp): ends the accounting frame, see the call
 // site in the Present path.
 extern "C" void CyberpunkVR_ProfPublish();
+// ReShade addon host: delivers addon_event 74 (present) to a hosted addon. No-op unless armed.
+extern "C" void CyberpunkVR_AddonHostOnPresent(void* swapChain);
+// Direct-DLSSNR experiment: attach-and-report only, gated off in nr-direct.ini.
+void NeuralDirectTick();
 extern "C" UINT GetForcedSwapchainWidth();
 extern "C" UINT GetForcedSwapchainHeight();
 extern "C" UINT GetForcedDisplayModeWidth();
@@ -169,6 +173,9 @@ HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT syncInte
             s_ngxHookTried.store(true, std::memory_order_release);
         }
     }
+    // The feature-18 runtime appears even later: only after the closed addon first asks for NR.
+    // This is a cheap module/state check after installation and remains in WAITING when NR is off.
+    NgxTryInstallDlssNrDiagnostics();
 
     // Close the stereo profiler's frame: it accumulates per-node ticks continuously and only
     // normalises them into ms/frame when told a frame ended. Without this call its counter
@@ -197,6 +204,12 @@ HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT syncInte
     }
 
     OverlayRender(swapChain);
+    // ReShade addon hosting: event 74 is `present`, and a hosted addon that does its work there
+    // gets it here. Returns immediately unless an addon actually subscribed AND was armed, so the
+    // cost on the normal path is one relaxed atomic load. Faults inside the addon are contained --
+    // see the SEH guard at the definition.
+    CyberpunkVR_AddonHostOnPresent(swapChain);
+    NeuralDirectTick();
     OpenXRManager::Get().OnPresent(swapChain);
     // Drive one XR frame inline on the Present thread to avoid the old
     // cross-thread submit drift while keeping the rest of the pipeline at HEAD.

@@ -14,7 +14,10 @@
 #include "Core/VrCoreShared.hpp"
 #include "Overlay/ImGuiOverlay.hpp"
 #include "Overlay/LiveControlsUi.hpp"
+#include "Addons/ReShadeAddonHost.hpp"
+#include "Hooks/Ngx.hpp"
 #include "Runtimes/OpenXRManager.hpp"
+#include "Render/NativePostProcess.hpp"
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
@@ -71,6 +74,8 @@ extern "C" int      CyberpunkVR_ProfSnapshotNodes(uint32_t* rva, double* msv, do
 extern "C" const char* CyberpunkVR_ProfNodeName(uint32_t rva);
 extern "C" uint64_t CyberpunkVR_DebugViewKeyMainNodes;
 extern "C" uint64_t CyberpunkVR_DebugViewKeyOtherNodes;
+extern "C" int32_t CyberpunkVR_InvalidRenderDescriptorGuard;
+extern "C" uint64_t CyberpunkVR_DebugInvalidRenderDescriptorSkips;
 extern volatile int32_t g_lastLocatePosFP[3];
 extern "C" float CyberpunkVRPort_HalfIpd();
 extern "C" float GetGameRenderFovDeg();
@@ -409,6 +414,363 @@ void UpdateImGuiMouseFromCursor(HWND hwnd, float backbufferWidth, float backbuff
     io.AddMouseButtonEvent(2, (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0);
 }
 
+// The ReShade-addon host panel. The addon's own API-18 page is the authoritative LIVE control
+// surface: style, preset, masks and structure values update the feature in the current scene and
+// persist through our config ABI. Raw ini keys remain available only as a next-launch fallback.
+void DrawReShadeAddonHostPanel() {
+    CyberpunkVRAddonHostStatus st{};
+    if (!CyberpunkVR_AddonHostGetStatus(&st)) return;
+
+    ImGui::SeparatorText("DLSS 5 Neural Rendering  (renodx ReShade addon)");
+
+    int enabled = st.enabled;
+    if (CheckboxInt("Host the addon in-process  (applies on next launch)", &enabled)) {
+        CyberpunkVR_AddonHostSetEnabled(enabled);
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "Loads bin\\x64\\*.addon64 with no ReShade in the process, by exporting the ReShade\n"
+            "addon entry points it looks for. Written for renodx-dlss5.addon64, which drives\n"
+            "nvngx_dlssnr.dll -- a different NGX feature from the game's own ray reconstruction.\n"
+            "Saved to bin\\x64\\reshade-addons.ini. Stands down if ReShade is also loaded.");
+    }
+
+    // ---- one line that says where this actually got to -----------------------------------------
+    const char* state;
+    ImVec4 tint;
+    if (!st.enabled) {
+        state = st.forwarding ? "Off -- ReShade is present, addon calls forwarded to it"
+                              : "Off";
+        tint  = ImVec4(0.65f, 0.65f, 0.65f, 1.0f);
+    } else if (st.addonsRegistered == 0) {
+        state = "Enabled, but no addon registered";
+        tint  = ImVec4(1.0f, 0.55f, 0.35f, 1.0f);
+    } else if (!st.initDeviceDelivered) {
+        state = "Loaded -- waiting for the game's D3D12 device";
+        tint  = ImVec4(1.0f, 0.85f, 0.40f, 1.0f);
+    } else if (st.presentFaulted) {
+        state = "Faulted inside its present callback -- dispatch disabled for this session";
+        tint  = ImVec4(1.0f, 0.45f, 0.40f, 1.0f);
+    } else if (st.wantsPresent && !st.presentArmed) {
+        state = "Loaded and given a device -- idle, waiting on a 'present' event";
+        tint  = ImVec4(1.0f, 0.85f, 0.40f, 1.0f);
+    } else {
+        state = "Loaded and running";
+        tint  = ImVec4(0.45f, 0.90f, 0.55f, 1.0f);
+    }
+    ImGui::TextColored(tint, "Status: %s", state);
+    if (st.presentArmed) {
+        ImGui::Text("Frames delivered to the addon: %llu", st.presentCalls);
+    }
+
+    DlssNrDiagSnapshot nr{};
+    if (NgxGetDlssNrDiagSnapshot(&nr)) {
+        if (nr.state == 2) {
+            const unsigned long long total = nr.evals[0] + nr.evals[1] + nr.evals[2];
+            ImGui::TextColored(ImVec4(0.45f, 0.90f, 0.55f, 1.0f),
+                               "Per-eye NR census active");
+            ImGui::Text("Feature 18 evaluations: MAIN %llu  VRCAM %llu  other %llu",
+                        nr.evals[0], nr.evals[1], nr.evals[2]);
+            ImGui::Text("Creates: MAIN %llu  VRCAM %llu  | releases: %llu / %llu",
+                        nr.creates[0], nr.creates[1], nr.releases[0], nr.releases[1]);
+            ImGui::Text("Menu evaluations: MAIN %llu  VRCAM %llu  | shared handle: %llu",
+                        nr.menuEvals[0], nr.menuEvals[1], nr.sharedHandleEvals);
+            if (ImGui::TreeNode("Per-eye NR evaluation details")) {
+                const unsigned long long avg = total ? nr.totalEvalMicroseconds / total : 0;
+                const unsigned long long now = GetTickCount64();
+                const unsigned long long mainAge = nr.lastEvalTickMs[0]
+                    ? now - nr.lastEvalTickMs[0] : ~0ull;
+                const unsigned long long vrcamAge = nr.lastEvalTickMs[1]
+                    ? now - nr.lastEvalTickMs[1] : ~0ull;
+                ImGui::Text("Last result: MAIN 0x%08X  VRCAM 0x%08X",
+                            nr.lastResult[0], nr.lastResult[1]);
+                ImGui::Text("Bad results: MAIN %llu  VRCAM %llu  other %llu",
+                            nr.badResults[0], nr.badResults[1], nr.badResults[2]);
+                ImGui::Text("Evaluation CPU duration: avg %llu us  max %llu us", avg,
+                            nr.maxEvalMicroseconds);
+                ImGui::Text("Last evaluation age: MAIN %s  VRCAM %s",
+                            mainAge == ~0ull ? "never" : std::to_string(mainAge).c_str(),
+                            vrcamAge == ~0ull ? "never" : std::to_string(vrcamAge).c_str());
+                ImGui::Text("Handles: MAIN %p  VRCAM %p",
+                            reinterpret_cast<void*>(nr.lastHandle[0]),
+                            reinterpret_cast<void*>(nr.lastHandle[1]));
+                ImGui::Text("Parameter blocks: MAIN %p  VRCAM %p",
+                            reinterpret_cast<void*>(nr.lastParams[0]),
+                            reinterpret_cast<void*>(nr.lastParams[1]));
+                ImGui::SeparatorText("Values received by nvngx_dlssnr.dll");
+                ImGui::Text("Valid masks: MAIN 0x%llX  VRCAM 0x%llX",
+                            nr.parameterValidMask[0], nr.parameterValidMask[1]);
+                ImGui::Text("Preset / Style: MAIN %d / %d   VRCAM %d / %d",
+                            nr.preset[0], nr.style[0], nr.preset[1], nr.style[1]);
+                ImGui::Text("Intensity: MAIN %.3f  VRCAM %.3f", nr.intensity[0], nr.intensity[1]);
+                ImGui::Text("Local Tone: MAIN %.3f  VRCAM %.3f", nr.localTone[0], nr.localTone[1]);
+                ImGui::Text("Local Structure: MAIN %.3f  VRCAM %.3f",
+                            nr.localStructure[0], nr.localStructure[1]);
+                ImGui::Text("Skin Structure: MAIN %.3f  VRCAM %.3f",
+                            nr.skinStructure[0], nr.skinStructure[1]);
+                ImGui::Text("Auto Mask / UI: MAIN %d / %d   VRCAM %d / %d",
+                            nr.autoMask[0], nr.uiCorrection[0], nr.autoMask[1], nr.uiCorrection[1]);
+                ImGui::Text("Input: MAIN %ux%u  VRCAM %ux%u",
+                            nr.inputWidth[0], nr.inputHeight[0],
+                            nr.inputWidth[1], nr.inputHeight[1]);
+                ImGui::Text("Output: MAIN %ux%u  VRCAM %ux%u",
+                            nr.outputWidth[0], nr.outputHeight[0],
+                            nr.outputWidth[1], nr.outputHeight[1]);
+                ImGui::Text("Parameter samples/failures: MAIN %llu/%llu  VRCAM %llu/%llu",
+                            nr.parameterSamples[0], nr.parameterGetFailures[0],
+                            nr.parameterSamples[1], nr.parameterGetFailures[1]);
+                ImGui::Text("Recursive evaluations observed: %llu", nr.recursiveEvals);
+                ImGui::TextWrapped("Read-only: the hook forwards the original command list, handle, "
+                                   "parameters, callback, and result unchanged. Different eye images "
+                                   "are expected; this census tests lifecycle and cadence parity.");
+                ImGui::TreePop();
+            }
+        } else if (nr.state == 0) {
+            ImGui::TextDisabled("Per-eye NR census: waiting for nvngx_dlssnr.dll (normal while NR is off)");
+        } else if (nr.state == -1) {
+            ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.35f, 1.0f),
+                               "Per-eye NR census refused: runtime version mismatch or hook collision");
+        } else if (nr.state == -4) {
+            ImGui::TextDisabled("Direct NR census disabled: the signed runtime rejects detoured caller context");
+        } else if (nr.state < 0) {
+            ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.35f, 1.0f),
+                               "Per-eye NR census installation failed (state %d)", nr.state);
+        }
+    }
+
+    if (st.addonName[0]) {
+        ImGui::Text("Addon:  %s   (ReShade addon API %u)", st.addonName, st.apiVersion);
+        ImGui::TextDisabled("%s", st.addonDescription);
+    }
+    if (st.lastError[0]) {
+        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.35f, 1.0f), "Problem: %s", st.lastError);
+    }
+
+    // ---- why there is nothing to tune yet ------------------------------------------------------
+    if (st.enabled && st.addonsRegistered > 0 && st.wantsPresent && !st.presentArmed) {
+        ImGui::Spacing();
+        ImGui::TextWrapped(
+            "It has the real D3D12 device and its NGX hooks are not installed yet: it does that "
+            "work from a per-frame 'present' callback the host does not send. Its own controls "
+            "(NR Preset, HDR Transfer Strength, Enable Upscaling, depth inversion) live in an "
+            "ImGui overlay rather than in config, so until that callback exists it runs at its "
+            "built-in defaults and there is nothing here to move.");
+    }
+
+    // ---- the addon's own settings page: live and visible, not hidden behind discovery flags ----
+    if (st.hasOverlay) {
+        ImGui::Spacing();
+        ImGui::SeparatorText("Live Neural Rendering controls");
+        ImGui::TextWrapped(
+            "These are the addon's real controls and apply immediately in the current scene. "
+            "For a face comparison, keep Enable Upscaling OFF, look at one nearby face, then "
+            "change Automatic Mask / Skin Structure Strength or switch Natural/Cinematic. "
+            "Change one control at a time and wait a moment for its feature reset.");
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.35f, 1.0f),
+                           "Do not load a second save in this process: the closed addon still loses its guides after ResizeBuffers.");
+
+        if (!st.drawOverlay || !st.overlayWidgets) {
+            ImGui::TextDisabled("Live controls are disabled in the host configuration.");
+            if (ImGui::Button("Enable live DLSS5 controls")) {
+                CyberpunkVR_AddonHostSetDrawOverlay(1);
+                CyberpunkVR_AddonHostSetOverlayWidgets(1);
+            }
+            ImGui::TextDisabled("If this launch began with recording stubs, restart once after enabling.");
+        } else if (st.overlayFaulted) {
+            ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.40f, 1.0f),
+                               "The addon settings page faulted; it is contained for this session.");
+        } else {
+            ImGui::Separator();
+            CyberpunkVR_AddonHostDrawOverlay();
+            ImGui::Separator();
+        }
+
+        if (ImGui::TreeNode("Overlay host diagnostics")) {
+            int draw = st.drawOverlay;
+            if (CheckboxInt("Dispatch the addon settings page", &draw)) {
+                CyberpunkVR_AddonHostSetDrawOverlay(draw);
+            }
+            int widgets = st.overlayWidgets;
+            if (CheckboxInt("Use exact ImGui 1.92.5 widget forwarding", &widgets)) {
+                CyberpunkVR_AddonHostSetOverlayWidgets(widgets);
+            }
+            int stubTrue = st.overlayStubReturn;
+            int perView = st.presentPerView;
+            if (CheckboxInt("Announce VRCAM as its own swapchain (per-view present)", &perView)) {
+                CyberpunkVR_AddonHostSetPresentPerView(perView);
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "The addon creates its MODEL per view but its visible CODEC exactly once,\n"
+                    "because this host reports one device, one queue, one swapchain and one\n"
+                    "present per frame -- and RenoDX keys state per swapchain.\n\n"
+                    "This presents each eye as a separate swapchain so per-swapchain state is\n"
+                    "built twice. Inference about a closed binary: it may also duplicate the\n"
+                    "inline resource set and cost more. Needs a RESTART to take effect, since\n"
+                    "the addon builds that state the first time it sees a swapchain.");
+            }
+            ImGui::BeginDisabled(st.overlayWidgets != 0);
+            if (CheckboxInt("Discovery only: stubs answer 'true'", &stubTrue)) {
+                CyberpunkVR_AddonHostSetStubReturn(stubTrue);
+            }
+            ImGui::EndDisabled();
+            ImGui::TextDisabled("Never combine true-returning discovery stubs with gameplay; they force rebuilds every frame.");
+            if (st.imguiCalls[0]) ImGui::TextWrapped("ImGui slots used: %s", st.imguiCalls);
+            ImGui::TreePop();
+        }
+    } else if (st.enabled) {
+        ImGui::TextDisabled("The addon has not registered its settings page yet.");
+    }
+
+    // A small, explicit native port of the installed LiftGammaGain.fx and Tonemap.fx arithmetic.
+    // This is intentionally not an arbitrary .fx loader and does not call into the closed addon:
+    // it runs after NR on our own Present/capture command list, identically for MAIN and VRCAM.
+    ImGui::Spacing();
+    ImGui::SeparatorText("Native ReShade color pass  (independent of NR)");
+    NativePostSettings np = NativePostGetSettings();
+    bool npChanged = false;
+    npChanged |= CheckboxInt("Enable native color pass", &np.enabled);
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Ports the installed SweetFX LiftGammaGain.fx and Tonemap.fx math into the VR port.\n"
+                          "It runs with NR on or off. No ReShade DLL or .fx runtime is loaded, and MAIN\n"
+                          "and VRCAM receive the same constants.");
+    }
+    ImGui::BeginDisabled(!np.enabled);
+    npChanged |= ImGui::SliderFloat("Effect mix##nativepost", &np.mix, 0.0f, 1.0f, "%.2f");
+    npChanged |= ImGui::SliderFloat("Exposure##nativepost", &np.exposure, -2.0f, 2.0f, "%+.2f EV");
+    npChanged |= ImGui::SliderFloat("Tonemap gamma##nativepost", &np.gamma, 0.10f, 2.50f, "%.2f");
+    npChanged |= ImGui::SliderFloat("Saturation##nativepost", &np.saturation, -1.0f, 1.0f, "%+.2f");
+    npChanged |= ImGui::SliderFloat("Bleach##nativepost", &np.bleach, 0.0f, 1.0f, "%.2f");
+    npChanged |= ImGui::ColorEdit3("RGB Lift (shadows)##nativepost", np.lift,
+                                   ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
+    npChanged |= ImGui::ColorEdit3("RGB Gamma (midtones)##nativepost", np.rgbGamma,
+                                   ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
+    npChanged |= ImGui::ColorEdit3("RGB Gain (highlights)##nativepost", np.gain,
+                                   ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
+    if (ImGui::TreeNode("Advanced native color controls")) {
+        npChanged |= ImGui::SliderFloat("Defog##nativepost", &np.defog, 0.0f, 1.0f, "%.2f");
+        npChanged |= ImGui::ColorEdit3("Defog color##nativepost", np.fogColor,
+                                       ImGuiColorEditFlags_Float);
+        ImGui::TreePop();
+    }
+    if (ImGui::Button("Warm portrait starting point")) {
+        np.enabled = 1;
+        np.mix = 1.0f;
+        np.exposure = 0.0f;
+        np.gamma = 1.0f;
+        np.saturation = 0.08f;
+        np.bleach = 0.0f;
+        np.defog = 0.0f;
+        np.lift[0] = 1.03f; np.lift[1] = 1.00f; np.lift[2] = 0.98f;
+        np.rgbGamma[0] = 1.03f; np.rgbGamma[1] = 1.00f; np.rgbGamma[2] = 0.97f;
+        np.gain[0] = 1.02f; np.gain[1] = 1.00f; np.gain[2] = 0.98f;
+        npChanged = true;
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("A conservative warm shadow/midtone/highlight balance for face testing.\n"
+                          "This is a new starting point, not a recovered value from the incomplete Emry preset.");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reset native pass to neutral")) {
+        const int enabledNow = np.enabled;
+        np = NativePostSettings{};
+        np.enabled = enabledNow;
+        npChanged = true;
+    }
+    ImGui::EndDisabled();
+    ImGui::TextDisabled("Config: %s", NativePostConfigPath());
+    ImGui::TextWrapped("The installed lut.png is an identity LUT, so it is deliberately not sampled. "
+                       "These controls are live constants and do not recreate the DLSSNR feature.");
+    static bool s_nativePostDirty = false;
+    if (npChanged) {
+        NativePostSetSettings(np);
+        s_nativePostDirty = true;
+    }
+    if (s_nativePostDirty && !ImGui::IsAnyItemActive()) {
+        NativePostSaveSettings();
+        s_nativePostDirty = false;
+    }
+
+    // ---- the measurements, for whoever is extending this ---------------------------------------
+    if (ImGui::TreeNode("Diagnostics (what the addon asked the host for)")) {
+        ImGui::Text("Scanning:  %s", st.scanDir[0] ? st.scanDir : "(unresolved)");
+        ImGui::Text("Addons:    %d found, %d loaded, %d registered",
+                    st.addonsFound, st.addonsLoaded, st.addonsRegistered);
+        ImGui::Text("api::device methods it called: %s",
+                    st.vtCalls[0] ? st.vtCalls : "none -- its handler only stored the pointer");
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Slot 0 is get_native(), the real ID3D12Device. An empty list means a\n"
+                              "real device implementation would be nearly free.");
+        }
+        if (st.imguiVersionAsked) {
+            ImGui::Text("ImGui table wanted: version %u   (we bundle %u)",
+                        st.imguiVersionAsked, static_cast<unsigned>(IMGUI_VERSION_NUM));
+        }
+        const int eventCount = CyberpunkVR_AddonHostGetEventCount();
+        if (eventCount > 0) {
+            std::string ids;
+            for (int i = 0; i < eventCount; ++i) {
+                unsigned id = 0; int cbs = 0;
+                if (!CyberpunkVR_AddonHostGetEvent(i, &id, &cbs)) continue;
+                const char* nm = (id == 0) ? "init_device" : (id == 1) ? "destroy_device"
+                               : (id == 74) ? "present" : "?";
+                char tmp[48];
+                _snprintf_s(tmp, sizeof(tmp), _TRUNCATE, "%s%u (%s)", ids.empty() ? "" : ", ", id, nm);
+                ids += tmp;
+            }
+            ImGui::TextWrapped("Events it subscribed to: %s", ids.c_str());
+        }
+        ImGui::TreePop();
+    }
+
+    // ---- raw store, collapsed: it is a debugging surface, not a settings page -------------------
+    const int count = CyberpunkVR_AddonHostGetEntryCount();
+    if (ImGui::TreeNode("Advanced: raw addon config keys")) {
+        ImGui::TextWrapped(
+            "Keys appear here as the addon reads or writes them, with the value it will be given "
+            "next launch. These are the addon's own names and formats -- an empty value means it "
+            "keeps its built-in default, which is usually what you want.");
+        if (count <= 0) {
+            ImGui::TextDisabled("(none seen yet)");
+        } else {
+            static std::vector<std::string> s_edit;
+            static int s_syncedCount = -1;
+            if (ImGui::SmallButton("Reload") || s_syncedCount != count) {
+                s_edit.assign(static_cast<size_t>(count), std::string());
+                for (int i = 0; i < count; ++i) {
+                    CyberpunkVRAddonEntry e{};
+                    if (CyberpunkVR_AddonHostGetEntry(i, &e)) s_edit[static_cast<size_t>(i)] = e.value;
+                }
+                s_syncedCount = count;
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("press Enter in a field to save it");
+            for (int i = 0; i < count; ++i) {
+                CyberpunkVRAddonEntry e{};
+                if (!CyberpunkVR_AddonHostGetEntry(i, &e)) continue;
+                char buf[192];
+                strncpy_s(buf, sizeof(buf), s_edit[static_cast<size_t>(i)].c_str(), _TRUNCATE);
+                char label[224];
+                _snprintf_s(label, sizeof(label), _TRUNCATE, "%s%s##addoncfg%d",
+                            e.section[0] ? e.section : "", e.key, i);
+                ImGui::SetNextItemWidth(180.0f);
+                if (ImGui::InputText(label, buf, sizeof(buf), ImGuiInputTextFlags_EnterReturnsTrue)) {
+                    s_edit[static_cast<size_t>(i)] = buf;
+                    CyberpunkVR_AddonHostSetEntry(e.section, e.key, buf);
+                } else {
+                    s_edit[static_cast<size_t>(i)] = buf;
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("section \"%s\", key \"%s\"\n%s%s", e.section, e.key,
+                                      e.askedByAddon ? "the addon has read this" : "not read by the addon",
+                                      e.setByAddon ? ", and written it" : "");
+                }
+            }
+        }
+        ImGui::TreePop();
+    }
+}
+
 // Stereo panel, carried over from the testbed overlay (testbed/src/overlay_imgui.cpp).
 //
 // Nothing here goes through LiveControlsUiState: the engine hooks read these globals on every
@@ -696,12 +1058,29 @@ bool DrawLiveControls(LiveControlsUiState& state) {
                 ImGui::SliderFloat("Locator scale", &g_handLocatorScale, 0.50f, 2.00f, "%.2f");
             }
 
-            if (ImGui::CollapsingHeader("DLSS / Debug")) {
+            if (ImGui::CollapsingHeader("DLSS 5 / Debug", ImGuiTreeNodeFlags_DefaultOpen)) {
         { int vl = g_verboseLog; if (CheckboxInt("Verbose log (spammy diag)", &vl)) g_verboseLog = vl; }
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Off by default for a clean cyberpunkvrport.log. Enable only\n"
                               "when capturing ClipCursor / depth / hook diagnostics.");
         }
+        { int dg = CyberpunkVR_InvalidRenderDescriptorGuard;
+          if (CheckboxInt("Guard VRCAM descriptor -1 during save loads", &dg))
+              CyberpunkVR_InvalidRenderDescriptorGuard = dg;
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("skips: %llu",
+                            static_cast<unsigned long long>(CyberpunkVR_DebugInvalidRenderDescriptorSkips));
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Targets the repeated Cyberpunk2077.exe+0x1F51F5 CPU crash. The engine\n"
+                              "passes an unallocated one-based render descriptor (-1) to a function\n"
+                              "that subtracts one and indexes a 0xB0-stride table without validating it.\n"
+                              "The guard skips only that invalid VRCAM resource operation, not a whole node.\n"
+                              "Disable only for an A/B crash capture.");
+        }
+
+        ImGui::Separator();
+        DrawReShadeAddonHostPanel();
             }
             ImGui::EndTabItem();
         }

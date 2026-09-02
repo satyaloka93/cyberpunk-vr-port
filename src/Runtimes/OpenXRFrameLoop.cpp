@@ -1947,7 +1947,11 @@ DWORD OpenXRManager::FrameThreadMain() {
                     // against 52 blits in, instead of one each per frame on one thread.
                     for (int i = 0; i < kVrcamEyeSlots; ++i) {
                         if (m_vrcamEyePool[i] && m_vrcamEyePoolSerial[i] == presentSerial) {
-                            vrcamEye = m_vrcamEyePool[i];
+                            // Prefer the native-post twin only when its own serial proves that
+                            // this exact slot was graded. A failed/disabled draw falls back to raw.
+                            vrcamEye = (m_vrcamGradePool[i] &&
+                                         m_vrcamGradePoolSerial[i] == presentSerial)
+                                          ? m_vrcamGradePool[i] : m_vrcamEyePool[i];
                             vrcamEye->AddRef();   // the capture may recreate the pool on a resize
                             break;
                         }
@@ -1977,7 +1981,9 @@ DWORD OpenXRManager::FrameThreadMain() {
                         }
                         if (best >= 0 &&
                             (presentSerial - bestSerial) <= CyberpunkVR_VrcamEyeReuseMax) {
-                            vrcamEye = m_vrcamEyePool[best];
+                            vrcamEye = (m_vrcamGradePool[best] &&
+                                         m_vrcamGradePoolSerial[best] == bestSerial)
+                                          ? m_vrcamGradePool[best] : m_vrcamEyePool[best];
                             vrcamEye->AddRef();
                             CyberpunkVR_DebugVrcamEyeReused.fetch_add(1, std::memory_order_relaxed);
                         }

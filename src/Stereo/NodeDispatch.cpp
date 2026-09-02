@@ -88,6 +88,72 @@ WakeByAddressAllFn      g_wake_by_address_all = nullptr;
 NodeDispatchFn          g_node_dispatch_orig = nullptr;
 std::atomic<bool>       g_node_dispatch_hooked{false};
 
+// The load crash's direct caller, Cyberpunk2077.exe+0x774384, takes a descriptor object whose
+// first DWORD is a ONE-BASED render-table index. Unlike the guarded caller at +0x1F4700, this
+// function does not reject the engine's -1 "unallocated" sentinel before subtracting one and
+// indexing the 0xB0-stride table. Six byte-identical dumps fault at +0x1F51F5 from its call at
+// +0x7743C4. Hook the caller rather than the table helper: returning from the helper would still
+// let +0x774428/+0x77446F use the already-invalid scaled index later in the same function.
+using InvalidRenderDescriptorFn = void(__fastcall*)(void* descriptor);
+InvalidRenderDescriptorFn g_invalid_render_descriptor_orig = nullptr;
+extern "C" __declspec(dllexport) int32_t CyberpunkVR_InvalidRenderDescriptorGuard = 1;
+extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugInvalidRenderDescriptorSkips = 0;
+
+void __fastcall Detour_InvalidRenderDescriptor(void* descriptor) {
+    uint32_t index = 0;
+    bool read = false;
+    __try {
+        if (descriptor) {
+            index = *reinterpret_cast<const uint32_t*>(descriptor);
+            read = true;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        read = false;
+    }
+
+    // Restrict the intervention to the second-eye dispatch where every matched crash occurs.
+    // MAIN and non-eye views retain the engine's exact behavior. This skips one invalid resource
+    // operation, not the whole frame-graph node; the earlier broad post-rebind node skip prevented
+    // producers from allocating their outputs and manufactured a different near-null crash.
+    if (CyberpunkVR_InvalidRenderDescriptorGuard && t_vrcam_node_active && read &&
+            index == 0xFFFFFFFFu) {
+        const uint64_t n = InterlockedIncrement64(reinterpret_cast<volatile LONG64*>(
+            &CyberpunkVR_DebugInvalidRenderDescriptorSkips));
+        if (n <= 8 || (n & (n - 1)) == 0) {
+            const uint64_t rebound = g_vrcam_rebind_at_ms.load(std::memory_order_relaxed);
+            const uint64_t age = rebound ? GetTickCount64() - rebound : UINT64_MAX;
+            const uintptr_t base = reinterpret_cast<uintptr_t>(g_exe_base);
+            const uint32_t nodeRva = (base && t_current_node_work > base)
+                ? static_cast<uint32_t>(t_current_node_work - base) : 0;
+            const char* name = nodeRva ? CyberpunkVR_ProfNodeName(nodeRva) : nullptr;
+            log("[descguard] skipped VRCAM render descriptor index=-1 caller=0x774384 "
+                "node=0x%X/%s rebindAge=%llums count=%llu",
+                nodeRva, (name && *name) ? name : "?",
+                static_cast<unsigned long long>(age),
+                static_cast<unsigned long long>(n));
+        }
+        return;
+    }
+
+    if (g_invalid_render_descriptor_orig) g_invalid_render_descriptor_orig(descriptor);
+}
+
+bool InvalidRenderDescriptorHookMatchesBuild() {
+    if (!g_exe_base) return false;
+    static constexpr uint8_t expected[] = {
+        0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x6C, 0x24, 0x18,
+        0x48, 0x89, 0x74, 0x24, 0x20, 0x57, 0x41, 0x56, 0x41, 0x57
+    };
+    bool match = false;
+    __try { match = memcmp(g_exe_base + 0x774384, expected, sizeof(expected)) == 0; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { match = false; }
+    if (!match) log("[descguard] +0x774384 prologue does not match Cyberpunk 2.31; guard not installed");
+    return match;
+}
+CVR_DETOUR_IF("[descguard] invalid render descriptor caller", 0x774384,
+              Detour_InvalidRenderDescriptor, g_invalid_render_descriptor_orig,
+              InvalidRenderDescriptorHookMatchesBuild);
+
 static bool is_vrcam_copy_to_texture(uintptr_t* node, uint8_t* work_context) {
     if (!node || !work_context) return false;
     __try {

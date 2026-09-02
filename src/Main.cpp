@@ -57,6 +57,10 @@ extern "C" ID3D12CommandQueue* CyberpunkVR_GetGameQueue();
 // RED4ext plugin, CyberpunkVR_Hands.dll; they are now translation units of this one and only their
 // entry points had to give -- see the note at the definition.
 extern void CyberpunkVR_RegisterHandsNatives();
+// The ReShade addon host. Off unless reshade-addons.ini says otherwise; see the header for why
+// the plugin can be a host at all, and why the entry points forward rather than refuse.
+extern "C" void CyberpunkVR_AddonHostInit();
+extern "C" void CyberpunkVR_AddonHostShutdown();
 
 namespace {
 
@@ -93,9 +97,17 @@ RED4EXT_C_EXPORT bool RED4EXT_CALL Main(RED4ext::v1::PluginHandle, RED4ext::v1::
         // there.
         CyberpunkVRPort_PluginBootstrap();
         StartWorkerThread();
+        // LAST, and off the critical path: this only reads reshade-addons.ini and, when hosting is
+        // switched on there, spawns a thread that waits for NGX before loading any .addon64. With
+        // hosting off it does nothing but leave the exported ReShade entry points forwarding to a
+        // real ReShade if one is loaded.
+        CyberpunkVR_AddonHostInit();
         break;
     }
     case RED4ext::v1::EMainReason::Unload:
+        // Deliver ReShade's destroy_device event before this host disappears. Newer DLSS5 addons
+        // use it to release per-feature registries and detach their NGX hooks cleanly.
+        CyberpunkVR_AddonHostShutdown();
         // RED4ext unloads the plugin BEFORE the process finishes tearing down the graphics runtime,
         // and nothing here used to take that window (dabinn, TofuExpress fbe336fa). Stopping OpenXR
         // and dropping our overlay's device references while D3D is still alive is the difference

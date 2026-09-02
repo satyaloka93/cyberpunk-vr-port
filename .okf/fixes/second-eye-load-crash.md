@@ -1,10 +1,10 @@
 ---
 type: Fix
 title: Second-eye load crash (descriptor -1)
-description: A silent exit at menu-initiated save loads, traced to a frame-graph node dispatched for the second eye consuming an unallocated render-table index. Open; the mechanism is established and four hypotheses are eliminated.
+description: A silent exit at menu-initiated save loads, traced to a shared second-eye render-resource helper consuming an unallocated one-based descriptor index.
 resource: https://github.com/satyaloka93/cyberpunk-vr-port/blob/upstream-0.1.3-psvr2/src/Stereo/NodeDispatch.cpp
 tags: [crash, stereo, frame-graph, load-transition, vrcam, open]
-timestamp: 2026-08-26T10:30:00+09:00
+timestamp: 2026-08-30T19:15:00+09:00
 ---
 
 # Which tree this describes
@@ -17,10 +17,11 @@ present on `psvr2-tweaks`, and no capture from that branch is comparable.
 
 # Status
 
-**Open.** The mechanism is established and the window is known. What is still missing is the identity
-of the node, which needs one dump captured in the same session as a log.
+**Open.** The invalid descriptor and unchecked direct consumer are established. Paired captures
+ended under different frame-graph nodes, so the earlier claim that `EndRenderTargetsGBuffer` was
+the unique carrier is retracted. A safe repair is not yet validated.
 
-# The fault, identically five times
+# The fault, identically at least seven times
 
 ```
 EXCEPTION 0xC0000005      read at 0x...0AB0
@@ -42,6 +43,31 @@ With `edx = -1`: `dec` gives `0xFFFFFFFE`, the multiply gives `r15 = 0xAFFFFFFF5
 reads unmapped memory. So **-1 is the engine's unallocated sentinel and can never be a valid index
 here** — the arithmetic guarantees a wild address. The caller reads that -1 out of the first DWORD
 of a descriptor object.
+
+# Paired dump and log evidence
+
+Two same-session dump/log pairings now exist. Both have the exact fault signature, but their fault
+threads ended under different named VRCAM work:
+
+| Fault thread | Final started work on that thread |
+|---|---|
+| `11492` | `EndRenderTargetsGBuffer` |
+| `29676` | `BindLightingGlobalConstants` |
+
+The trace is written immediately before node dispatch and both budgets remained live. This retracts
+the earlier single-node conclusion: the common carrier is below multiple frame-graph nodes.
+
+Static disassembly identifies it. Direct caller `Cyberpunk2077.exe+0x774384` reads the first DWORD
+of a descriptor object, subtracts one, calls the faulting helper at `+0x1F51C4`, and later reuses the
+same scaled index at `+0x774428` and `+0x77446F`. It performs no sentinel/range check. Another caller
+at `+0x1F4700` explicitly rejects invalid one-based indices before invoking the same helper. The
+missing validation at `+0x774384` is therefore concrete; who leaves the descriptor at `-1` during
+the VRCAM re-bind remains unknown.
+
+Native DLSS Neural Rendering was present in some captures, but the RVA, bad address suffix,
+`RDX=-1`, `R15`, and caller are byte-for-byte the pre-DLSSNR signature. Neural Rendering did not
+create a new crash family. The optional low-spec INI was absent in a matched capture, disproving it
+as a prerequisite. See [DLSS 5 Neural Rendering in stereo VR](/architecture/dlss5-neural-rendering.md).
 
 # It is our detour in the call chain, not a bystander
 
@@ -89,30 +115,30 @@ and `!analyze -v` blaming `Cyberpunk2077.exe!Unknown` is correct but useless for
 The lesson both share: **suppressing a symptom that is cleanly suppressible tells you it was not the
 cause.** Two independent gates achieved that and neither fixed anything.
 
-# What the next capture needs
+# Validation boundary for a repair
 
-The `[rebind-trace]` breadcrumb logs node RVA, name, depth, scene id and **`tid=`** for second-eye
-dispatches after a re-bind, budgeted by count (`CyberpunkVR_RebindTraceCount`, 400).
+Do not broadly skip a named frame-graph node: the failed blind-window experiment already proved that
+suppressing producers/cleanup manufactures different missing-resource faults. A candidate repair
+must intervene only when `+0x774384` receives descriptor index `-1`, record the calling VRCAM node,
+and allow all valid descriptor operations through unchanged.
 
-The budget is shared across threads, and **15 threads dispatch concurrently** — six were mid-dispatch
-in the final seven lines of one capture — so the last line names nothing on its own. The faulting
-thread id from a dump picks the thread out of the trace; that pairing is the missing step.
+It is not validated until repeated in-process save loads complete, the invalid-call counter is
+observable, both eyes resume, and no different missing-resource, GPU-hang, or stale-eye failure
+replaces the original crash.
 
-Capture with:
+If another external dump is needed, use:
 
 ```
 procdump.exe -accepteula -ma -w -e -n 2 Cyberpunk2077.exe F:\crashdumps
 ```
 
-**`-e`, not `-t`.** These crashes do raise `0xC0000005`, so `-e` catches them; `-t` fires on a normal
-quit as well and has already burned a single-shot capture on an ordinary shutdown. WER `LocalDumps`
-is not a substitute — it failed to fire twice, because the exit reaches no unhandled-exception path
-Windows can see.
+**`-e`, not `-t`.** `-t` also fires on normal quit and has already consumed a single-shot capture.
 
 # Not to be confused with
 
 The **GPU hang** family, which is a different failure with a different signature: `gpucrash-*.log`
 written, `nvlddmkm` events, **two** `Overlay fence wait timed out` lines, and breadcrumbs showing a
 pass *In progress* at `FinalFlushBarriers`. See
-[overlay load-transition guard](overlay-load-transition-guard.md). This crash produces **none** of
-those — no GPU log, no `nvlddmkm`, no fence timeouts.
+[overlay load-transition guard](overlay-load-transition-guard.md). The latest `+0x1F51F5` crash
+occurred while that guard was already engaged in full-drain mode, proving the guard does not prevent
+this CPU descriptor fault. This crash produces no GPU log, `nvlddmkm` event, or fence timeout.

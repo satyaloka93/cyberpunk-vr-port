@@ -88,6 +88,71 @@ void patch_descriptor_heap_size() {
     }
 }
 
+// Read-only descriptor census for the scoped slEvaluateFeature writeback test. D3D12 root tables
+// expose only GPU descriptor handles, so retain the CPU/GPU ranges of shader-visible heaps and the
+// texture written into each large-texture SRV/UAV descriptor. No references are retained and no
+// descriptor contents are changed.
+struct SlEvalHeapRange {
+    SIZE_T cpu = 0;
+    UINT64 gpu = 0;
+    UINT count = 0;
+    UINT increment = 0;
+};
+struct SlEvalDescriptor {
+    ID3D12Resource* resource = nullptr;
+    char kind = '?';
+};
+std::mutex g_slEvalDescriptorMutex;
+std::vector<SlEvalHeapRange> g_slEvalHeapRanges;
+std::unordered_map<SIZE_T, SlEvalDescriptor> g_slEvalDescriptors;
+
+using CreateSRVFn = void (STDMETHODCALLTYPE*)(ID3D12Device*, ID3D12Resource*,
+    const D3D12_SHADER_RESOURCE_VIEW_DESC*, D3D12_CPU_DESCRIPTOR_HANDLE);
+using CreateUAVFn = void (STDMETHODCALLTYPE*)(ID3D12Device*, ID3D12Resource*, ID3D12Resource*,
+    const D3D12_UNORDERED_ACCESS_VIEW_DESC*, D3D12_CPU_DESCRIPTOR_HANDLE);
+CreateSRVFn g_orig_CreateSRV = nullptr;
+CreateUAVFn g_orig_CreateUAV = nullptr;
+
+bool sl_eval_get_resource_desc(ID3D12Resource* resource, D3D12_RESOURCE_DESC* out) {
+    if (!resource || !out) return false;
+    __try { *out = resource->GetDesc(); return true; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+bool sl_eval_get_heap_range(ID3D12Device* device, ID3D12DescriptorHeap* heap,
+                            UINT count, SlEvalHeapRange* out) {
+    if (!device || !heap || !out) return false;
+    __try {
+        out->cpu = heap->GetCPUDescriptorHandleForHeapStart().ptr;
+        out->gpu = heap->GetGPUDescriptorHandleForHeapStart().ptr;
+        out->count = count;
+        out->increment = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        return out->cpu && out->gpu && out->count && out->increment;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+void note_sl_eval_descriptor(D3D12_CPU_DESCRIPTOR_HANDLE dest, ID3D12Resource* resource, char kind) {
+    if (!dest.ptr || !resource) return;
+    D3D12_RESOURCE_DESC d{};
+    if (!sl_eval_get_resource_desc(resource, &d)) return;
+    if (d.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || d.Width < 512 || d.Height < 512) return;
+    std::lock_guard<std::mutex> lock(g_slEvalDescriptorMutex);
+    g_slEvalDescriptors[dest.ptr] = {resource, kind};
+}
+
+static void STDMETHODCALLTYPE Hook_CreateSRV(ID3D12Device* self, ID3D12Resource* resource,
+        const D3D12_SHADER_RESOURCE_VIEW_DESC* desc, D3D12_CPU_DESCRIPTOR_HANDLE dest) {
+    g_orig_CreateSRV(self, resource, desc, dest);
+    note_sl_eval_descriptor(dest, resource, 'S');
+}
+
+static void STDMETHODCALLTYPE Hook_CreateUAV(ID3D12Device* self, ID3D12Resource* resource,
+        ID3D12Resource* counter, const D3D12_UNORDERED_ACCESS_VIEW_DESC* desc,
+        D3D12_CPU_DESCRIPTOR_HANDLE dest) {
+    g_orig_CreateUAV(self, resource, counter, desc, dest);
+    note_sl_eval_descriptor(dest, resource, 'U');
+}
+
 static HRESULT STDMETHODCALLTYPE Hook_CreateDescriptorHeap(
         ID3D12Device* self, const D3D12_DESCRIPTOR_HEAP_DESC* desc,
         REFIID riid, void** out) {
@@ -117,7 +182,9 @@ static HRESULT STDMETHODCALLTYPE Hook_CreateDescriptorHeap(
             }
         }
     }
-    return g_orig_CreateDescriptorHeap(self, use, riid, out);
+    const HRESULT hr = g_orig_CreateDescriptorHeap(self, use, riid, out);
+    // Clean build: do not retain descriptor ranges for the completed NR writeback census.
+    return hr;
 }
 
 // --- ExecuteCommandLists probe: count actual GPU command-list executions per
@@ -405,6 +472,101 @@ PFN_OMSetRenderTargets command_list_original_om(
     return e ? e->original : nullptr;
 }
 
+extern "C" int CyberpunkVR_GetSlEvaluateTraceContext(unsigned long long* sequence, int* side);
+struct SlEvalCommandTraceTls {
+    uint64_t sequence = 0;
+    uint32_t tables = 0;
+    uint32_t copies = 0;
+};
+thread_local SlEvalCommandTraceTls t_slEvalCommandTrace;
+
+bool sl_eval_trace_context(uint64_t& sequence, int& side) {
+    unsigned long long raw = 0;
+    if (!CyberpunkVR_GetSlEvaluateTraceContext(&raw, &side)) return false;
+    sequence = static_cast<uint64_t>(raw);
+    if (t_slEvalCommandTrace.sequence != sequence) {
+        t_slEvalCommandTrace = {};
+        t_slEvalCommandTrace.sequence = sequence;
+    }
+    return true;
+}
+const char* sl_eval_side_name(int side) {
+    return side == 0 ? "MAIN" : side == 1 ? "VRCAM" : "OTHER";
+}
+void sl_eval_resource_text(ID3D12Resource* resource, char* out, size_t cap) {
+    if (!out || !cap) return;
+    if (!resource) { strncpy_s(out, cap, "null", _TRUNCATE); return; }
+    D3D12_RESOURCE_DESC d{};
+    __try { d = resource->GetDesc(); }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        _snprintf_s(out, cap, _TRUNCATE, "%p <invalid>", resource); return;
+    }
+    _snprintf_s(out, cap, _TRUNCATE, "%p %llux%u fmt=%u flags=0x%X", resource,
+        static_cast<unsigned long long>(d.Width), d.Height, static_cast<unsigned>(d.Format),
+        static_cast<unsigned>(d.Flags));
+}
+
+static void STDMETHODCALLTYPE hk_SlEvalComputeRootTable(ID3D12GraphicsCommandList* self,
+        UINT rootIndex, D3D12_GPU_DESCRIPTOR_HANDLE base) {
+    const CommandListVtableHook* e = command_list_hook_entry(self);
+    if (!e || !e->compute_table_original) return;
+    uint64_t sequence = 0; int side = 2;
+    if (sl_eval_trace_context(sequence, side) && t_slEvalCommandTrace.tables++ < 16) {
+        char bindings[1024] = {};
+        size_t used = 0;
+        std::lock_guard<std::mutex> lock(g_slEvalDescriptorMutex);
+        for (const auto& heap : g_slEvalHeapRanges) {
+            const UINT64 end = heap.gpu + static_cast<UINT64>(heap.count) * heap.increment;
+            if (base.ptr < heap.gpu || base.ptr >= end) continue;
+            const UINT64 first = (base.ptr - heap.gpu) / heap.increment;
+            for (UINT64 i = 0; i < 8 && first + i < heap.count && used < sizeof(bindings) - 100; ++i) {
+                const SIZE_T cpu = heap.cpu + static_cast<SIZE_T>(first + i) * heap.increment;
+                const auto it = g_slEvalDescriptors.find(cpu);
+                if (it == g_slEvalDescriptors.end()) continue;
+                char resource[160] = {};
+                sl_eval_resource_text(it->second.resource, resource, sizeof(resource));
+                used += _snprintf_s(bindings + used, sizeof(bindings) - used, _TRUNCATE,
+                    " d%llu=%c:%s", static_cast<unsigned long long>(i), it->second.kind, resource);
+            }
+            break;
+        }
+        log("[DLSSNR-DIAG][writeback] seq=%llu side=%s root=%u gpu=0x%llX%s",
+            static_cast<unsigned long long>(sequence), sl_eval_side_name(side), rootIndex,
+            static_cast<unsigned long long>(base.ptr), bindings[0] ? bindings : " unresolved");
+    }
+    e->compute_table_original(self, rootIndex, base);
+}
+
+static void STDMETHODCALLTYPE hk_SlEvalCopyResource(ID3D12GraphicsCommandList* self,
+        ID3D12Resource* dst, ID3D12Resource* src) {
+    const CommandListVtableHook* e = command_list_hook_entry(self);
+    if (!e || !e->copyres) return;
+    uint64_t sequence = 0; int side = 2;
+    if (sl_eval_trace_context(sequence, side) && t_slEvalCommandTrace.copies++ < 16) {
+        char d[160] = {}, s[160] = {};
+        sl_eval_resource_text(dst, d, sizeof(d)); sl_eval_resource_text(src, s, sizeof(s));
+        log("[DLSSNR-DIAG][writeback] seq=%llu side=%s CopyResource dst=%s src=%s",
+            static_cast<unsigned long long>(sequence), sl_eval_side_name(side), d, s);
+    }
+    e->copyres(self, dst, src);
+}
+
+static void STDMETHODCALLTYPE hk_SlEvalCopyTexture(ID3D12GraphicsCommandList* self,
+        const D3D12_TEXTURE_COPY_LOCATION* dst, UINT x, UINT y, UINT z,
+        const D3D12_TEXTURE_COPY_LOCATION* src, const D3D12_BOX* box) {
+    const CommandListVtableHook* e = command_list_hook_entry(self);
+    if (!e || !e->copytex) return;
+    uint64_t sequence = 0; int side = 2;
+    if (sl_eval_trace_context(sequence, side) && t_slEvalCommandTrace.copies++ < 16) {
+        char d[160] = {}, s[160] = {};
+        sl_eval_resource_text(dst ? dst->pResource : nullptr, d, sizeof(d));
+        sl_eval_resource_text(src ? src->pResource : nullptr, s, sizeof(s));
+        log("[DLSSNR-DIAG][writeback] seq=%llu side=%s CopyTexture dst=%s src=%s at=%u,%u,%u",
+            static_cast<unsigned long long>(sequence), sl_eval_side_name(side), d, s, x, y, z);
+    }
+    e->copytex(self, dst, x, y, z, src, box);
+}
+
 static void patch_command_list_vtable(void* command_list) {
     if (!command_list) return;
     void** vtable = *reinterpret_cast<void***>(command_list);
@@ -474,7 +636,12 @@ static void patch_command_list_vtable(void* command_list) {
         vtable[10] = reinterpret_cast<void*>(&hk_GfxReset);
         DWORD junk = 0; VirtualProtect(&vtable[10], sizeof(void*), oldp6, &junk);
     }
-    auto cr = reinterpret_cast<PFN_CopyResource>(vtable[17]);      // raw, for appending
+    // Clean build: slots 16/17/31 were hooked only for the completed NR writeback census.
+    // Leave them untouched so ordinary copies and compute-root binds take their native paths.
+    auto cr = reinterpret_cast<PFN_CopyResource>(vtable[17]);
+    auto ct = reinterpret_cast<PFN_CopyTextureRegion>(vtable[16]);
+    PFN_SetComputeRootDescriptorTable table_orig =
+        reinterpret_cast<PFN_SetComputeRootDescriptorTable>(vtable[31]);
     PFN_DrawInstanced dr_orig = nullptr;
     DWORD oldpDr = 0;
     if (VirtualProtect(&vtable[12], sizeof(void*), PAGE_READWRITE, &oldpDr)) {
@@ -515,10 +682,9 @@ static void patch_command_list_vtable(void* command_list) {
         vtable[47] = reinterpret_cast<void*>(&hk_ClearDepthStencilView);
         DWORD junk = 0; VirtualProtect(&vtable[47], sizeof(void*), oldpCd, &junk);
     }
-    auto ct = reinterpret_cast<PFN_CopyTextureRegion>(vtable[16]); // raw, tile-grid probe
     g_command_list_vtable_hooks[count] =
         {vtable, om_orig, rb_orig, rb_orig, cr, ct, ind_orig, dr_orig, dri_orig, cbr_orig,
-         disp_orig, vp_orig, sc_orig, rst_orig, sps_orig, iavb_orig, cds_orig};
+         disp_orig, vp_orig, sc_orig, rst_orig, sps_orig, iavb_orig, cds_orig, table_orig};
     g_command_list_vtable_hook_count.store(count + 1, std::memory_order_release);
     log("[mirror] command-list hooked list=%p vt=%p om=%p rb=%p cr=%p",
         command_list, vtable, (void*)om_orig, (void*)rb_orig, (void*)cr);
@@ -536,6 +702,45 @@ static PFN_CreateCommittedResource g_orig_CreateCommitted = nullptr;
 static PFN_CreatePlacedResource    g_orig_CreatePlaced = nullptr;
 // buf_note moved with the census; declared in Stereo/StereoInternal.hpp.
 
+extern "C" int CyberpunkVR_GetDlssEvalViewKey(unsigned long long* out);
+extern "C" uint64_t CyberpunkVR_VrcamCtxKey();
+std::atomic<uint32_t> g_dlssNrAllocLogs{0};
+
+const char* dlss_nr_owner(void* caller, char* moduleName, size_t cap) {
+    if (!caller || !moduleName || cap == 0) return nullptr;
+    HMODULE mod = nullptr;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCSTR>(caller), &mod) || !mod) return nullptr;
+    char path[MAX_PATH] = {};
+    if (!GetModuleFileNameA(mod, path, MAX_PATH)) return nullptr;
+    const char* base = strrchr(path, '\\');
+    base = base ? base + 1 : path;
+    if (_stricmp(base, "renodx-dlss5.addon64") != 0 &&
+        _stricmp(base, "nvngx_dlssnr.dll") != 0) return nullptr;
+    strncpy_s(moduleName, cap, base, _TRUNCATE);
+    return moduleName;
+}
+
+void note_dlss_nr_created(void* caller, void* out, const D3D12_RESOURCE_DESC* d,
+                          const char* allocationKind) {
+    if (!out || !d || d->Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D) return;
+    char owner[MAX_PATH] = {};
+    if (!dlss_nr_owner(caller, owner, sizeof(owner))) return;
+    const uint32_t n = g_dlssNrAllocLogs.fetch_add(1, std::memory_order_relaxed);
+    if (n >= 96) return;
+    unsigned long long key = 0;
+    const bool known = CyberpunkVR_GetDlssEvalViewKey(&key) != 0;
+    const char* view = !known ? "UNKNOWN" : key == 0 ? "MAIN" :
+        key == CyberpunkVR_VrcamCtxKey() ? "VRCAM" : "OTHER";
+    log("[DLSSNR-DIAG][alloc] owner=%s kind=%s caller=%p view=%s key=0x%llX "
+        "res=%p %llux%u fmt=%u mips=%u flags=0x%X",
+        owner, allocationKind, caller, view, key, out,
+        static_cast<unsigned long long>(d->Width), d->Height,
+        static_cast<unsigned>(d->Format), static_cast<unsigned>(d->MipLevels),
+        static_cast<unsigned>(d->Flags));
+}
+
 static void buf_note_created(void* out, const D3D12_RESOURCE_DESC* d) {
     if (!out || !d || d->Dimension != D3D12_RESOURCE_DIMENSION_BUFFER) return;
     if (d->Width < 4096) return;                    // instance/vertex streams, not tiny scratch
@@ -550,16 +755,24 @@ static HRESULT STDMETHODCALLTYPE Hook_CreateCommittedResource(
         ID3D12Device* self, const D3D12_HEAP_PROPERTIES* hp, D3D12_HEAP_FLAGS hf,
         const D3D12_RESOURCE_DESC* d, D3D12_RESOURCE_STATES st,
         const D3D12_CLEAR_VALUE* cv, REFIID riid, void** out) {
+    void* caller = _ReturnAddress();
     HRESULT hr = g_orig_CreateCommitted(self, hp, hf, d, st, cv, riid, out);
-    if (SUCCEEDED(hr) && out && *out) buf_note_created(*out, d);
+    if (SUCCEEDED(hr) && out && *out) {
+        buf_note_created(*out, d);
+        note_dlss_nr_created(caller, *out, d, "committed");
+    }
     return hr;
 }
 
 static HRESULT STDMETHODCALLTYPE Hook_CreatePlacedResource(
         ID3D12Device* self, ID3D12Heap* heap, UINT64 off, const D3D12_RESOURCE_DESC* d,
         D3D12_RESOURCE_STATES st, const D3D12_CLEAR_VALUE* cv, REFIID riid, void** out) {
+    void* caller = _ReturnAddress();
     HRESULT hr = g_orig_CreatePlaced(self, heap, off, d, st, cv, riid, out);
-    if (SUCCEEDED(hr) && out && *out) buf_note_created(*out, d);
+    if (SUCCEEDED(hr) && out && *out) {
+        buf_note_created(*out, d);
+        note_dlss_nr_created(caller, *out, d, "placed");
+    }
     return hr;
 }
 
@@ -1110,7 +1323,8 @@ void patch_device_descriptor_slot(void* device) {
         log("[cbv] CreateConstantBufferView hooked dev=%p orig=%p", device,
             (void*)g_orig_CreateCBV);
     }
-    // Real game objects only: no throwaway device through sl.interposer.
+    // Clean build: slots 18/19 belonged only to the completed NR descriptor census and remain
+    // untouched. Real game objects only: no throwaway device through sl.interposer.
     DWORD o20 = 0;
     if (VirtualProtect(&vt[20], sizeof(void*), PAGE_READWRITE, &o20)) {
         g_orig_CreateRTV = reinterpret_cast<CreateRTVFn>(vt[20]);

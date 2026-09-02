@@ -15,6 +15,7 @@
 #include "Render/DepthResolve.hpp"
 #include "Render/SharpenPass.hpp"
 #include "Render/ColorBlit.hpp"
+#include "Render/NativePostProcess.hpp"
 
 struct IDXGISwapChain;
 
@@ -1121,12 +1122,17 @@ private:
     static constexpr int kVrcamEyeSlots = 3;
     ID3D12Resource* m_vrcamEyePool[kVrcamEyeSlots] = {};
     uint64_t        m_vrcamEyePoolSerial[kVrcamEyeSlots] = {};
+    // Optional post-processed twin of each raw slot. Kept separate so the shader never reads
+    // and writes one resource, and selected only when its serial proves that draw completed.
+    ID3D12Resource* m_vrcamGradePool[kVrcamEyeSlots] = {};
+    uint64_t        m_vrcamGradePoolSerial[kVrcamEyeSlots] = {};
     int             m_vrcamEyeSlot = 0;
     uint32_t        m_vrcamEyeW = 0;
     uint32_t        m_vrcamEyeH = 0;
     uint32_t        m_vrcamEyeFmt = 0;
     uint64_t        m_vrcamEyeSerial = 0;   // newest published serial; 0 = none
     bool EnsureVrcamEyeTexture(uint32_t width, uint32_t height, DXGI_FORMAT format);
+    bool EnsureVrcamGradeTextures(uint32_t width, uint32_t height, DXGI_FORMAT format);
     uint64_t m_depthSnapshotSerial = 0; // serial of the color frame this depth matches; 0 = invalid/empty
     // Staging copy of the game depth, taken inline at the readable barrier (see
     // CaptureSceneDepthInline). Same layout as the source; left in PIXEL_SHADER_RESOURCE so
@@ -1223,6 +1229,7 @@ private:
     XrFovf m_lastGoodFov[2]{};
     bool m_lastGoodValid = false;
     std::unique_ptr<ColorBlit> m_colorBlit;
+    std::unique_ptr<NativePostProcess> m_nativePostProcess;
     // Engine present pacing: see openxr_manager.cpp OnPresent. The HMD-paced gate is
     // m_frameSyncEvent.
     std::atomic<int64_t> m_predictedDisplayPeriodNs{0};

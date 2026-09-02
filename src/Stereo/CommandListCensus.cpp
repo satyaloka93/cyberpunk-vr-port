@@ -1903,10 +1903,13 @@ static void volume_node_note(uint32_t rva, UINT n, bool vrcam) {
     log("[volnode] cubic dispatches, node:shape(views): %s", line);
 }
 
+extern "C" int CyberpunkVR_GetSlEvaluateTraceContext(unsigned long long* sequence, int* side);
+
  void STDMETHODCALLTYPE hk_Dispatch(ID3D12GraphicsCommandList* self,
         UINT x, UINT y, UINT z) {
     const CommandListVtableHook* e = command_list_hook_entry(self);
     if (!e || !e->dispatch_original) return;
+    // Clean build: the scoped NR dispatch/writeback census is complete.
     maybe_marker(self);
     e->dispatch_original(self, x, y, z);
     t_last_disp[0] = x; t_last_disp[1] = y; t_last_disp[2] = z;
