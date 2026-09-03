@@ -3,7 +3,7 @@ type: Fix
 title: Second-eye load crash (descriptor zero)
 description: A silent exit at menu-initiated save loads, traced to a shared second-eye render-resource helper consuming an unallocated one-based descriptor index.
 resource: https://github.com/satyaloka93/cyberpunk-vr-port/blob/upstream-0.1.3-psvr2/src/Stereo/NodeDispatch.cpp
-tags: [crash, stereo, frame-graph, load-transition, vrcam, open]
+tags: [crash, stereo, frame-graph, load-transition, vrcam, validated]
 timestamp: 2026-09-03T07:45:00+09:00
 ---
 
@@ -17,11 +17,11 @@ present on `psvr2-tweaks`, and no capture from that branch is comparable.
 
 # Status
 
-**Open, with a corrected post-prepare zero-sentinel candidate ready for retest.** The invalid
-descriptor and unchecked direct consumer are established. The caller supplies zero to a one-based
-helper; the helper decrements it, which is why dumps show `RDX=0xFFFFFFFF` at the fault. The candidate
-now rejects zero at the first post-prepare read and uses one captured valid value for all downstream
-uses. Repeated second-load validation is required.
+**Validated in a three-game, single-process load sequence.** The caller supplies zero to a one-based
+helper; the helper decrements it, which is why dumps show `RDX=0xFFFFFFFF` at the fault. The repair
+rejects zero at the first post-prepare read and uses one captured valid value for all downstream
+uses. It fired under the measured carrier, the guarded load completed, a third game loaded, binocular
+NR resumed, and no replacement crash appeared.
 
 # The fault, identically at least nine times
 
@@ -155,16 +155,25 @@ The corrected stub rejects zero, balances preparation with the caller's normal c
 Every valid descriptor remains unchanged, and the intervention is one invalid operation, never a
 frame-graph node.
 
-# Validation boundary for a repair
+# Validation result
 
 Do not broadly skip a named frame-graph node: the failed blind-window experiment already proved that
-suppressing producers/cleanup manufactures different missing-resource faults. The candidate remains
-scoped to when the post-prepare read at `+0x7743A4` receives descriptor index zero, records the available calling node, and
-allows all valid descriptor operations through unchanged.
+suppressing producers/cleanup manufactures different missing-resource faults. The repair remains
+scoped to when the post-prepare read at `+0x7743A4` receives descriptor index zero, records the
+available calling node, and allows all valid descriptor operations through unchanged.
 
-It is not validated until repeated in-process save loads complete, the invalid-call counter is
-observable, both eyes resume, and no different missing-resource, GPU-hang, or stale-eye failure
-replaces the original crash.
+Build `5d38d9f` (`CyberpunkVR_Stereo.dll` SHA-256
+`88e406a6af041bcf1340f3b0ab533256b02aa11852b636b8172a5bd7192ab816`) completed three game loads
+in one process. The hook installed with a 112-byte stub. On the second transition its counter
+advanced through 37 under VRCAM `PrepareAutoSpawnOnTerrain`, 516–906 ms after component rebind. The
+load then returned `sceneTier 0 -> 1`, both MAIN/VRCAM NR applies resumed, and OpenXR reached
+`cycles=13200 submits=13198 missed=2`. A third component rebind also completed; paired foveal applies
+reached `9616/9616` and OpenXR reached `19800/19798/2`. No new REDEngine report or replacement GPU,
+missing-resource, or stale-eye failure appeared. Evidence:
+`20260903-091240-three-load-zero-sentinel-success`.
+
+This validates the exact CPU descriptor repair against the reproduced sequence. It does **not**
+close the separate active-NR menu/save GPU-hang family.
 
 If another external dump is needed, use:
 
