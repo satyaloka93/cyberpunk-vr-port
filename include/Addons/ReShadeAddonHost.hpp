@@ -69,6 +69,9 @@ extern "C" void CyberpunkVR_AddonHostInit();
 // Called once per frame from the Present hook. Cheap and lock-free when nothing is armed.
 extern "C" void CyberpunkVR_AddonHostOnPresent(void* swapChain);
 // Calls the addon's registered settings page. Must be called from INSIDE an ImGui window.
+// Draws the closed addon's real live master switch at the parent level. The ordinary overlay pass
+// suppresses that same widget so users never see contradictory duplicate NR controls.
+extern "C" int  CyberpunkVR_AddonHostDrawNeuralToggle(int* enabled);
 extern "C" int  CyberpunkVR_AddonHostDrawOverlay();
 extern "C" void CyberpunkVR_AddonHostSetDrawOverlay(int on);
 extern "C" void CyberpunkVR_AddonHostSetStubReturn(int value);

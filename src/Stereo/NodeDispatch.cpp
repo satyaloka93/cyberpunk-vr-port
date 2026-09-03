@@ -86,11 +86,13 @@ NodeDispatchFn          g_node_dispatch_orig = nullptr;
 std::atomic<bool>       g_node_dispatch_hooked{false};
 
 // Cyberpunk2077.exe+0x774384 takes a descriptor whose first DWORD is a ONE-BASED render-table
-// index. Unlike the guarded caller at +0x1F4700, it does not reject -1 before indexing the
-// 0xB0-stride table. The function-entry guard was intrinsically racy: +0x77439F calls +0x1F405C
-// before reading the descriptor, and that preparation call can replace the entry-time value with
-// -1. Hook the first read AFTER preparation instead. The valid path uses that one captured value
-// for both the table offset and helper argument, closing the second read's TOCTOU window too.
+// index. Unlike the guarded caller at +0x1F4700, it does not reject zero before indexing the
+// 0xB0-stride table. (The helper decrements zero, which is why the dumps show fault-time -1.) The
+// function-entry guard was intrinsically racy: +0x77439F calls +0x1F405C before reading the
+// descriptor, and that preparation call can replace the entry-time value with the unallocated
+// zero sentinel. Hook the first read AFTER preparation instead. The valid path uses that one
+// captured value for both the table offset and helper argument, closing the second read's TOCTOU
+// window too.
 void* g_invalid_descriptor_post_trampoline = nullptr; // MinHook owns it; valid path is emitted exactly.
 void* g_invalid_descriptor_post_stub = nullptr;
 extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugInvalidRenderDescriptorSkips = 0;
@@ -104,7 +106,7 @@ void NoteInvalidRenderDescriptorSkip() {
     const uint32_t nodeRva = (base && t_current_node_work > base)
         ? static_cast<uint32_t>(t_current_node_work - base) : 0;
     const char* name = nodeRva ? CyberpunkVR_ProfNodeName(nodeRva) : nullptr;
-    log("[descguard] skipped post-prepare descriptor index=-1 caller=0x774384 "
+    log("[descguard] skipped post-prepare descriptor index=0 caller=0x774384 "
         "tlsView=%s node=0x%X/%s rebindAge=%llums count=%llu",
         t_vrcam_node_active ? "VRCAM" : "unattributed",
         nodeRva, (name && *name) ? name : "?",
@@ -145,9 +147,11 @@ bool InstallInvalidRenderDescriptorGuard() {
     const auto e64 = [&](uint64_t v) { memcpy(code + p, &v, sizeof(v)); p += sizeof(v); };
     const auto movRaxImm = [&](uint64_t v) { e8(0x48); e8(0xB8); e64(v); };
 
-    // Read the descriptor exactly where the engine first consumes the post-prepare value.
+    // Read the descriptor exactly where the engine first consumes the post-prepare value. Dumps
+    // show edx=-1 inside +0x1F51C4 only because that helper decrements the one-based input first;
+    // the descriptor's actual unallocated sentinel at this boundary is zero.
     e8(0x8B); e8(0x13);                                  // mov edx,[rbx]
-    e8(0x83); e8(0xFA); e8(0xFF);                        // cmp edx,-1
+    e8(0x85); e8(0xD2);                                  // test edx,edx
     e8(0x74); const size_t invalidDisp = p++;             // je invalid
 
     // Valid: preserve the prepared object, derive r15 and helper edx from ONE captured index, then
@@ -166,7 +170,7 @@ bool InstallInvalidRenderDescriptorGuard() {
     const size_t invalid = p;
     code[invalidDisp] = static_cast<uint8_t>(invalid - (invalidDisp + 1));
 
-    // Invalid: balance the +0x1F405C prepare with the engine's normal cleanup, record the skip,
+    // Invalid zero: balance +0x1F405C prepare with the engine's normal cleanup, record the skip,
     // then use the original epilogue. This abandons one invalid operation, not its frame-graph node.
     e8(0x48); e8(0x8B); e8(0xE8);                        // mov rbp,rax
     e8(0x48); e8(0x8B); e8(0xC8);                        // mov rcx,rax

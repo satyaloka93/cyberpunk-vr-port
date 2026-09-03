@@ -323,13 +323,13 @@ resolution and the addon's own sampling path enlarges that populated region bili
 Performance reached about 55–61 FPS but shimmered; Performance was slightly cleaner at about 30 FPS.
 The viable visual path is ordinary DLSS SR followed by native NR.
 
-The current blocker is lifecycle, not initial creation: the first in-session save change performs a
-same-size swapchain resize, after which the addon never adopts replacement guides and silently stops
-NR. Host-side reset/re-arm behavior must be proven before this can be normal-play functionality.
+The current NR blocker is lifecycle, not initial creation: active-NR menu/save transitions have
+repeatedly produced a matched GPU-hang signature. A separate second-load CPU descriptor fault is
+tracked independently and must not be attributed to feature 18 without matching evidence.
 
-The installed addon is the required RTX 4000-patched build (`FileVersion 0.2026.0827.2036`, SHA-256
-`87aef9dd…`). Its source is not in public RenoDX; preserve this exact file unless the user explicitly
-chooses another build.
+The installed addon is build 4.55 (`FileVersion 0.2026.0828.0517`, internal RenoDX DLSS5 Generic
+v4.1.5, SHA-256 `9150097cdee2953cdc9894d2e5606ea5100e6c8f95fc7bb1b407328b4391a07a`).
+Its source is not public; preserve this exact file unless the user explicitly chooses another build.
 
 **What may be worth keeping is the host**, after an explicit addon allowlist, exact ABI, and a
 fail-closed load-transition recovery path exist.
@@ -346,7 +346,7 @@ fail-closed load-transition recovery path exist.
 | `src/Addons/ReShadeAddonHost.cpp` | new — the host |
 | `src/Main.cpp` | `+1` call at the end of `Load` |
 | `src/Hooks/SwapChain.cpp` | `+1` call in `HookedPresent` for event 74 |
-| `src/Overlay/OverlayPanels.cpp` | F10 panel under **DLSS / Debug** |
+| `src/Overlay/OverlayPanels.cpp` | F10 panel under **DLSS 5** |
 
 Cost on the normal path when nothing is armed: one relaxed atomic load per frame.
 
@@ -362,10 +362,12 @@ overlay_stub_returns=0 ; required: unimplemented widgets must never claim a chan
 overlay_widgets=1      ; exact ImGui 1.92.5 forwarding for the measured controls
 ```
 
-### To restore yesterday's performance
+### Live master switch
 
-Untick **Host the addon in-process** in F10, or set `enabled=0`. The neural rendering stops and
-nothing else changes.
+F10 exposes **Enable DLSS 5 Neural Rendering** once, in the parent DLSS 5 section. It is the closed
+addon's real live feature-18 switch and does not require a game restart. The duplicate copy from the
+addon's Image style page is suppressed. `[host] enabled=1` only makes the in-process host available
+at startup; it is not presented as a second Neural Rendering switch.
 
 ### Preconditions if re-enabling
 

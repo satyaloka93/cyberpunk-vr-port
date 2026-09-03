@@ -1,6 +1,6 @@
 ---
 type: Fix
-title: Second-eye load crash (descriptor -1)
+title: Second-eye load crash (descriptor zero)
 description: A silent exit at menu-initiated save loads, traced to a shared second-eye render-resource helper consuming an unallocated one-based descriptor index.
 resource: https://github.com/satyaloka93/cyberpunk-vr-port/blob/upstream-0.1.3-psvr2/src/Stereo/NodeDispatch.cpp
 tags: [crash, stereo, frame-graph, load-transition, vrcam, open]
@@ -17,13 +17,13 @@ present on `psvr2-tweaks`, and no capture from that branch is comparable.
 
 # Status
 
-**Open, with a post-prepare exact-sentinel candidate ready for retest.** The invalid descriptor and
-unchecked direct consumer are established. Both function-entry guards sampled the descriptor before
-the caller's own preparation routine could change it to `-1`. The candidate now intercepts the first
-post-prepare read and uses one captured valid value for all downstream uses. Repeated second-load
-validation is required.
+**Open, with a corrected post-prepare zero-sentinel candidate ready for retest.** The invalid
+descriptor and unchecked direct consumer are established. The caller supplies zero to a one-based
+helper; the helper decrements it, which is why dumps show `RDX=0xFFFFFFFF` at the fault. The candidate
+now rejects zero at the first post-prepare read and uses one captured valid value for all downstream
+uses. Repeated second-load validation is required.
 
-# The fault, identically at least eight times
+# The fault, identically at least nine times
 
 ```
 EXCEPTION 0xC0000005      read at 0x...0AB0
@@ -35,16 +35,17 @@ caller  Cyberpunk2077.exe+0x7743C9
 The faulting routine takes a **one-based index** and scales it by `0xB0`:
 
 ```asm
-mov  r14,[table]          ; global render/format table
+mov  ebx,edx              ; preserve caller's one-based index
+mov  r14,[table]
 dec  edx                  ; index - 1
 imul r15,rdx,0B0h         ; * 0xB0 stride
 cmp  qword ptr [r15+r14+5C0B60h],0   ; <-- faults
 ```
 
-With `edx = -1`: `dec` gives `0xFFFFFFFE`, the multiply gives `r15 = 0xAFFFFFFF50`, and the compare
-reads unmapped memory. So **-1 is the engine's unallocated sentinel and can never be a valid index
-here** — the arithmetic guarantees a wild address. The caller reads that -1 out of the first DWORD
-of a descriptor object.
+The dumps show `edx = 0xFFFFFFFF` only **after this decrement**, while preserved `ebx` is zero.
+Therefore the caller supplied `0`, the unallocated sentinel for the one-based table. Decrementing
+zero gives `0xFFFFFFFF`; the multiply gives `r15 = 0xAFFFFFFF50`, and the compare reads unmapped
+memory. The earlier interpretation that the descriptor itself held `-1` was off by one.
 
 # Paired dump and log evidence
 
@@ -63,7 +64,7 @@ Static disassembly identifies it. Direct caller `Cyberpunk2077.exe+0x774384` rea
 of a descriptor object, subtracts one, calls the faulting helper at `+0x1F51C4`, and later reuses the
 same scaled index at `+0x774428` and `+0x77446F`. It performs no sentinel/range check. Another caller
 at `+0x1F4700` explicitly rejects invalid one-based indices before invoking the same helper. The
-missing validation at `+0x774384` is therefore concrete; who leaves the descriptor at `-1` during
+missing validation at `+0x774384` is therefore concrete; who leaves the descriptor at zero during
 the VRCAM re-bind remains unknown.
 
 Native DLSS Neural Rendering was present in some captures, but the RVA, bad address suffix,
@@ -84,7 +85,7 @@ A real `cdb` `kvn` unwind — not the stack **scan** `tools/crash/read_dump.py` 
 0d  kernel32!BaseThreadInitThunk
 ```
 
-So the -1 is consumed **inside a frame-graph node dispatched for the second eye**, in the window
+So the invalid zero is consumed **inside a frame-graph node dispatched for the second eye**, in the window
 immediately after a VRCAM component re-bind. The `[rebind-trace]` breadcrumb confirms the window
 independently: the log ends mid-trace, ~199 dispatches past the last re-bind, guard still engaged.
 
@@ -139,21 +140,26 @@ adding another attribution guess. It shows the descriptor is prepared *after* fu
 +0x7743C4  call +0x1F51C4
 ```
 
-The entry detour could read a valid value before `+0x1F405C` replaced it with `-1`. Removing context
-gates at that same location would not close this TOCTOU race.
+The entry detour could read a valid value before `+0x1F405C` replaced it with an invalid value.
+Removing context gates at that same location would not close this TOCTOU race.
 
 The next candidate validates the exact Cyberpunk 2.31 bytes through `+0x7743C3` and intercepts
 `+0x7743A4`, after preparation. Its runtime stub captures the index once. A valid value feeds both
-the `0xB0` table offset and helper argument, eliminating the second read. For `0xFFFFFFFF`, it
-balances preparation with the caller's normal cleanup at `+0x1F7164`, records the skip, and uses the
-original epilogue. Eye/rebind context is diagnostic only. Every valid descriptor remains unchanged,
-and the intervention is one invalid operation, never a frame-graph node.
+the `0xB0` table offset and helper argument, eliminating the second read. The first implementation
+incorrectly compared against `0xFFFFFFFF`; a third 2026-09-03 dump proved the stub ran, accepted
+zero, and the helper then decremented zero to the observed fault-time `0xFFFFFFFF`. Evidence:
+`20260903-085434-second-load-zero-sentinel`.
+
+The corrected stub rejects zero, balances preparation with the caller's normal cleanup at
+`+0x1F7164`, records the skip, and uses the original epilogue. Eye/rebind context is diagnostic only.
+Every valid descriptor remains unchanged, and the intervention is one invalid operation, never a
+frame-graph node.
 
 # Validation boundary for a repair
 
 Do not broadly skip a named frame-graph node: the failed blind-window experiment already proved that
 suppressing producers/cleanup manufactures different missing-resource faults. The candidate remains
-scoped to when `+0x774384` receives descriptor index `-1`, records the available calling node, and
+scoped to when the post-prepare read at `+0x7743A4` receives descriptor index zero, records the available calling node, and
 allows all valid descriptor operations through unchanged.
 
 It is not validated until repeated in-process save loads complete, the invalid-call counter is

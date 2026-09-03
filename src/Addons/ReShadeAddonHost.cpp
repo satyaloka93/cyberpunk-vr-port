@@ -107,6 +107,12 @@ bool  g_iniDirty = false;
 DWORD g_lastIniWrite = 0;
 void* g_overlayCallback = nullptr;
 bool  g_overlayFaulted = false;
+// The publish UI owns the one master NR switch. Invoke the closed addon's page in two filtered
+// passes: master-only at the parent level, then everything except that master in Image style.
+enum class OverlayFilter : int { All = 0, MasterOnly = 1, HideMaster = 2 };
+OverlayFilter g_overlayFilter = OverlayFilter::All;
+bool  g_neuralToggleSeen = false;
+bool  g_neuralToggleValue = false;
 char  g_imguiCalls[192] = {};
 std::atomic<bool> g_presentArmed{false};  // device delivered and a present callback exists
 std::atomic<uint64_t> g_presentCalls{0};
@@ -380,6 +386,17 @@ void DrawDlss5ControlHelp(const char* label) {
 
 bool ImplCheckbox(const char* label, bool* v) {
     if (!ReadableString(label, 128) || !v) return false;
+    const bool neuralMaster = strcmp(label, "Enable DLSS Neural Rendering") == 0;
+    if (neuralMaster) {
+        g_neuralToggleSeen = true;
+        g_neuralToggleValue = *v;
+        if (g_overlayFilter == OverlayFilter::HideMaster) return false;
+        const bool changed = ImGui::Checkbox("Enable DLSS 5 Neural Rendering", v);
+        g_neuralToggleValue = *v;
+        DrawDlss5ControlHelp(label);
+        return changed;
+    }
+    if (g_overlayFilter == OverlayFilter::MasterOnly) return false;
     if (strcmp(label, "Enable Upscaling") == 0) {
         // A live native->upscaling->native transition created three feature generations and then
         // degraded from ~50 FPS to 18, 14 and finally 11.5 FPS while XR kept submitting. Keep the
@@ -401,6 +418,7 @@ bool ImplCheckbox(const char* label, bool* v) {
 
 bool ImplButton(const char* label, const ImVec2& size) {
     if (!ReadableString(label, 128)) return false;
+    if (g_overlayFilter == OverlayFilter::MasterOnly) return false;
     const bool changed = ImGui::Button(label, size);
     DrawDlss5ControlHelp(label);
     return changed;
@@ -409,6 +427,7 @@ bool ImplButton(const char* label, const ImVec2& size) {
 bool ImplSliderFloat(const char* label, float* v, float vmin, float vmax,
                      const char* fmt, int flags) {
     if (!ReadableString(label, 128) || !v) return false;
+    if (g_overlayFilter == OverlayFilter::MasterOnly) return false;
     const char* f = ReadableString(fmt, 32) ? fmt : "%.3f";
     if (!(vmin < vmax)) { vmin = 0.0f; vmax = 1.0f; }   // junk range = unusable widget
 
@@ -432,17 +451,18 @@ bool ImplSliderFloat(const char* label, float* v, float vmin, float vmax,
 // the same slot, so one correct Checkbox forwarder exposes Enable NR, Enable Upscaling and AutoMask.
 bool ImplCombo(const char* label, int* current, const char* const items[], int count, int popupMax) {
     if (!ReadableString(label, 128) || !current || !items || count <= 0 || count >= 256) return false;
+    if (g_overlayFilter == OverlayFilter::MasterOnly) return false;
     const bool changed = ImGui::Combo(label, current, items, count, popupMax);
     DrawDlss5ControlHelp(label);
     return changed;
 }
 
 void ImplSeparator() {
-    ImGui::Separator();
+    if (g_overlayFilter != OverlayFilter::MasterOnly) ImGui::Separator();
 }
 
 void ImplTextUnformatted(const char* text, const char* textEnd) {
-    if (!ReadableString(text, 512)) return;
+    if (!ReadableString(text, 512) || g_overlayFilter == OverlayFilter::MasterOnly) return;
     // The current addon passes null for textEnd. Ignore an untrusted non-null end pointer rather
     // than walking it; every label/status string in this page is NUL terminated.
     (void)textEnd;
@@ -451,7 +471,7 @@ void ImplTextUnformatted(const char* text, const char* textEnd) {
 }
 
 void ImplTextV(const char* fmt, va_list args) {
-    if (!ReadableString(fmt, 256)) return;
+    if (!ReadableString(fmt, 256) || g_overlayFilter == OverlayFilter::MasterOnly) return;
     ImGui::TextV(fmt, args);
 }
 
@@ -1127,17 +1147,32 @@ extern "C" void CyberpunkVR_AddonHostOnPresent(void* swapChain) {
     if (n == 1 || n == 60 || n == 600) Log("[addonhost] present delivered %llu time(s).\n", n);
 }
 
-extern "C" int CyberpunkVR_AddonHostDrawOverlay() {
-    if (!g_enabled || !g_drawOverlay || !g_overlayCallback || g_overlayFaulted) return 0;
+int DrawOverlayFiltered(OverlayFilter filter, bool requireDrawEnabled, int* neuralEnabled) {
+    if (!g_enabled || !g_overlayWidgets || (requireDrawEnabled && !g_drawOverlay) ||
+            !g_overlayCallback || g_overlayFaulted) return 0;
     static bool s_vtFilled = false;
     if (!s_vtFilled) { FillRuntimeVt(std::make_integer_sequence<int, kVtSlots>{}); s_vtFilled = true; }
+    g_overlayFilter = filter;
+    g_neuralToggleSeen = false;
     if (!InvokeOverlayGuarded(reinterpret_cast<void(*)(void*)>(g_overlayCallback))) {
+        g_overlayFilter = OverlayFilter::All;
         g_overlayFaulted = true;
         Log("[addonhost] the addon's overlay FAULTED -- not called again this session. The last "
             "imgui_function_table slot logged above is the one that has to be real.\n");
         return 0;
     }
-    return 1;
+    g_overlayFilter = OverlayFilter::All;
+    if (neuralEnabled && g_neuralToggleSeen) *neuralEnabled = g_neuralToggleValue ? 1 : 0;
+    return (filter == OverlayFilter::MasterOnly) ? (g_neuralToggleSeen ? 1 : 0) : 1;
+}
+
+extern "C" int CyberpunkVR_AddonHostDrawNeuralToggle(int* enabled) {
+    return DrawOverlayFiltered(OverlayFilter::MasterOnly, false, enabled);
+}
+
+extern "C" int CyberpunkVR_AddonHostDrawOverlay() {
+    // The master appears only in the parent section; this pass contains image/style controls only.
+    return DrawOverlayFiltered(OverlayFilter::HideMaster, true, nullptr);
 }
 
 extern "C" void CyberpunkVR_AddonHostSetDrawOverlay(int on) {

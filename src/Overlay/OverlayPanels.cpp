@@ -422,15 +422,21 @@ void DrawReShadeAddonHostPanel() {
 
     ImGui::SeparatorText("DLSS 5 Neural Rendering  (Experimental)");
 
-    int enabled = st.enabled;
-    if (CheckboxInt("Enable DLSS 5 Neural Rendering  (restart required)", &enabled)) {
-        CyberpunkVR_AddonHostSetEnabled(enabled);
+    int neuralEnabled = 0;
+    const bool neuralToggleAvailable =
+        CyberpunkVR_AddonHostDrawNeuralToggle(&neuralEnabled) != 0;
+    if (!neuralToggleAvailable) {
+        bool unavailable = false;
+        ImGui::BeginDisabled();
+        ImGui::Checkbox("Enable DLSS 5 Neural Rendering", &unavailable);
+        ImGui::EndDisabled();
+        ImGui::TextDisabled("Live master control unavailable until the addon host is loaded.");
     }
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip(
-            "Loads the bundled RenoDX DLSS5 addon directly; ReShade is not loaded.\n"
-            "This is DLSS Neural Rendering, separate from ordinary DLSS Super Resolution.\n"
-            "The master switch is applied on the next game launch.");
+            "Live master switch for DLSS Neural Rendering. ReShade is not loaded.\n"
+            "This is separate from ordinary DLSS Super Resolution and applies immediately;\n"
+            "no game restart is required.");
     }
 
     // ---- one line that says where this actually got to -----------------------------------------
@@ -456,8 +462,8 @@ void DrawReShadeAddonHostPanel() {
         state = "Loaded and running";
         tint  = ImVec4(0.45f, 0.90f, 0.55f, 1.0f);
     }
-    ImGui::TextColored(tint, "Status: %s", state);
-    if (st.enabled) {
+    ImGui::TextColored(tint, "Addon host: %s", state);
+    if (neuralToggleAvailable && neuralEnabled) {
         ImGui::TextColored(ImVec4(1.0f, 0.70f, 0.28f, 1.0f),
                            "Experimental: menu and save transitions are not yet lifecycle-safe.");
         ImGui::TextWrapped("Save once per launch when possible. If a pause, map, inventory or save "
@@ -472,11 +478,15 @@ void DrawReShadeAddonHostPanel() {
             const bool stereoActive = nr.fovealApplies[0] > 0 && nr.fovealApplies[1] > 0 &&
                 nr.lastEvalTickMs[0] && nr.lastEvalTickMs[1] &&
                 statusNow - nr.lastEvalTickMs[0] < 2000 && statusNow - nr.lastEvalTickMs[1] < 2000;
-            ImGui::TextColored(stereoActive ? ImVec4(0.45f, 0.90f, 0.55f, 1.0f)
-                                            : ImVec4(1.0f, 0.78f, 0.35f, 1.0f),
-                               stereoActive ? "Stereo Neural Rendering: active in both eyes"
-                                            : "Stereo Neural Rendering: waiting for both eyes");
-            if (nr.foveationEnabled) {
+            if (neuralToggleAvailable && !neuralEnabled) {
+                ImGui::TextDisabled("Stereo Neural Rendering: disabled");
+            } else {
+                ImGui::TextColored(stereoActive ? ImVec4(0.45f, 0.90f, 0.55f, 1.0f)
+                                                : ImVec4(1.0f, 0.78f, 0.35f, 1.0f),
+                                   stereoActive ? "Stereo Neural Rendering: active in both eyes"
+                                                : "Stereo Neural Rendering: waiting for both eyes");
+            }
+            if (nr.foveationEnabled && (!neuralToggleAvailable || neuralEnabled)) {
                 const int activePreset = NgxGetDlssNrFovealActivePreset();
                 int selectedPreset = NgxGetDlssNrFovealSelectedPreset();
                 static const char* kFovealPresets[] = {
@@ -595,8 +605,9 @@ void DrawReShadeAddonHostPanel() {
     if (st.hasOverlay) {
         ImGui::Spacing();
         if (ImGui::TreeNode("Image style and advanced NR tuning")) {
-        ImGui::TextWrapped("Optional RenoDX controls. Keep Enable Upscaling OFF. Natural/Cinematic "
-                           "and strength controls apply live; change one at a time.");
+        ImGui::TextWrapped("Optional RenoDX controls. The Neural Rendering master switch appears "
+                           "only in the parent section above. Keep Enable Upscaling OFF. "
+                           "Natural/Cinematic and strength controls apply live; change one at a time.");
 
         if (!st.drawOverlay || !st.overlayWidgets) {
             ImGui::TextDisabled("Live controls are disabled in the host configuration.");
