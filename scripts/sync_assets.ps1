@@ -34,6 +34,9 @@ $Assets = @(
     # the same capsule that decides what the player can walk past, so it ships with the port.
     @{ Repo = "mods\tweaks\vrport";                     Game = "r6\tweaks\vrport";                       Dir = $true  },
     @{ Repo = "mods\archive\cyberpunkvrport.archive";   Game = "archive\pc\mod\cyberpunkvrport.archive"; Dir = $false },
+    # Eight non-overlapping UI resources split from upstream 0.1.6. Keep this separate: replacing the
+    # baseline archive would also import player/laser changes and remove focus_mode.envparam.
+    @{ Repo = "mods\archive\cyberpunkvrport_ui_016.archive"; Game = "archive\pc\mod\cyberpunkvrport_ui_016.archive"; Dir = $false },
     @{ Repo = "mods\archive\VRCigarette.archive.xl";    Game = "archive\pc\mod\VRCigarette.archive.xl";  Dir = $false },
     # The VR basketball assets: vrbasketball\vr_basketball.{mesh,ent}. Packed separately from
     # cyberpunkvrport.archive so a rebuild of the player-entity pack cannot drop them, and so the

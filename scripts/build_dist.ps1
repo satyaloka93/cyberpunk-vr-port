@@ -118,7 +118,11 @@ if (Test-Path $tw) {
 }
 
 # ---- packed archives ---------------------------------------------------------------------------
-foreach ($a in @("cyberpunkvrport.archive","VRCigarette.archive.xl","vrport_basketball.archive")) {
+# Keep this explicit: cyberpunkvrport_ui_016.archive is the reviewed eight-resource UI-only split
+# from upstream 0.1.6. The upstream monolithic archive must not replace our baseline archive because
+# it also changes player/laser assets and removes focus_mode.envparam.
+foreach ($a in @("cyberpunkvrport.archive", "cyberpunkvrport_ui_016.archive",
+                 "VRCigarette.archive.xl", "vrport_basketball.archive")) {
     $p = Join-Path $RepoRoot "mods\archive\$a"
     if (Test-Path $p) { Add-File $p "archive\pc\mod\$a" }
     else { Write-Host "[!] $a is not in the repo -- run sync_assets.ps1 first" }
