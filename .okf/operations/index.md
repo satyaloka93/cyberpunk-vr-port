@@ -10,3 +10,4 @@
 * [Diagnostic logging discipline](diagnostic-logging-discipline.md) — Throttle on novelty, never on a session-wide counter, and never discard the field that tells two callers apart; both mistakes have already blinded a crash here.
 * [Host machine stability as a crash confound](host-machine-stability-confound.md) — What survives scrutiny about this machine's hardware faults, what was retracted, and how to tell a machine hang from a port defect.
 * [OKF maintenance and GitHub links](okf-maintenance.md) — Keep concepts current and repair links that OKF consumers understand but GitHub cannot resolve.
+* [Selective upstream import policy](selective-upstream-imports.md) — Import isolated improvements without replacing validated PSVR2, stereo, DLSSNR, or save-load behavior.
