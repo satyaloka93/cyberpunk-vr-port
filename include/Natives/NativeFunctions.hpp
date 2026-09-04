@@ -129,6 +129,9 @@ void VRWristGuard(RED4ext::IScriptable* aContext, RED4ext::CStackFrame* aFrame, 
 
 // Which surveillance camera the player took over, published from a CET tick because the plugin's own
 // poll runs on the worker thread and must not call the script VM. See src/Natives/RemoteCamera.cpp.
+void VRPlayerCamera(RED4ext::IScriptable* aContext, RED4ext::CStackFrame* aFrame, int32_t* aOut, int64_t a4);
+void VRSceneCamera(RED4ext::IScriptable* aContext, RED4ext::CStackFrame* aFrame, int32_t* aOut, int64_t a4);
+void VRBraindance(RED4ext::IScriptable* aContext, RED4ext::CStackFrame* aFrame, int32_t* aOut, int64_t a4);
 void VRRemoteCamera(RED4ext::IScriptable* aContext, RED4ext::CStackFrame* aFrame, int32_t* aOut, int64_t a4);
 
 void VRScannerSlotGet(RED4ext::IScriptable*, RED4ext::CStackFrame* aFrame, float* aOut, int64_t);

@@ -46,6 +46,9 @@ extern "C" unsigned long long CyberpunkVR_DebugStereoEyeSubmits;
 extern "C" int32_t CyberpunkVR_StableCopy;
 extern "C" int32_t CyberpunkVR_StableFromTonemap;
 extern "C" uint64_t CyberpunkVR_DebugStableCopies;
+extern "C" uint64_t CyberpunkVR_DebugQueueWaitsIssued;
+extern "C" uint64_t CyberpunkVR_DebugQueueWaitsSkipped;
+extern "C" uint64_t CyberpunkVR_DebugQueueWaitsDropped;
 extern "C" uint64_t CyberpunkVR_DebugStableSkips;
 extern "C" int32_t CyberpunkVR_VrcamDlss;
 extern "C" int32_t CyberpunkVR_ForceVrcamCam;
@@ -821,6 +824,62 @@ void DrawReShadeAddonHostPanel() {
 // frame, so edits apply immediately and the Save button has nothing to do with them. That is
 // the same contract the testbed panel had, and it is what makes this usable for tuning IPD
 // with the headset on.
+// The numbers that answer "why does 90 FPS feel choppy". Mean FPS is the one statistic that cannot
+// tell a steady 90 from an alternating 8/16 ms pattern averaging 90, so the distribution is what is
+// shown: the 1% low, how many frames overshoot the median, and whether the cadence divides evenly
+// into the display rate. See PerfStats in OverlayInternal.hpp.
+void DrawPerformancePanel() {
+    PerfStats s{};
+    GetPerfStats(&s);
+
+    const ImVec4 green(0.35f, 1.0f, 0.45f, 1.0f);
+    const ImVec4 amber(1.0f, 0.82f, 0.28f, 1.0f);
+    const ImVec4 red(1.0f, 0.35f, 0.28f, 1.0f);
+
+    const ImVec4 fpsColor = s.presentFps >= 80.0f ? green : (s.presentFps >= 45.0f ? amber : red);
+    ImGui::TextColored(fpsColor, "Present  %6.1f FPS   %5.2f ms",
+                       s.presentFps, s.presentFps > 0.01f ? 1000.0f / s.presentFps : 0.0f);
+    ImGui::Text("XR %6.1f Hz    VRCAM %6.1f FPS", s.xrHz, s.vrcamFps);
+
+    ImGui::Separator();
+    const float p99Fps = s.p99Ms > 0.01f ? 1000.0f / s.p99Ms : 0.0f;
+    ImGui::Text("Frametime  med %5.2f   1%% low %5.2f ms (%.0f FPS)   max %5.2f ms",
+                s.medianMs, s.p99Ms, p99Fps, s.maxMs);
+
+    const ImVec4 stutterColor = s.stutterPct <= 1.0f ? green : (s.stutterPct <= 5.0f ? amber : red);
+    ImGui::TextColored(stutterColor, "Stutter    %4.1f%% of frames over 1.5x median", s.stutterPct);
+
+    // Green only near a whole ratio: 1.0 (every refresh) and 2.0 (every other) are the only
+    // cadences a fixed-rate display can present evenly.
+    const float nearest = std::round(s.cadenceRatio);
+    const bool even = s.cadenceRatio > 0.01f && std::fabs(s.cadenceRatio - nearest) < 0.06f;
+    ImGui::TextColored(even ? green : amber, "Cadence    %.2f refreshes per presented frame  %s",
+                       s.cadenceRatio, even ? "(even)" : "(UNEVEN -- judders)");
+
+    if (s.history != nullptr && s.historyCount >= 8) {
+        float plot[256];
+        const unsigned n = s.historyCount < 256u ? s.historyCount : 256u;
+        for (unsigned i = 0; i < n; ++i) plot[i] = s.history[i];
+        ImGui::PlotLines("##frametimes", plot, static_cast<int>(n), 0, "frametime ms",
+                         0.0f, s.maxMs > 0.0f ? s.maxMs * 1.1f : 33.0f, ImVec2(340.0f, 60.0f));
+    }
+
+    // The stale-queue guard, visible. Before it existed, every settings visit left another fence
+    // the depth copy waited on forever -- choppiness that accumulated as you opened the menu.
+    // "skipped" climbing means the guard is doing work; "dropped" is a queue retired for good.
+    ImGui::Separator();
+    ImGui::Text("Queue waits  issued %llu   skipped %llu   dropped %llu",
+                static_cast<unsigned long long>(CyberpunkVR_DebugQueueWaitsIssued),
+                static_cast<unsigned long long>(CyberpunkVR_DebugQueueWaitsSkipped),
+                static_cast<unsigned long long>(CyberpunkVR_DebugQueueWaitsDropped));
+
+    ImGui::Separator();
+    ImGui::TextDisabled("Present counts DLSS generated frames.");
+    ImGui::TextDisabled("fpsVR counts SUBMITTED frames. This port re-submits the last snapshot on\n"
+                        "display frames the game did not fill, so fpsVR reads the full display rate\n"
+                        "even when the game is slower. Trust the 1%% low and Cadence, not the average.");
+}
+
 void DrawStereoControls() {
     if (!CyberpunkVR_StereoModuleLoaded) {
         ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.35f, 1.0f), "Stereo module not installed.");
@@ -1375,6 +1434,11 @@ bool DrawLiveControls(LiveControlsUiState& state) {
                                "Vive / WMR). Customize the actual key bindings in the game's "
                                "in-engine \"Key Bindings -> Controller\" menu.");
 
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Perf")) {
+            DrawPerformancePanel();
             ImGui::EndTabItem();
         }
 

@@ -155,7 +155,7 @@ Write-Host "[+] Installed the CET mod to $CETMods"
 # Weapon, HUD and the rest joined the list once the DEBUG gate went in: a bridge left on the old
 # copy keeps logging per frame no matter what the launcher checkbox says, and "I turned it off and
 # it still writes 5 MB" is a bug report nobody can act on.
-foreach ($name in @("CyberpunkVRPort_Smoking", "CyberpunkVRPort_Holster", "CyberpunkVRPort_Weapon",
+foreach ($name in @("CyberpunkVRPort_Braindance", "CyberpunkVRPort_Smoking", "CyberpunkVRPort_Holster", "CyberpunkVRPort_Weapon",
                     "CyberpunkVRPort_HUD", "CyberpunkVRPort_VRIK", "CyberpunkVRPort_Crosshair",
                     "CyberpunkVRPort_WorldMap", "CyberpunkVRPort_Basketball",
                     "CyberpunkVRPort_HandCollision")) {

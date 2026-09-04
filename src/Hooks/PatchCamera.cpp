@@ -75,6 +75,18 @@ extern "C" void __fastcall OnPatchCameraCallback(float* cameraState, void* owner
     // placed components against ~12k for the cameras, so an unfiltered write puts the head
     // pose into animated components and slots a thousand times more often than into a camera.
     // That is the "world slides, weapon drags with the head" failure at its source.
+    // BRAINDANCE: THE OBJECT THE SCENE RENDERS THROUGH, IDENTIFIED BEFORE IT IS DISCARDED.
+    //
+    // This is the last place that sees it. Its name is not one of the three this port knows, so the
+    // classifier returned 0 and the next line throws it away -- which is exactly why nothing of ours
+    // ever reached the braindance camera and the second eye kept a stale pose. The match is against
+    // the pose script publishes for the scene camera (VRSceneCamera), orientation first because it
+    // is free here, and on a hit the object is latched as the device camera.
+    if (camKind == 0 && g_bdActive.load(std::memory_order_relaxed) &&
+        IsPlausibleUnitQuaternion(quat)) {
+        BraindanceCameraMatch(reinterpret_cast<uintptr_t>(ownerState), quat);
+    }
+
     if (camKind == 0) return;
 
     {

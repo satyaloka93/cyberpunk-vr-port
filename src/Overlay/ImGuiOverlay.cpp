@@ -42,6 +42,7 @@ extern "C" unsigned long long CyberpunkVR_DebugStereoEyeSubmits;
 extern "C" int32_t CyberpunkVR_StableCopy;
 extern "C" int32_t CyberpunkVR_StableFromTonemap;
 extern "C" uint64_t CyberpunkVR_DebugStableCopies;
+extern "C" unsigned long long CyberpunkVR_DebugXrCycles;
 extern "C" uint64_t CyberpunkVR_DebugStableSkips;
 extern "C" int32_t CyberpunkVR_VrcamDlss;
 extern "C" int32_t CyberpunkVR_ForceVrcamCam;
@@ -542,7 +543,111 @@ void OverlaySetWindow(HWND hwnd) {
     if (g_verboseLog) Log("OverlaySetWindow: Subclassed hwnd %p, original WndProc=%p, new WndProc=%p\n", g_hwnd, g_originalWndProc, OverlayWndProc);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Present pacing statistics. See PerfStats in OverlayInternal.hpp for why a mean is not enough.
+// ---------------------------------------------------------------------------------------------
+namespace {
+
+constexpr unsigned kFrameDeltaCapacity = 256;
+
+struct PerfSampler {
+    LARGE_INTEGER frequency{};
+    LARGE_INTEGER windowStart{};
+    LARGE_INTEGER lastPresent{};
+    unsigned long long presents = 0;
+    unsigned long long lastXrCycles = 0;
+    unsigned long long lastVrcamCopies = 0;
+    float deltas[kFrameDeltaCapacity]{};
+    unsigned head = 0;
+    unsigned count = 0;
+    overlay::PerfStats stats{};
+};
+
+PerfSampler g_perfSampler;
+
+}  // namespace
+
+namespace overlay {
+
+void SamplePresentTiming() {
+    PerfSampler& p = g_perfSampler;
+    LARGE_INTEGER now{};
+    QueryPerformanceCounter(&now);
+    if (p.frequency.QuadPart == 0) {
+        QueryPerformanceFrequency(&p.frequency);
+        p.windowStart = now;
+        p.lastXrCycles = CyberpunkVR_DebugXrCycles;
+        p.lastVrcamCopies = CyberpunkVR_DebugStableCopies;
+    }
+    ++p.presents;
+
+    if (p.lastPresent.QuadPart != 0 && p.frequency.QuadPart != 0) {
+        const float dtMs = static_cast<float>(
+            1000.0 * static_cast<double>(now.QuadPart - p.lastPresent.QuadPart) /
+            static_cast<double>(p.frequency.QuadPart));
+        // Discard absurd gaps: a loading screen or an alt-tab is not a stutter the player felt.
+        if (dtMs > 0.0f && dtMs < 500.0f) {
+            p.deltas[p.head] = dtMs;
+            p.head = (p.head + 1) % kFrameDeltaCapacity;
+            if (p.count < kFrameDeltaCapacity) ++p.count;
+        }
+    }
+    p.lastPresent = now;
+
+    if (p.frequency.QuadPart == 0) return;
+    const double elapsed = static_cast<double>(now.QuadPart - p.windowStart.QuadPart) /
+        static_cast<double>(p.frequency.QuadPart);
+    if (elapsed < 0.5) return;
+
+    const unsigned long long xrCycles = CyberpunkVR_DebugXrCycles;
+    const unsigned long long vrcamCopies = CyberpunkVR_DebugStableCopies;
+    p.stats.presentFps = static_cast<float>(static_cast<double>(p.presents) / elapsed);
+    p.stats.xrHz = static_cast<float>(static_cast<double>(xrCycles - p.lastXrCycles) / elapsed);
+    p.stats.vrcamFps =
+        static_cast<float>(static_cast<double>(vrcamCopies - p.lastVrcamCopies) / elapsed);
+    p.presents = 0;
+    p.lastXrCycles = xrCycles;
+    p.lastVrcamCopies = vrcamCopies;
+    p.windowStart = now;
+
+    if (p.count >= 8) {
+        float sorted[kFrameDeltaCapacity];
+        const unsigned n = p.count;
+        std::copy(p.deltas, p.deltas + n, sorted);
+        std::sort(sorted, sorted + n);
+        p.stats.medianMs = sorted[n / 2];
+        const unsigned idx99 = (n * 99) / 100;
+        p.stats.p99Ms = sorted[idx99 < n ? idx99 : n - 1];
+        p.stats.maxMs = sorted[n - 1];
+        const float threshold = p.stats.medianMs * 1.5f;
+        unsigned over = 0;
+        for (unsigned i = 0; i < n; ++i) {
+            if (sorted[i] > threshold) ++over;
+        }
+        p.stats.stutterPct = 100.0f * static_cast<float>(over) / static_cast<float>(n);
+    }
+    // CADENCE. A rate that is not a whole divisor of the display rate cannot be shown evenly: at
+    // 52 fps on 90 Hz each frame lives for one refresh or two in an irregular pattern, and no
+    // reprojection removes that -- only 45 (exactly half) or 90 does.
+    p.stats.cadenceRatio = (p.stats.xrHz > 0.01f && p.stats.presentFps > 0.01f)
+        ? p.stats.xrHz / p.stats.presentFps
+        : 0.0f;
+}
+
+void GetPerfStats(PerfStats* out) {
+    if (out == nullptr) return;
+    *out = g_perfSampler.stats;
+    out->history = g_perfSampler.deltas;
+    out->historyCount = g_perfSampler.count;
+}
+
+}  // namespace overlay
+
 void OverlayRender(IDXGISwapChain* swapChain) {
+    // Ahead of every early return below: pacing is measured even on frames the overlay skips,
+    // otherwise the statistics describe only the frames that happened to draw.
+    overlay::SamplePresentTiming();
+
     if (!EnsureImGui(swapChain)) return;
 
     DXGI_SWAP_CHAIN_DESC desc{};

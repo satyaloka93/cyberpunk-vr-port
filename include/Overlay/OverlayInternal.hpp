@@ -46,4 +46,28 @@ void RenderIm3dToDrawList(ImDrawList* drawList, const ImVec2& displaySize);
 void RotateVectorByQuaternion(float vx, float vy, float vz, float qx, float qy, float qz, float qw, float* outX, float* outY, float* outZ);
 void UpdateImGuiMouseFromCursor(HWND hwnd, float backbufferWidth, float backbufferHeight);
 
+// PRESENT-PACING STATISTICS.
+//
+// A mean frame rate cannot show judder, which is why "89-90 FPS but it feels choppy" is a coherent
+// report rather than a contradiction: frames alternating 8 ms / 16 ms average to ~90 and look
+// terrible. Two further things make the headline number untrustworthy here -- Present counts DLSS
+// generated frames, and this port re-submits the last snapshot on display frames the game did not
+// fill, so an external tool like fpsVR reads the full display rate regardless of the game's true
+// cadence. So keep every frame's delta and report the distribution.
+struct PerfStats {
+    float presentFps;    // presents per second, averaged over the window
+    float xrHz;          // XR cycles per second
+    float vrcamFps;      // stereo camera copies per second
+    float medianMs;
+    float p99Ms;         // the "1% low": the frame time 99% of frames beat
+    float maxMs;
+    float stutterPct;    // share of frames longer than 1.5x the median
+    float cadenceRatio;  // display refreshes per presented frame; whole numbers present evenly
+    const float* history;
+    unsigned historyCount;
+};
+void SamplePresentTiming();          // called once per present, from OverlayRender
+void GetPerfStats(PerfStats* out);
+void DrawPerformancePanel();
+
 }  // namespace overlay

@@ -80,6 +80,28 @@ RED4EXT_C_EXPORT void RED4EXT_CALL PostRegisterTypes() {
     fRC->AddParam("Int32", "active"); fRC->AddParam("Float", "x"); fRC->AddParam("Float", "y");
     fRC->AddParam("Float", "z"); rtti->RegisterFunction(fRC);
 
+    // BRAINDANCE, imported from upstream 0.1.6 (b4a7446). Script publishes what the plugin cannot
+    // discover: that a braindance is running, the fov the game reports for its camera, and the scene
+    // camera's pose every frame. The plugin matches a patched object against that pose to find the
+    // object the scene actually renders through -- see BraindanceCameraMatch.
+    auto fPCam = RED4ext::CGlobalFunction::Create("VRPlayerCamera", "VRPlayerCamera", &VRPlayerCamera);
+    fPCam->flags = flags; fPCam->SetReturnType("Int32");
+    fPCam->AddParam("Int32", "active"); fPCam->AddParam("Float", "x"); fPCam->AddParam("Float", "y");
+    fPCam->AddParam("Float", "z"); rtti->RegisterFunction(fPCam);
+
+    auto fSCam = RED4ext::CGlobalFunction::Create("VRSceneCamera", "VRSceneCamera", &VRSceneCamera);
+    fSCam->flags = flags; fSCam->SetReturnType("Int32");
+    fSCam->AddParam("Int32", "active");
+    fSCam->AddParam("Float", "x"); fSCam->AddParam("Float", "y"); fSCam->AddParam("Float", "z");
+    fSCam->AddParam("Float", "qi"); fSCam->AddParam("Float", "qj");
+    fSCam->AddParam("Float", "qk"); fSCam->AddParam("Float", "qr");
+    rtti->RegisterFunction(fSCam);
+
+    auto fBrd = RED4ext::CGlobalFunction::Create("VRBraindance", "VRBraindance", &VRBraindance);
+    fBrd->flags = flags; fBrd->SetReturnType("Int32");
+    fBrd->AddParam("Int32", "active"); fBrd->AddParam("Float", "fov");
+    rtti->RegisterFunction(fBrd);
+
     auto fWG = RED4ext::CGlobalFunction::Create("VRWristGuard", "VRWristGuard", &VRWristGuard);
     fWG->flags = flags; fWG->SetReturnType("Int32"); fWG->AddParam("Int32", "mode"); rtti->RegisterFunction(fWG);
 

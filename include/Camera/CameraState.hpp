@@ -286,3 +286,28 @@ void LogMatrix4x4(const char* prefix, const float* values);
 void MulQuat(float ax, float ay, float az, float aw, float bx, float by, float bz, float bw, float& ox, float& oy, float& oz, float& ow);
 void NormalizeQuat(float& x, float& y, float& z, float& w);
 void WriteRenderCameraBasis(float* rsiPtr, const float* q);
+
+// BRAINDANCE, imported from upstream 0.1.6 (b4a7446). A braindance renders through an object this
+// port's classifier does not recognise, so nothing of ours ever reached it and the second eye kept a
+// stale pose -- lighting but no world. These carry the only DESCRIPTION of that camera either side
+// can obtain; the plugin matches a patched object against it to find the object itself.
+extern std::atomic<int> g_bdActive;
+extern std::atomic<int> g_bdWantFovMilli;          // the fov script sees, milli-degrees
+// Position in the same 1/131072 m fixed point the camera components store theirs in, so the
+// comparison in BraindanceCameraMatch is one subtraction with no unit conversion to get wrong.
+extern std::atomic<int32_t> g_bdScenePosFP[3];
+extern float g_bdSceneQuat[4];
+extern std::atomic<int> g_bdScenePoseValid;
+// 1 once a patched object has matched that pose and been latched as the device camera.
+extern std::atomic<int> g_bdCamFound;
+// A braindance replaces the player with an entity carrying its own component named `camera`, so two
+// live objects answer to the name MAIN is picked by and the latch flaps between them.
+extern std::atomic<int> g_playerCamOn;
+extern std::atomic<int32_t> g_playerCamPosFP[3];
+
+// Called from the camera writer for every object it does not recognise, with that object's own
+// orientation already in hand. Returns true on the frame the match is made.
+bool BraindanceCameraMatch(uintptr_t obj, const float* quat);
+// The braindance ended: hand the camera's fov back and forget it.
+void BraindanceCameraRelease();
+

@@ -1204,6 +1204,203 @@ extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugPatchCamOther = 0;
 // shifts the layout.
 static std::atomic<int> g_camNameOffset{-1};
 
+
+// ---------------------------------------------------------------------------------------------
+// BRAINDANCE CAMERA, imported from upstream 0.1.6 (b4a7446).
+//
+// The scene renders through an object whose name is none of the three this port knows, so
+// ClassifyPatchCameraOwner returns 0 and the writer discards it -- which is why the second eye kept
+// a stale pose through an entire braindance and showed lighting with no world. Script publishes the
+// only description of that camera available to either side (VRSceneCamera), and the matcher below
+// finds the object from it.
+// ---------------------------------------------------------------------------------------------
+void DeviceCamRestoreFov();          // defined below; the release path runs before it
+std::atomic<int> g_bdActive{0};
+std::atomic<int> g_bdWantFovMilli{0};
+std::atomic<int32_t> g_bdScenePosFP[3] = {};
+float g_bdSceneQuat[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+std::atomic<int> g_bdScenePoseValid{0};
+std::atomic<int> g_bdCamFound{0};
+std::atomic<int> g_playerCamOn{0};
+std::atomic<int32_t> g_playerCamPosFP[3] = {};
+// Tolerances upstream settled on. The orientation gate is deliberately tight: a senses component
+// rides the head and sits exactly where the camera does, so pose alone is not identity.
+static constexpr float kBdPosTolM = 0.60f;
+static constexpr float kBdDotTol  = 0.995f;
+extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugBdCandidates = 0;
+extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugBdPushTransform = 0;
+extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugBdPushMain = 0;
+
+// Called for every object the classifier does not recognise, from inside the camera writer, so the
+// object's own orientation is already in hand and costs nothing to test. That ordering is the whole
+// performance story: the site fires ~16M times a session for ordinary placed components, so the
+// ORIENTATION is tested first -- four multiplies, no memory read -- and the position is only read for
+// the handful of objects aimed the way the scene's camera is.
+bool BraindanceCameraMatch(uintptr_t obj, const float* quat) {
+    if (!CyberpunkVR_DeviceCamFollow) return false;
+    if (!g_bdActive.load(std::memory_order_relaxed)) return false;
+    if (!g_bdScenePoseValid.load(std::memory_order_acquire)) return false;
+    if (!obj || obj < 0x10000 || !quat) return false;
+
+    float dot = quat[0] * g_bdSceneQuat[0] + quat[1] * g_bdSceneQuat[1] +
+                quat[2] * g_bdSceneQuat[2] + quat[3] * g_bdSceneQuat[3];
+    if (dot < 0.0f) dot = -dot;                 // q and -q are the same rotation
+
+    // THE CENSUS, one line a second, and it is written to be informative when NOTHING matches: the best
+    // orientation agreement seen, the distance and component name of the best candidate, and the
+    // per-second deltas that say whether the second view is rendering and being captured at all.
+    static uint64_t s_lastMs = 0;
+    static float s_bestDot = 0.0f;
+    static float s_bestDist = 1.0e9f;
+    static uint64_t s_bestName = 0;
+    static uintptr_t s_bestObj = 0;
+    static uint64_t s_seen = 0;
+    static uint64_t p_main = 0, p_vrcam = 0, p_dev = 0;
+    static uint64_t s_shortName[8] = {};
+    static float s_shortDist[8] = {};
+    static float s_shortFov[8] = {};
+    static int s_shortN = 0;
+    ++s_seen;
+
+    float dist = -1.0f;
+    if (dot >= 0.95f) {
+        int32_t p[3] = {};
+        bool ok = true;
+        for (int i = 0; i < 3 && ok; ++i) {
+            uint32_t v = 0;
+            ok = ReadU32Safe(obj + 0xE0 + i * 4, &v);
+            p[i] = static_cast<int32_t>(v);
+        }
+        if (ok) {
+            const float k = 1.0f / 131072.0f;
+            float d2 = 0.0f;
+            for (int i = 0; i < 3; ++i) {
+                const float d = (p[i] - g_bdScenePosFP[i].load(std::memory_order_relaxed)) * k;
+                d2 += d * d;
+            }
+            dist = sqrtf(d2);
+        }
+    }
+
+    // A SHORTLIST OF WHAT IS OUT THERE, so one braindance is enough to identify the right object rather
+    // than one build per guess: every distinct component name that comes within a metre of the scene
+    // camera's pose, with the fov field that decides whether it is a camera at all.
+    if (dot >= 0.99f && dist >= 0.0f && dist <= 1.5f) {
+        const int off = g_camNameOffset.load(std::memory_order_acquire);
+        uint64_t nm = 0;
+        if (off >= 0) ReadU64Safe(obj + off, &nm);
+        float fv = -1.0f;
+        ReadFloatSafe(obj + 0x128, &fv);
+        bool have = false;
+        for (int i = 0; i < s_shortN; ++i)
+            if (s_shortName[i] == nm) { have = true;
+                                       if (dist < s_shortDist[i]) { s_shortDist[i] = dist; s_shortFov[i] = fv; }
+                                       break; }
+        if (!have && s_shortN < 8) {
+            s_shortName[s_shortN] = nm; s_shortDist[s_shortN] = dist; s_shortFov[s_shortN] = fv;
+            ++s_shortN;
+        }
+    }
+
+    if (dot > s_bestDot || (dist >= 0.0f && dist < s_bestDist)) {
+        if (dot > s_bestDot) s_bestDot = dot;
+        if (dist >= 0.0f && dist < s_bestDist) {
+            s_bestDist = dist;
+            s_bestObj = obj;
+            const int off = g_camNameOffset.load(std::memory_order_acquire);
+            uint64_t nm = 0;
+            if (off >= 0) ReadU64Safe(obj + off, &nm);
+            s_bestName = nm;
+        }
+    }
+
+    {
+        const uint64_t now = GetTickCount64();
+        if (s_lastMs == 0) s_lastMs = now;
+        else if (now - s_lastMs >= 1000ull) {
+            s_lastMs = now;
+            const uint64_t c_main  = CyberpunkVR_DebugPatchCamMain;
+            const uint64_t c_vrcam = CyberpunkVR_DebugPatchCamVrcam;
+            const uint64_t c_dev   = CyberpunkVR_DebugPatchCamDevice;
+            Log("[bd] best dot=%.4f dist=%.2fm name=0x%016llX obj=%p unknowns=%llu | latched=%p "
+                "found=%d | patch main=+%llu vrcam=+%llu dev=+%llu\n",
+                static_cast<double>(s_bestDot),
+                static_cast<double>(s_bestDist >= 1.0e8f ? -1.0f : s_bestDist),
+                static_cast<unsigned long long>(s_bestName),
+                reinterpret_cast<void*>(s_bestObj),
+                static_cast<unsigned long long>(s_seen),
+                reinterpret_cast<void*>(g_camObjDevice.load(std::memory_order_relaxed)),
+                g_bdCamFound.load(std::memory_order_relaxed),
+                static_cast<unsigned long long>(c_main  - p_main),
+                static_cast<unsigned long long>(c_vrcam - p_vrcam),
+                static_cast<unsigned long long>(c_dev   - p_dev));
+            for (int i = 0; i < s_shortN; ++i)
+                Log("[bd]   near the scene camera: name=0x%016llX dist=%.3fm fov=%.3f\n",
+                    static_cast<unsigned long long>(s_shortName[i]),
+                    static_cast<double>(s_shortDist[i]), static_cast<double>(s_shortFov[i]));
+            s_shortN = 0;
+            p_main = c_main; p_vrcam = c_vrcam; p_dev = c_dev;
+            s_bestDot = 0.0f; s_bestDist = 1.0e9f; s_bestName = 0; s_bestObj = 0; s_seen = 0;
+        }
+    }
+
+    if (dot < kBdDotTol || dist < 0.0f || dist > kBdPosTolM) return false;
+
+    // AND IT HAS TO BE A CAMERA. The pose alone is not enough: the first build of this matcher latched
+    // the object at 0.155 m with dot 0.9904 and wrote the head, the aim and the fov into it for a whole
+    // braindance -- and its name hash, reversed against the exe's own strings, was `Senses`. A senses
+    // component rides the head, so it sits exactly where the camera does. What only a camera has is a
+    // plausible FOV at +0x128 equal to the one script reports for the active camera (or to ours, once we
+    // have forced it: the latch survives by address, but a re-match after a drop must still succeed).
+    {
+        float camFov = 0.0f;
+        if (!ReadFloatSafe(obj + 0x128, &camFov)) return false;
+        if (!(camFov > 1.0f && camFov < 179.0f)) return false;
+        const float scriptFov =
+            static_cast<float>(g_bdWantFovMilli.load(std::memory_order_relaxed)) * 0.001f;
+        const float ours = g_normalFovOverrideValue;
+        const bool fovAgrees =
+            (scriptFov > 1.0f && fabsf(camFov - scriptFov) < 0.75f) ||
+            (ours > 1.0f && fabsf(camFov - ours) < 0.75f) ||
+            (g_devCamFovSaved.load(std::memory_order_relaxed) &&
+             fabsf(camFov - g_devCamFovOrig) < 0.75f);
+        if (!fovAgrees) return false;
+    }
+
+    const uintptr_t prev = g_camObjDevice.exchange(obj, std::memory_order_relaxed);
+    if (prev != obj) {
+        const int off = g_camNameOffset.load(std::memory_order_acquire);
+        uint64_t nm = 0;
+        if (off >= 0) ReadU64Safe(obj + off, &nm);
+        if (g_verboseLog) Log("PatchCamera: BRAINDANCE camera %p (was %p) name=0x%016llX dot=%.4f dist=%.3fm\n",
+            reinterpret_cast<void*>(obj), reinterpret_cast<void*>(prev),
+            static_cast<unsigned long long>(nm),
+            static_cast<double>(dot), static_cast<double>(dist));
+        g_devCamBaseValid.store(0, std::memory_order_relaxed);   // a different camera: re-latch its aim
+        g_devCamPosValid.store(0, std::memory_order_relaxed);
+    }
+    ++CyberpunkVR_DebugBdCandidates;
+    g_bdCamFound.store(1, std::memory_order_release);
+    StampDeviceCam();
+    return true;
+}
+
+
+
+void BraindanceCameraRelease() {
+    if (!g_bdCamFound.load(std::memory_order_relaxed)) return;
+    DeviceCamRestoreFov();                       // reads g_camObjDevice, so BEFORE it is cleared
+    g_bdCamFound.store(0, std::memory_order_relaxed);
+    g_camObjDevice.store(0, std::memory_order_relaxed);
+    g_devCamPosValid.store(0, std::memory_order_relaxed);
+    g_devCamBaseValid.store(0, std::memory_order_relaxed);
+    g_devCamViewValid.store(0, std::memory_order_relaxed);
+    g_devCamAimValid.store(0, std::memory_order_relaxed);
+    if (g_verboseLog) Log("PatchCamera: braindance camera released\n");
+}
+
+// ARM THE FAST PATH, from the classifier, on a camera it recognised. Nothing here is a policy
+
 // HAND THE CAMERA BACK. Its fov was raised from the authored value to the one the headset needs, and
 // that is a change to a world object, so it is undone when control is released. Called from the
 // VRRemoteCamera native, i.e. off the render path, on the tick that sees the takeover end.

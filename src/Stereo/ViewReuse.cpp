@@ -591,7 +591,11 @@ static const FogRange kFogMirror[3] = { { 0x920, 4 }, { 0x910, 0x14 }, { 0x8C0, 
 //   bit 2  0x460..0x4FF   the 0x480 / 0x4C0 / 0x4D4 group
 //   bit 3  0x500..0x5CF   the 0x554 / 0x570 / 0x598 / 0x5A4 / 0x5C0 group
 //   bit 4  0x610..0x633 and 0x6FC   the march-step group
-extern "C" __declspec(dllexport) uint32_t CyberpunkVR_EnvMirrorMask = 0xFFF;   // bit 11 = the six default-valued floats, see kEnvMirror
+// 0x3FFF: bits 0-11 as before, plus 12 (colour grade) and 13 (brightness/exposure), which are what
+// a braindance second eye is missing. Set 0x1FFF to test the grade alone or 0x2FFF for exposure
+// alone -- upstream separated them exactly that way on the picture. bit 11 = the six
+// default-valued floats, see kEnvMirror.
+extern "C" __declspec(dllexport) uint32_t CyberpunkVR_EnvMirrorMask = 0x3FFF;
 extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugEnvMirrors = 0;
 // EXTENDED once the mirror shortened the list from 68 runs to 43 and the printer stopped
 // truncating. Two things showed up. Three fields sat just past a boundary -- 0x5D0, 0x634,
@@ -720,9 +724,33 @@ static const FogRange kEnvMirror[] = {
     // by eye, which is what the numbers say too.
     { 0x720, 0x08 }, { 0x778, 0x08 }, { 0x7E4, 0x04 },
     { 0xA10, 0x04 }, { 0xA1C, 0x04 }, { 0xA20, 0x08 }, { 0xF20, 0x04 },
+    // bit 12: THE COLOUR-GRADE BLOCK, imported from upstream 0.1.6 (b4a7446), which traced it in a
+    // debugger from the shader backwards: sub_1403AB104 fills the 688-byte grading constant block
+    // and reads every value out of THIS view's viewData over 0x640..0x6D0.
+    //
+    // In a braindance MAIN's copy holds 24h_braindance_fpp.envparam -- gain 1.3 on green and blue,
+    // saturation 1.3, contrastPivot 0.435 -- and the second view's holds the IDENTITY. That is why
+    // the second eye has no grade there, and the same region carries bloom, chromatic aberration
+    // and fog, so they arrive with it rather than needing a mirror each.
+    //
+    // STARTS AT 0x650, NOT 0x640, and that is the whole care in this entry: +0x644 holds a POINTER.
+    // Copying MAIN's pointer into the second view's slot is exactly the dereference-waiting-to-
+    // happen this file warns about everywhere else. From 0x650 on it is floats only.
+    { 0x650, 0x80 },
+    // bit 13: THE BRIGHTNESS/EXPOSURE GROUP, 0x788..0x7A7 -- five fields that differ together, and
+    // the reason a braindance second eye reads as BLACK rather than merely ungraded:
+    //
+    //     +0x798   MAIN 0          VRCAM 3      the darkness
+    //     +0x79C   MAIN 0.673077   VRCAM 0.8    the exposure multiplier
+    //
+    // Upstream confirmed on the picture that this bit ALONE, with the grade bit off, restored the
+    // bloom while leaving the green cast absent -- so the blown-out braindance look comes from this
+    // group, not from the bloom parameters.
+    { 0x788, 0x20 },
 };
 static const uint32_t kEnvBit[] = { 0, 1, 2, 3, 4, 4, 5, 6, 6, 7, 7, 8, 9, 10,
-                                    11, 11, 11, 11, 11, 11, 11 };
+                                    11, 11, 11, 11, 11, 11, 11,
+                                    12, 13 };
 // Counted, never hard-coded. The loop below used to say `k < 14` beside a table of 14, and this
 // project has already lost days to fixed-size tables that silently stopped covering their contents.
 static const uint32_t kEnvCount = sizeof(kEnvMirror) / sizeof(kEnvMirror[0]);
