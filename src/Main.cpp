@@ -39,6 +39,14 @@ extern void Log(const char* fmt, ...);
 
 // Runtime paths (log file, vrport.ini, CET mod folders). Was called from DllMain.
 extern void InitRuntimePaths();
+// Vectored fault capture. Registered ahead of the engine's own top-level filter, so it sees the
+// exception whether or not that filter swallows it -- which the absent WER Application Error
+// event for Cyberpunk2077.exe suggests is what happens today.
+extern void InstallCrashHandler();
+// Keep named OpenXR implicit layers out of THIS process. ReShade's layer is disabled by default
+// because it ends the process on the first xrEndFrame; see include/Core/XrLayerOverrides.hpp.
+// Must precede xrCreateInstance, which is much later -- the swapchain does not exist yet here.
+extern void ApplyOpenXrLayerOverrides();
 // One-shot on a fresh install: copy the shipped UserSettings.json over the game's own. Reads and
 // sets first_launch in vrport.ini, so it happens exactly once and never touches a player's tuning
 // afterwards. As early as we get -- the game may still have read its settings first, in which case
@@ -80,6 +88,10 @@ RED4EXT_C_EXPORT bool RED4EXT_CALL Main(RED4ext::v1::PluginHandle, RED4ext::v1::
     case RED4ext::v1::EMainReason::Load: {
         if (g_started.exchange(true)) break;
         InitRuntimePaths();
+        // Before anything else that could fault, and before the engine finishes installing its
+        // own top-level filter.
+        InstallCrashHandler();
+        ApplyOpenXrLayerOverrides();
         Log("=== CyberpunkVRPort red4ext plugin loaded (no dxgi proxy) ===\n");
         // FIRST, and deliberately: registering the RTTI callbacks is cheap and has a window. The
         // graphics init below waits on the game's device and can take seconds; doing it first is
