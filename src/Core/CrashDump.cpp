@@ -452,6 +452,27 @@ BOOL WINAPI HookTerminateProcess(HANDLE process, UINT exitCode) {
     return g_realTerminateProcess(process, exitCode);
 }
 
+// The one the other two funnel into, and the one that can be reached WITHOUT them. A process that
+// ends without RtlExitUserProcess and without kernelbase!TerminateProcess has called this
+// directly -- which is what a run ending in silence, with a first-chance fault logged and no
+// unhandled filter, looks like from inside.
+using NtTerminateProcessFn = LONG(NTAPI*)(HANDLE, LONG);
+NtTerminateProcessFn g_realNtTerminateProcess = nullptr;
+
+LONG NTAPI HookNtTerminateProcess(HANDLE process, LONG exitStatus) {
+    // A NULL handle means "every thread in this process except the caller" -- the step an orderly
+    // shutdown takes just before the real kill, so it counts as ours.
+    const bool self = process == nullptr || process == GetCurrentProcess() ||
+                      GetProcessId(process) == GetCurrentProcessId();
+    if (self && !g_exitReported.exchange(true)) {
+        Log("[CRASH] process ending via NtTerminateProcess(%s, status=0x%08X) on thread %lu\n",
+            process == nullptr ? "NULL = other threads" : "self",
+            static_cast<unsigned>(exitStatus), GetCurrentThreadId());
+        LogCallStack("terminate call stack");
+    }
+    return g_realNtTerminateProcess(process, exitStatus);
+}
+
 void InstallExitHooks() {
     const MH_STATUS init = MH_Initialize();  // no-op if another module got there first
     if (init != MH_OK && init != MH_ERROR_ALREADY_INITIALIZED) {
@@ -468,6 +489,16 @@ void InstallExitHooks() {
                 MH_EnableHook(target);
             }
         }
+        // Ordering is deliberate: RtlExitUserProcess reaches NtTerminateProcess, so an orderly
+        // exit trips the outer hook first and the once-only guard keeps the inner one quiet. A
+        // direct call arrives here with nothing above it, which is the case worth catching.
+        if (void* target = reinterpret_cast<void*>(
+                GetProcAddress(ntdll, "NtTerminateProcess"))) {
+            if (MH_CreateHook(target, reinterpret_cast<void*>(&HookNtTerminateProcess),
+                              reinterpret_cast<void**>(&g_realNtTerminateProcess)) == MH_OK) {
+                MH_EnableHook(target);
+            }
+        }
     }
     if (HMODULE kernel = GetModuleHandleA("kernelbase.dll")) {
         if (void* target = reinterpret_cast<void*>(
@@ -478,9 +509,10 @@ void InstallExitHooks() {
             }
         }
     }
-    Log("[CRASH] exit hooks: RtlExitUserProcess=%s TerminateProcess=%s\n",
+    Log("[CRASH] exit hooks: RtlExitUserProcess=%s TerminateProcess=%s NtTerminateProcess=%s\n",
         g_realRtlExitUserProcess ? "on" : "off",
-        g_realTerminateProcess ? "on" : "off");
+        g_realTerminateProcess ? "on" : "off",
+        g_realNtTerminateProcess ? "on" : "off");
 }
 
 } // namespace

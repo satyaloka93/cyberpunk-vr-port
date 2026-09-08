@@ -37,6 +37,9 @@
 // is how the stereo module already shares it (CommandListCensus.cpp does the same), and this
 // file only needs to hand it the value read out of vrport.ini.
 extern "C" __declspec(dllexport) extern int32_t CyberpunkVR_CascadeSaveMain;
+// Set live from vrport.ini's xr_deep_diag, so the capture-path timings can be turned on without
+// the launcher DEBUG tick and everything else it drags in. Defined in OpenXRFrameLoop.cpp.
+extern "C" __declspec(dllexport) extern int CyberpunkVR_XrDeepDiag;
 #include <MinHook.h>
 #include "Hooks/SwapChain.hpp"
 #include "Utils/LogThrottle.hpp"
@@ -142,9 +145,24 @@ extern "C" __declspec(dllexport) bool GetWeaponAimEnabled() {
     return OpenXRManager::Get().GetWeaponAimEnable();
 }
 
+// Parsed from vrport.ini's xr_deep_diag; -1 until the key is seen, so an absent key leaves the
+// launcher DEBUG gate in charge.
+int g_xrDeepDiagFromIni = -1;
+
 void PollLiveControls() {
     InitRuntimePaths();
     PollVrikRecenterRequest();
+
+    // RE-ASSERTED EVERY POLL, BEFORE THE MTIME EARLY-RETURN BELOW, and that ordering is the whole
+    // point. ApplyLauncherDebugGate() runs ONCE at init and forces every flag in its table to 0
+    // when the DEBUG box is unticked -- and it runs AFTER the first poll. A value read from the
+    // ini was therefore set, then wiped, and because the body below only runs when the file's
+    // mtime CHANGES it never came back: xr_deep_diag=1 sat in the file all session with the flag
+    // at 0, and [xrcap]/[xrwarp]/[xrsrc]/[xrage]/[xrgap] printed nothing while [xreye] -- which
+    // is not gated on it -- printed 54 times and made the flag look live. One store per poll.
+    if (g_xrDeepDiagFromIni >= 0) {
+        CyberpunkVR_XrDeepDiag = g_xrDeepDiagFromIni;
+    }
 
     WIN32_FILE_ATTRIBUTE_DATA fileData;
     if (!GetFileAttributesExA(g_liveControlPath, GetFileExInfoStandard, &fileData)) {
@@ -504,6 +522,18 @@ void PollLiveControls() {
         if (sscanf_s(line, "xr_xinput_install=%d", &intValue) == 1 ||
             sscanf_s(line, "xr_xinput_install = %d", &intValue) == 1) {
             xrXInputInstall = intValue;
+            continue;
+        }
+        // The deep frame diagnostics ([xrcap], [xrwarp], [xrsrc], [xrage], [xreye], [xrgap])
+        // WITHOUT ticking DEBUG. DEBUG turns on everything, and everything includes probes that
+        // take a mutex on every descriptor bind -- switching those on to time the submit path
+        // would change the thing being timed. This one flag costs a clock read per present and
+        // per submit, which is what [xrcap]'s fence-wait means are made of, and those are the
+        // numbers that say where a 13-25 ms cycle actually goes.
+        if (sscanf_s(line, "xr_deep_diag=%d", &intValue) == 1 ||
+            sscanf_s(line, "xr_deep_diag = %d", &intValue) == 1) {
+            g_xrDeepDiagFromIni = intValue != 0 ? 1 : 0;
+            CyberpunkVR_XrDeepDiag = g_xrDeepDiagFromIni;
             continue;
         }
         if (sscanf_s(line, "xr_input_actions=%d", &intValue) == 1 ||
@@ -914,6 +944,16 @@ void PersistLiveControlsUiState(const LiveControlsUiState& state) {
     fprintf(file, "xr_cutscene_suspend_tier=%d\n",
             state.xrCutsceneSuspendTier < -1 ? -1 : (state.xrCutsceneSuspendTier > 4 ? 4 : state.xrCutsceneSuspendTier));
     fprintf(file, "xr_xinput_install=%d\n", state.xrXInputInstall != 0 ? 1 : 0);
+    // PERSISTED ONLY ONCE SOMEONE HAS SET IT. This file is rewritten wholesale on exit from the
+    // keys listed here, so a key that is read but never written is silently deleted the first
+    // time the port saves -- which is exactly what happened to a hand-added xr_deep_diag=1: it
+    // survived one launch, was dropped on exit, and the next run measured nothing while the
+    // setting appeared to be "already on". Writing it unconditionally would be worse: it would
+    // pin the flag off for anyone relying on the launcher DEBUG box, since the poll only defers
+    // to that box while the key is absent.
+    if (g_xrDeepDiagFromIni >= 0) {
+        fprintf(file, "xr_deep_diag=%d\n", g_xrDeepDiagFromIni);
+    }
     fprintf(file, "xr_input_actions=%d\n", state.xrInputActions != 0 ? 1 : 0);
     fprintf(file, "xr_openxr_haptic_gain=%.2f\n",
             state.xrOpenXrHapticGain < 0.0f ? 0.0f

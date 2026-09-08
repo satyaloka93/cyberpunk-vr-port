@@ -19,7 +19,12 @@ extern "C" void __fastcall OnMenuModeHookCallback(void* menuState, int newMode) 
     g_menuModeValue = newMode;
 
     if (prevMode != newMode) {
-        if (g_verboseLog) Log("MenuMode hook: state=%p prev=%d new=%d\n", menuState, prevMode, newMode);
+        // NOT behind g_verboseLog. This fires only on a CHANGE -- a handful of lines a session --
+        // and the value it carries decides whether the submitted layer is a projection or a quad,
+        // which is the difference between anything downstream having a frame to pair and having
+        // nothing. A run where 85% of submits came out as quads could not be explained without
+        // this line, and the gate is the only reason it could not.
+        Log("MenuMode hook: state=%p prev=%d new=%d\n", menuState, prevMode, newMode);
     }
 }
 

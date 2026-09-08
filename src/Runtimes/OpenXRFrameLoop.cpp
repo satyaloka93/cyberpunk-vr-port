@@ -268,6 +268,26 @@ extern "C" __declspec(dllexport) std::atomic<unsigned long long> CyberpunkVR_Deb
 extern "C" __declspec(dllexport) std::atomic<unsigned long long> CyberpunkVR_DebugXrBeginDiscarded = 0;
 extern "C" __declspec(dllexport) std::atomic<unsigned long long> CyberpunkVR_DebugXrEnds           = 0;
 extern "C" __declspec(dllexport) std::atomic<unsigned long long> CyberpunkVR_DebugXrEndsWithLayer  = 0;
+// "WITH A LAYER" IS TOO COARSE, and the gap it hid cost a diagnosis. Anything downstream that
+// generates frames cares about PROJECTION layers specifically -- a quad-only submit is, to it, a
+// frame with nothing to pair. Measured against OFXR over one 5485-end session: our counter said
+// 5482 "with a layer" while the layer below reported 4153 of those same ends as
+// no_projection_views. Both numbers were right; they answered different questions.
+//
+// Split three ways so the log settles it without a second tool:
+//   PROJ  a projection layer -- the only kind downstream generation can use
+//   QUAD  the menu path (menuRectActive), a projection-shaped hole in the stream
+//   BAD   a projection layer we built whose space or a view swapchain came out NULL, which reads
+//         downstream as no_projection_views in exactly the same way a quad does
+extern "C" __declspec(dllexport) std::atomic<unsigned long long> CyberpunkVR_DebugXrEndsProj      = 0;
+extern "C" __declspec(dllexport) std::atomic<unsigned long long> CyberpunkVR_DebugXrEndsQuad      = 0;
+extern "C" __declspec(dllexport) std::atomic<unsigned long long> CyberpunkVR_DebugXrEndsBadProj   = 0;
+// WHICH of the two terms in menuRectActive was responsible, attributed at the submit itself.
+// Needed because the run that raised the question printed menuRect=0 menuMode=0 at report time
+// while 84% of submits had taken the quad branch -- a sampled value read from another thread
+// cannot answer that, and only a count taken where the branch is decided can.
+extern "C" __declspec(dllexport) std::atomic<unsigned long long> CyberpunkVR_DebugQuadByRect     = 0;
+extern "C" __declspec(dllexport) std::atomic<unsigned long long> CyberpunkVR_DebugQuadByMode     = 0;
 extern "C" __declspec(dllexport) std::atomic<unsigned long long> CyberpunkVR_DebugXrEndsEmpty      = 0;
 extern "C" __declspec(dllexport) std::atomic<unsigned long long> CyberpunkVR_DebugXrEndFailed      = 0;
 // 1 = print the [xr*] block once a second. Deliberately NOT registered in debug_gate.cpp's
@@ -794,6 +814,9 @@ void OpenXRManager::ReportXrFrameRates() {
     const unsigned long long waitsBack = CyberpunkVR_DebugXrWaitsReturned.load(std::memory_order_relaxed);
     const unsigned long long waitFail  = CyberpunkVR_DebugXrWaitFailed.load(std::memory_order_relaxed);
     const unsigned long long endFail   = CyberpunkVR_DebugXrEndFailed.load(std::memory_order_relaxed);
+    const unsigned long long endsProj = CyberpunkVR_DebugXrEndsProj.load(std::memory_order_relaxed);
+    const unsigned long long endsQuad = CyberpunkVR_DebugXrEndsQuad.load(std::memory_order_relaxed);
+    const unsigned long long endsBad  = CyberpunkVR_DebugXrEndsBadProj.load(std::memory_order_relaxed);
     Log("[xrloop] xrWaitFrame %llu started / %llu returned (failed %llu) | xrBeginFrame %llu "
         "(discarded %llu) | xrEndFrame %llu = with a layer %llu + EMPTY %llu (failed %llu) | %s\n",
         waits, waitsBack, waitFail, begins,
@@ -802,6 +825,40 @@ void OpenXRManager::ReportXrFrameRates() {
         (waitsBack - waitFail == begins && begins + endFail >= ends && begins + endFail - ends <= 1)
             ? "PAIRED 1:1"
             : "NOT PAIRED -- this is the defect");
+    // The breakdown of that "with a layer" total. PROJ is the only kind a downstream frame
+    // generator can pair; QUAD and BAD both read to it as a frame with no projection, and the sum
+    // of those two is what such a layer will report back as no_projection_views.
+    Log("[xrloop] of those %llu layered ends: PROJ %llu (%.1f%%) + QUAD %llu + BAD %llu"
+        "  -- downstream sees %llu frames with no projection | quad blamed on: rect %llu, "
+        "menuMode %llu | menuRect=%d menuMode=%d NOW\n",
+        layer, endsProj,
+        layer ? 100.0 * static_cast<double>(endsProj) / static_cast<double>(layer) : 0.0,
+        endsQuad, endsBad, endsQuad + endsBad + empty,
+        CyberpunkVR_DebugQuadByRect.load(std::memory_order_relaxed),
+        CyberpunkVR_DebugQuadByMode.load(std::memory_order_relaxed),
+        GetMenuRectMode(), GetMenuMode());
+
+    // THE SAME SPLIT, DIFFERENCED PER WINDOW -- and this is the line that matters.
+    //
+    // The cumulative version above cannot tell "the session was 90% menus and loading" apart from
+    // "gameplay submits quads", because both produce the same total. That ambiguity is what made
+    // the question take five test runs instead of one. Per window, the two are unmistakable: a
+    // menu stretch reads QUAD/s high with PROJ/s at zero, and gameplay reads the reverse. Read it
+    // against the wall clock now on every line to find the window the artefact was in.
+    {
+        static unsigned long long s_pProj = 0, s_pQuad = 0, s_pBad = 0, s_pEmpty = 0;
+        const unsigned long long dProj  = endsProj - s_pProj;
+        const unsigned long long dQuad  = endsQuad - s_pQuad;
+        const unsigned long long dBad   = endsBad  - s_pBad;
+        const unsigned long long dEmpty = empty    - s_pEmpty;
+        s_pProj = endsProj; s_pQuad = endsQuad; s_pBad = endsBad; s_pEmpty = empty;
+        const unsigned long long dAll = dProj + dQuad + dBad + dEmpty;
+        Log("[xrsplit] this window: PROJ %llu + QUAD %llu + BAD %llu + EMPTY %llu = %llu"
+            "  -> generator-usable %.0f%%  | menuMode=%d\n",
+            dProj, dQuad, dBad, dEmpty, dAll,
+            dAll ? 100.0 * static_cast<double>(dProj) / static_cast<double>(dAll) : 0.0,
+            GetMenuMode());
+    }
 
     {
         unsigned long long cad[8];
@@ -2534,6 +2591,50 @@ DWORD OpenXRManager::FrameThreadMain() {
                             endInfo.layers = layers;
                             CyberpunkVR_DebugXrEnds.fetch_add(1, std::memory_order_relaxed);
                             CyberpunkVR_DebugXrEndsWithLayer.fetch_add(1, std::memory_order_relaxed);
+                            // WHICH KIND of layer, counted where it is actually known. See the note
+                            // beside the counters: downstream frame generation sees a quad, or a
+                            // projection with a null space or view swapchain, as a frame with no
+                            // projection at all -- and all three land in "with a layer" above.
+                            if (menuRectActive) {
+                                CyberpunkVR_DebugXrEndsQuad.fetch_add(1, std::memory_order_relaxed);
+                                // Re-read both here rather than trusting the composite: this is the
+                                // only place where "which one made it true" is knowable.
+                                if (GetMenuRectMode() != 0) {
+                                    CyberpunkVR_DebugQuadByRect.fetch_add(1, std::memory_order_relaxed);
+                                }
+                                if (GetMenuMode() != 0) {
+                                    CyberpunkVR_DebugQuadByMode.fetch_add(1, std::memory_order_relaxed);
+                                }
+                            } else {
+                                bool projUsable = layerProj.space != XR_NULL_HANDLE &&
+                                                  layerProj.viewCount != 0 &&
+                                                  layerProj.views != nullptr;
+                                for (uint32_t v = 0; projUsable && v < layerProj.viewCount; ++v) {
+                                    if (layerProj.views[v].subImage.swapchain == XR_NULL_HANDLE) {
+                                        projUsable = false;
+                                    }
+                                }
+                                if (projUsable) {
+                                    CyberpunkVR_DebugXrEndsProj.fetch_add(1, std::memory_order_relaxed);
+                                } else {
+                                    // Once, with the values, then counted. A submit that looks fine
+                                    // to us and is unusable to everything below is worth naming the
+                                    // first time it happens rather than only in a total.
+                                    static std::atomic<bool> s_loggedBadProj{false};
+                                    bool expected = false;
+                                    if (s_loggedBadProj.compare_exchange_strong(expected, true)) {
+                                        Log("OpenXRManager: projection layer UNUSABLE downstream -- "
+                                            "space=%p viewCount=%u views=%p sc0=%p sc1=%p\n",
+                                            (void*)layerProj.space, layerProj.viewCount,
+                                            (const void*)layerProj.views,
+                                            layerProj.viewCount > 0
+                                                ? (void*)layerProj.views[0].subImage.swapchain : nullptr,
+                                            layerProj.viewCount > 1
+                                                ? (void*)layerProj.views[1].subImage.swapchain : nullptr);
+                                    }
+                                    CyberpunkVR_DebugXrEndsBadProj.fetch_add(1, std::memory_order_relaxed);
+                                }
+                            }
                             // HOW OLD IS THE IMAGE WE ARE SUBMITTING. Recorded here rather than at the
                             // capture, because only here is it known which cycle actually carried it --
                             // and a resubmit of the same capture is precisely the case that matters.

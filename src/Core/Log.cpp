@@ -40,16 +40,89 @@
 #include "Camera/CameraLink.hpp"
 #include "Hooks/Hook.hpp"
 
+// KEEP THE PREVIOUS RUN'S LOG. This opened with "w", so every launch destroyed the evidence from
+// the launch before it -- and a VR session cannot be paused to read a file, so by the time anyone
+// asks a question about a run, that run has already been overwritten by the run asking it.
+//
+// That cost real time: a flashing-artefact investigation compared a session against a later one
+// with two settings different, could not go back and check the first, and asked for a re-test
+// instead. Comparing two runs is the ordinary case here, not the exceptional one.
+//
+// Renamed rather than copied (atomic, no second write), and pruned to a bounded set so the game
+// folder does not fill up.
+void ArchivePreviousLog(const char* dir, const char* logPath) {
+    WIN32_FILE_ATTRIBUTE_DATA fd{};
+    if (!GetFileAttributesExA(logPath, GetFileExInfoStandard, &fd)) return;
+    if (fd.nFileSizeLow == 0 && fd.nFileSizeHigh == 0) return;
+
+    // Stamp with the previous run's own last-write time, so the name says when that session
+    // ENDED. Stamping with "now" would label every archive with the start of the run that
+    // displaced it, which is the one time it is guaranteed to be misleading.
+    SYSTEMTIME st{};
+    FILETIME local{};
+    if (!FileTimeToLocalFileTime(&fd.ftLastWriteTime, &local) ||
+        !FileTimeToSystemTime(&local, &st)) {
+        GetLocalTime(&st);
+    }
+    char archived[MAX_PATH];
+    _snprintf_s(archived, sizeof(archived), _TRUNCATE,
+                "%scyberpunkvrport-%04u%02u%02u-%02u%02u%02u.log",
+                dir, st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    if (!MoveFileA(logPath, archived)) return;
+
+    // Prune oldest-first, keeping a bounded number. Deliberately generous: these are a few
+    // hundred KB each and their whole value is being able to reach back several sessions.
+    constexpr int kKeep = 20;
+    for (;;) {
+        char pattern[MAX_PATH];
+        _snprintf_s(pattern, sizeof(pattern), _TRUNCATE, "%scyberpunkvrport-*.log", dir);
+        WIN32_FIND_DATAA find{};
+        HANDLE h = FindFirstFileA(pattern, &find);
+        if (h == INVALID_HANDLE_VALUE) return;
+        int count = 0;
+        char oldest[MAX_PATH] = {};
+        FILETIME oldestTime{};
+        do {
+            if (find.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            ++count;
+            if (oldest[0] == '\0' ||
+                CompareFileTime(&find.ftLastWriteTime, &oldestTime) < 0) {
+                oldestTime = find.ftLastWriteTime;
+                strncpy_s(oldest, MAX_PATH, find.cFileName, _TRUNCATE);
+            }
+        } while (FindNextFileA(h, &find));
+        FindClose(h);
+        if (count <= kKeep || oldest[0] == '\0') return;
+        char victim[MAX_PATH];
+        _snprintf_s(victim, sizeof(victim), _TRUNCATE, "%s%s", dir, oldest);
+        if (!DeleteFileA(victim)) return;  // stop rather than spin on an undeletable file
+    }
+}
+
 void Log(const char* fmt, ...) {
     if (!g_logFile) {
-        char logPath[MAX_PATH];
-        GetModuleFileNameA(nullptr, logPath, MAX_PATH);
-        char* lastSlash = strrchr(logPath, '\\');
+        char dir[MAX_PATH];
+        GetModuleFileNameA(nullptr, dir, MAX_PATH);
+        char* lastSlash = strrchr(dir, '\\');
         if (lastSlash) *(lastSlash + 1) = 0;
-        strcat_s(logPath, "cyberpunkvrport.log");
+
+        char logPath[MAX_PATH];
+        _snprintf_s(logPath, sizeof(logPath), _TRUNCATE, "%scyberpunkvrport.log", dir);
+        ArchivePreviousLog(dir, logPath);
         g_logFile = _fsopen(logPath, "w", _SH_DENYNO);
     }
     if (!g_logFile) return;
+
+    // A WALL CLOCK ON EVERY LINE, because without one this file cannot be lined up against
+    // anything else. OFXR's flight log, ReShade's log and the Windows event log are all
+    // timestamped; this one was not, so "what was happening when the artefact appeared" could only
+    // be answered by counting lines -- and a cumulative counter printed twice cannot even be read
+    // as a rate without knowing how far apart the two prints were. Cheap: one GetLocalTime and a
+    // fixed 13-character field, on a call that is already doing a formatted write and a flush.
+    SYSTEMTIME stamp;
+    GetLocalTime(&stamp);
+    fprintf(g_logFile, "%02u:%02u:%02u.%03u ",
+            stamp.wHour, stamp.wMinute, stamp.wSecond, stamp.wMilliseconds);
 
     va_list args;
     va_start(args, fmt);

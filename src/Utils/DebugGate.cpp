@@ -116,7 +116,15 @@ struct DebugFlag {
 };
 
 const DebugFlag kFlags[] = {
-    { "XrRateLog",          &CyberpunkVR_XrRateLog,          1, false },
+    // XrRateLog IS NOT LISTED HERE, and its absence is the point -- the note beside its extern
+    // declaration above already said so. It was in this table anyway, which silently contradicted
+    // that note: with DEBUG unticked the gate zeroed it, so [xrrate] and [xrloop] never printed in
+    // an ordinary session. That cost a diagnosis -- a flashing-artifact hunt where the empty-vs-
+    // layered end-frame split was the whole question and the line that answers it was dark.
+    // These two are the port's headline measurement and its frame-loop contract, they are what you
+    // read BEFORE deciding a session is worth investigating, and they are cheap: differenced
+    // counters printed on a timer, not per-frame sampling. XrDeepDiag below is the expensive half
+    // and stays gated.
     { "XrDeepDiag",         &CyberpunkVR_XrDeepDiag,         1, false },
     { "VrikRateLog",        &CyberpunkVR_VrikRateLog,        1, false },
     { "TemporalScan",       &CyberpunkVR_TemporalScan,       1, true  },
