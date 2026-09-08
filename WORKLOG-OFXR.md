@@ -117,34 +117,56 @@ Still unexplained, low priority: brief settling windows at session start show `w
 LATE 62` before dropping to ~1 ms and LATE 0, and one window logged `presents 24.1/s` with
 `perPresent 3.72` while the loop held 90 -- the game's own render rate, not ours.
 
-## Problem 3 — hang then self-termination (OFXR, 2026-09-08)
+## Problem 3 — menu GPU hang (OURS, not OFXR's — corrected)
 
-Opening the menu killed the game. Full chain, from three logs lined up by wall clock:
+Opening the menu killed the game:
 
 ```
-15:05:45.779  MenuMode 1 -> 0                    (menu closing; OFXR starts generating again)
-15:05:46.352  OFXR: downstream_first_end_frame phase=B ... and NO phase=E. It never returns.
+15:05:45.779  MenuMode 1 -> 0
+15:05:46.352  OFXR: downstream_first_end_frame phase=B ... never returns
 15:05:46.425  Overlay fence wait timed out (overlay frame ownership, 100 ms)
 15:05:46.473  [xrcycle] work 7.38 ms mean, 562.1 ms PEAK
-15:05:47.767  presents 0.8/s | xr cycles 0.0/s   -- loop stopped, blocked in xrEndFrame
-   (23 seconds of nothing)
-15:06:10.505  int 3 at Cyberpunk2077.exe+0x2A43F4B, then the SAME stack calls
-              TerminateProcess(self, 0x00000001) from Cyberpunk2077.exe+0x29CEA69
+15:05:47.767  presents 0.8/s | xr cycles 0.0/s
+   (23 s)
+15:06:10.505  int 3 at Cyberpunk2077.exe+0x2A43F4B, same stack -> TerminateProcess(self, 1)
 ```
 
-**OFXR hung inside its own downstream submit** with a generated pair ready
-(`generation_prepare result=0 b=2` = kind `pair`). The app thread blocked there, our overlay fence
-degraded as designed rather than deadlocking, and the engine's watchdog eventually asserted and
-killed the process. The `int 3` is the engine's assert-then-die path, **not** the ReShade
-breakpoint from Problem 1 -- stepping over it changed nothing, the same stack terminated anyway.
+**First read was wrong.** OFXR's log stopping inside `downstream_first_end_frame` was taken as OFXR
+hanging. It is what any caller looks like when the GPU beneath it has stopped -- a victim, not the
+cause.
 
-This is upstream's bug, not ours. Suspect `enqueue_presenter_pair` followed by
-`wait_for_presenter_capacity(state, 2)` in `src/layer/openxr_layer.cpp`: if the presenter thread is
-itself blocked in the runtime, the application thread waits on capacity that never frees.
+This is our own **known DLSSNR menu/lifecycle GPU hang**, recorded in
+`.okf/architecture/dlss5-neural-rendering.md` by commit `aba41da` on 2026-09-02, which already said
+it is not OFXR-related and not even foveation-related:
 
-The flight log for it is
-`RuntimeLayer/v068/ofxr-bridge-flight-20260908-150447-pid27124.log` -- worth attaching to an
-upstream issue as-is.
+> A later 65% run produced a real `DXGI_ERROR_DEVICE_HUNG` after 296 seconds. It is not a new
+> foveation-specific signature: the engine breakpoint/stack prefix and DRED endpoint exactly match
+> pre-foveation reports `20260830-192912` and `20260830-194318`. ... before engine menu mode became
+> active. Foveation then stopped issuing copies/subrect rewrites as designed, while feature-18 calls
+> continued with **menu parameter samples reporting null resources**. GPU progress stopped at
+> `HologramDepth_and_Distortion/FinalFlushBarriers` ... overlay fence timeouts and stale-VRCAM mono
+> fallback followed the stall.
+
+Menu transition, overlay fence timeouts, GPU stop, engine breakpoint -- four for four with today.
+The signature predates OFXR entirely (matched to 2026-08-30).
+
+**Never fixed.** `aba41da` records it; every NR commit since is UI, presets and the load sentinel.
+The overlay still warns about it in the port's own words: *"menu and save transitions are not yet
+lifecycle-safe ... this is a known DLSSNR device-hang family."*
+
+**The lead, from our own note:** feature-18 evaluation keeps running through menu mode *with null
+resources*. Gating NR evaluation off while menu mode is active -- or refusing to evaluate when the
+sampled resources are null -- is the obvious candidate and is entirely in our code.
+
+**Prior art:** iPowerTech's v0.1.7-beta2 (2026-09-05) claims "DLSS5 Neural Rendering: the delayed
+GPU crash is fixed". No source: that fork's `main` (2026-08-30) has zero hits for `DLSS5`,
+`ReShadeRegisterAddon`, `addon64`, `AddonHost`, `DLSSNR`, `NeuralUplift` or `renodx`, and
+`src/Addons/` has never existed on it. Cannot be diffed. Worth asking him.
+
+### Lesson
+
+The knowledge base had this a week before the investigation re-derived it wrongly. **Search
+`.okf/` and `git log --grep` before attributing a failure to a new component.**
 
 ## OFXR facts worth not re-deriving
 

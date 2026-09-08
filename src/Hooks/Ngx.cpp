@@ -2210,11 +2210,42 @@ void NgxTryInstallDlssNrDiagnostics() {
 
     MH_STATUS create = MH_CreateHook(eval, stub, reinterpret_cast<void**>(&g_nrEvaluateOrig));
     if (create != MH_OK || !g_nrEvaluateOrig) {
-        Log("[DLSSNR-DIAG][hook] MinHook trampoline creation failed status=%d (%s) target=%p\n",
-            static_cast<int>(create), MH_StatusToString(create), eval);
+        // WHERE the target sits, not merely that it failed. MinHook needs a free page within
+        // reach of the target for its trampoline, and when nvngx_dlssnr.dll maps low instead of
+        // into the usual 0x7FF.. range it can fail to find one. This was raised by a failure at
+        // target=0x00000193441659C0 against a working run's 0x00007FFE5A7559C0; the module base
+        // and the region around the target are the numbers that settle which it is.
+        MEMORY_BASIC_INFORMATION mbi{};
+        const SIZE_T queried = VirtualQuery(eval, &mbi, sizeof(mbi));
+        Log("[DLSSNR-DIAG][hook] MinHook trampoline creation failed status=%d (%s) target=%p "
+            "module=%p region=%p size=%llu state=0x%lX protect=0x%lX\n",
+            static_cast<int>(create), MH_StatusToString(create), eval,
+            static_cast<void*>(runtime),
+            queried ? mbi.AllocationBase : nullptr,
+            queried ? static_cast<unsigned long long>(mbi.RegionSize) : 0ull,
+            queried ? mbi.State : 0ul,
+            queried ? mbi.Protect : 0ul);
         if (create == MH_OK) MH_RemoveHook(eval);
         VirtualFree(stub, 0, MEM_RELEASE);
         g_nrEvaluateOrig = nullptr;
+
+        // MH_ERROR_MEMORY_ALLOC IS NOT A PERMANENT REFUSAL, and latching -2 on it was wrong. It
+        // says only that no page was free near the target AT THIS MOMENT. Address space moves as
+        // the game loads, and NR is typically enabled long after this first attempt -- one unlucky
+        // moment therefore cost a whole session its foveation, silently: NR then runs FULL FRAME
+        // at roughly four times the intended GPU cost, and the coverage UI vanishes because it
+        // only draws at state 2. Every other status here is a real refusal and still latches.
+        if (create == MH_ERROR_MEMORY_ALLOC) {
+            static std::atomic<int> s_allocRetries{0};
+            const int attempt = s_allocRetries.fetch_add(1, std::memory_order_relaxed) + 1;
+            constexpr int kMaxAllocRetries = 60;
+            if (attempt < kMaxAllocRetries) {
+                g_nrDiagState.store(0, std::memory_order_release);   // eligible again next tick
+                return;
+            }
+            Log("[DLSSNR-DIAG][hook] giving up after %d trampoline allocation attempts; "
+                "NR will run FULL FRAME with foveation inactive\n", attempt);
+        }
         g_nrDiagState.store(-2, std::memory_order_release);
         return;
     }

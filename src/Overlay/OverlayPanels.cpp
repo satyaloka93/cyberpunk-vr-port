@@ -590,6 +590,19 @@ void DrawReShadeAddonHostPanel() {
                                "Stereo Neural Rendering unavailable: runtime mismatch or hook collision");
         } else if (nr.state == -4) {
             ImGui::TextDisabled("Stereo Neural Rendering diagnostics are disabled for this runtime.");
+        } else if (nr.state == -2) {
+            // SAY WHAT IT COSTS, not just that something failed. At this state the foveation hook
+            // did not install, so NR runs over the FULL frame -- roughly four times the work of
+            // the 50% preset -- and the coverage combo above is not drawn at all, because it only
+            // appears at state 2. An evening went into "where did my boxes go" and "why is
+            // performance terrible" before they turned out to be the same thing, and the only
+            // thing on screen was an orange line reading "setup failed (state -2)".
+            ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.30f, 1.0f),
+                               "Neural Rendering foveation hook NOT installed.");
+            ImGui::TextWrapped("NR is running over the FULL frame -- roughly 4x the GPU cost of the "
+                               "50%% preset -- and the coverage selector is unavailable. This is an "
+                               "address-space allocation failure; it is retried during startup and "
+                               "usually succeeds on another launch. See [DLSSNR-DIAG][hook] in the log.");
         } else if (nr.state < 0) {
             ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.35f, 1.0f),
                                "Stereo Neural Rendering setup failed (state %d)", nr.state);
