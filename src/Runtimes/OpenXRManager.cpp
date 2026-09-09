@@ -615,11 +615,21 @@ bool OpenXRManager::Init() {
                 if (strcmp(p.extensionName, XR_KHR_COMPOSITION_LAYER_DEPTH_EXTENSION_NAME) == 0) {
                     m_depthLayerSupported = true;
                     extensions.push_back(XR_KHR_COMPOSITION_LAYER_DEPTH_EXTENSION_NAME);
-                    break;
+                }
+                // Eye gaze, so neural rendering can be foveated where the eye actually is rather
+                // than at a fixed centre. Requested ONLY when advertised: naming an unsupported
+                // extension fails xrCreateInstance outright, which would cost the entire VR
+                // session for what is an optional feature. (The `break` that used to end this
+                // loop after the depth match is gone for the same reason -- it would have hidden
+                // every extension listed after that one.)
+                if (strcmp(p.extensionName, XR_EXT_EYE_GAZE_INTERACTION_EXTENSION_NAME) == 0) {
+                    m_eyeGazeSupported = true;
+                    extensions.push_back(XR_EXT_EYE_GAZE_INTERACTION_EXTENSION_NAME);
                 }
             }
         }
         Log("OpenXRManager: depth-layer (XR_KHR_composition_layer_depth) supported=%d\n", m_depthLayerSupported ? 1 : 0);
+        Log("OpenXRManager: eye gaze (XR_EXT_eye_gaze_interaction) advertised=%d\n", m_eyeGazeSupported ? 1 : 0);
     }
 
     XrInstanceCreateInfo createInfo{XR_TYPE_INSTANCE_CREATE_INFO};
@@ -901,6 +911,33 @@ bool OpenXRManager::Init() {
         });
 
 bindings_done:
+        // EYE GAZE, suggested as its own interaction profile. It is not a controller: the runtime
+        // matches /interaction_profiles/ext/eye_gaze_interaction separately, and the single pose
+        // it carries lives on /user/eyes_ext. The action itself belongs to m_actionSet above, so
+        // the one permitted xrAttachSessionActionSets call covers hands and eyes together.
+        if (m_eyeGazeSupported && m_actionSet != XR_NULL_HANDLE) {
+            XrActionCreateInfo aci{XR_TYPE_ACTION_CREATE_INFO};
+            aci.actionType = XR_ACTION_TYPE_POSE_INPUT;
+            strcpy_s(aci.actionName, "eye_gaze");
+            strcpy_s(aci.localizedActionName, "Eye Gaze");
+            const XrResult ar = xrCreateAction(m_actionSet, &aci, &m_eyeGazeAction);
+            if (XR_SUCCEEDED(ar) && m_eyeGazeAction != XR_NULL_HANDLE) {
+                XrPath profile = XR_NULL_PATH, gazePath = XR_NULL_PATH;
+                xrStringToPath(m_instance, "/interaction_profiles/ext/eye_gaze_interaction", &profile);
+                xrStringToPath(m_instance, "/user/eyes_ext/input/gaze_ext/pose", &gazePath);
+                XrActionSuggestedBinding bind{ m_eyeGazeAction, gazePath };
+                XrInteractionProfileSuggestedBinding sb{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+                sb.interactionProfile = profile;
+                sb.countSuggestedBindings = 1;
+                sb.suggestedBindings = &bind;
+                const XrResult sr = xrSuggestInteractionProfileBindings(m_instance, &sb);
+                Log("OpenXRManager[Eye]: suggest eye_gaze_interaction -> %d\n", static_cast<int>(sr));
+            } else {
+                Log("OpenXRManager[Eye]: xrCreateAction(eye_gaze) failed res=%d\n",
+                    static_cast<int>(ar));
+                m_eyeGazeAction = XR_NULL_HANDLE;
+            }
+        }
         (void)0;
     }
 
@@ -1007,6 +1044,18 @@ bool OpenXRManager::InitGraphics(ID3D12Device* device, ID3D12CommandQueue* queue
         attachInfo.countActionSets = 1;
         attachInfo.actionSets = &m_actionSet;
         xrAttachSessionActionSets(m_session, &attachInfo);
+
+        // Gaze space. Must come AFTER the attach above -- an action space created from an
+        // unattached action locates to nothing, which is indistinguishable from a headset with
+        // no eye tracker.
+        if (m_eyeGazeAction != XR_NULL_HANDLE) {
+            XrActionSpaceCreateInfo gazeSpaceInfo{XR_TYPE_ACTION_SPACE_CREATE_INFO};
+            gazeSpaceInfo.action = m_eyeGazeAction;
+            gazeSpaceInfo.poseInActionSpace.orientation.w = 1.0f;
+            const XrResult gr = xrCreateActionSpace(m_session, &gazeSpaceInfo, &m_eyeGazeSpace);
+            Log("OpenXRManager[Eye]: gaze action space res=%d handle=%p\n",
+                static_cast<int>(gr), static_cast<void*>(m_eyeGazeSpace));
+        }
 
         for (int i = 0; i < 2; i++) {
             XrActionSpaceCreateInfo spaceInfo{XR_TYPE_ACTION_SPACE_CREATE_INFO};

@@ -35,6 +35,11 @@
 // Owned by Anim/TwoHandGrip.cpp. Read here so the left-grip scanner hold can tell that the support
 // hand is on the weapon -- see the claim note at the scanner gate below.
 extern "C" float CyberpunkVR_TwoHandBlend;
+// Eye gaze, published here and consumed by the feature-18 foveation prehook in Hooks/Ngx.cpp.
+// Head-relative tangent space, already smoothed; see the call site for why it is not projected
+// per eye. Clear stops the region freezing at the last look direction when tracking drops.
+extern "C" void CyberpunkVR_SetGazeTangent(float tanX, float tanY);
+extern "C" void CyberpunkVR_ClearGaze();
 
 extern "C" __declspec(dllexport) int CyberpunkVR_XrPaceByRuntime = 1;
 
@@ -1464,7 +1469,81 @@ DWORD OpenXRManager::FrameThreadMain() {
                 // Haptic requests arrive from CET and the per-round shot hook on other threads.
                 // Apply them only from the XR frame owner, after the action set is synchronized.
                 PumpOpenXRHaptics();
-                
+
+                // ── EYE GAZE -> normalised foveation centre ──────────────────────────────────
+                //
+                // Located in VIEW space, so the result is already relative to the head and needs
+                // no separate head-pose subtraction. The gaze forward vector is rotated out of
+                // the pose quaternion and divided through by z to give tangent-space x/y, which
+                // is the same space the projection FOV tangents live in -- so it maps onto the
+                // eye image without knowing the resolution here.
+                //
+                // Only FOCUSED frames carry action data. Before that the runtime returns
+                // flags 0x0, which is not a failure; publishing it as a centre would slam the
+                // foveation box to the corner every time the dashboard opened.
+                if (m_eyeGazeSpace != XR_NULL_HANDLE && syncRes == XR_SUCCESS) {
+                    XrSpaceLocation gaze{XR_TYPE_SPACE_LOCATION};
+                    if (XR_SUCCEEDED(xrLocateSpace(m_eyeGazeSpace, m_viewSpace,
+                                                   frameState.predictedDisplayTime, &gaze)) &&
+                        (gaze.locationFlags & XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT)) {
+                        const XrQuaternionf& q = gaze.pose.orientation;
+                        // Forward (0,0,-1) rotated by q.
+                        const float fx = -2.0f * (q.x * q.z + q.w * q.y);
+                        const float fy = -2.0f * (q.y * q.z - q.w * q.x);
+                        const float fz = -(1.0f - 2.0f * (q.x * q.x + q.y * q.y));
+                        if (fz < -0.1f) {                       // looking forward at all
+                            const float tanX = fx / -fz;
+                            const float tanY = fy / -fz;
+                            // Exponential smoothing. Raw gaze includes saccades and micro-tremor;
+                            // an unsmoothed centre would make the region jitter every frame, which
+                            // is far more visible than the region being slightly behind the eye.
+                            static float s_gx = 0.0f, s_gy = 0.0f;
+                            static bool  s_gazeInit = false;
+                            const float a = s_gazeInit ? 0.15f : 1.0f;
+                            s_gx += (tanX - s_gx) * a;
+                            s_gy += (tanY - s_gy) * a;
+                            s_gazeInit = true;
+
+                            // A DEADBAND, and smoothing alone is not a substitute for it.
+                            //
+                            // DLSS-NR is temporal, and the region origin is snapped to 8 pixels.
+                            // A centre that creeps -- which is what smoothing produces, since it
+                            // is always approaching and never arriving -- keeps stepping across
+                            // those 8-pixel boundaries. Every step is a discontinuity in NR's
+                            // history, and the eye reads a train of them as shimmer.
+                            //
+                            // So hold the committed centre completely still until gaze leaves a
+                            // threshold, then move once. That matches how eyes actually behave:
+                            // long fixations separated by saccades. During a saccade vision is
+                            // suppressed, so relocating then is close to free -- the region is
+                            // stationary for exactly the periods when a moving one would be seen.
+                            static float s_cx = 0.0f, s_cy = 0.0f;
+                            constexpr float kGazeDeadbandTan = 0.06f;   // ~3.4 degrees
+                            const float dx = s_gx - s_cx;
+                            const float dy = s_gy - s_cy;
+                            if (!s_gazeInit || (dx * dx + dy * dy) >
+                                    (kGazeDeadbandTan * kGazeDeadbandTan)) {
+                                s_cx = s_gx;
+                                s_cy = s_gy;
+                            }
+                            CyberpunkVR_SetGazeTangent(s_cx, s_cy);
+                            // Count the commits, because that is the number that predicts shimmer:
+                            // a steady gaze should produce almost none, and a session full of
+                            // them means the deadband is too tight for this tracker's noise.
+                            static uint32_t s_gazeLog = 0, s_commits = 0;
+                            if (s_cx == s_gx && s_cy == s_gy) ++s_commits;
+                            if ((s_gazeLog++ % 300) == 0) {
+                                Log("OpenXRManager[Eye]: gaze tan=(%.3f, %.3f) raw=(%.3f, %.3f) "
+                                    "committed=(%.3f, %.3f) moves=%u flags=0x%llX\n",
+                                    s_gx, s_gy, tanX, tanY, s_cx, s_cy, s_commits,
+                                    static_cast<unsigned long long>(gaze.locationFlags));
+                            }
+                        }
+                    } else {
+                        CyberpunkVR_ClearGaze();
+                    }
+                }
+
                 if (doHandLog) {
                     Log("OpenXRManager[Hands]: syncRes=%d sessionState=%d\n", syncRes, (int)m_sessionState);
                 }

@@ -634,6 +634,14 @@ void LatchNrFovealPresetAtPairBoundary(int side, bool menu, bool hasOuter, int o
         selected, kNrFovealPresets[selected].label, active, kNrFovealPresets[active].label);
 }
 
+// GAZE, published by the frame loop and read here. Tangent-space, head-relative, already
+// smoothed; kFovealGazeStale keeps a region from freezing at the last look direction when the
+// tracker drops out mid-session -- it falls back to the fixed centre instead.
+std::atomic<float> g_gazeTanX{0.0f};
+std::atomic<float> g_gazeTanY{0.0f};
+std::atomic<uint64_t> g_gazeTickMs{0};
+constexpr uint64_t kFovealGazeStale = 500;
+
 bool ComputeNrRegion(const NrSubrect& r, int side, const NrFovealPresetDef& preset,
                      uint32_t* x, uint32_t* y, uint32_t* w, uint32_t* h) {
     if (!r.valid || (side != 0 && side != 1) || !x || !y || !w || !h) return false;
@@ -650,10 +658,39 @@ bool ComputeNrRegion(const NrSubrect& r, int side, const NrFovealPresetDef& pres
         // centre boxes overlap the same world region better than identical image coordinates.
         const int shift = static_cast<int>(r.w * 0.04f) * (side == 1 ? 1 : -1);
         int cx = static_cast<int>(r.x + (r.w - *w) / 2) + shift;
+        int cy = static_cast<int>(r.y) + static_cast<int>(NrAlign8Down((r.h - *h) / 2));
+
+        // EYE-TRACKED CENTRE. A fixed box throws away most of what foveation is for: the eye
+        // spends much of its time away from centre, and the region has to be large enough to
+        // cover wherever it might be. Moving it to the gaze lets the same coverage sit where it
+        // is actually looked at.
+        //
+        // The tangent values are head-relative and eye-agnostic, so BOTH eyes get the same world
+        // direction -- which is what keeps the two regions describing one place. The fixed
+        // per-eye shift above stays as the base; gaze displaces from there.
+        //
+        // kFovealHalfTan is a plain linear mapping of tangent to pixels rather than a per-eye
+        // projection inverse. It is deliberate for a first pass: the FOV here is symmetric in Y
+        // and the asymmetry in X is already approximated by the ±4% shift, so a projection-exact
+        // mapping would add a dependency on the live view FOV for a correction smaller than the
+        // smoothing lag. Revisit if the region visibly trails toward the edges.
+        const uint64_t gazeTick = g_gazeTickMs.load(std::memory_order_relaxed);
+        const uint64_t nowMs = GetTickCount64();
+        if (gazeTick != 0 && nowMs - gazeTick <= kFovealGazeStale) {
+            constexpr float kFovealHalfTan = 1.84f;   // ~61.5 deg, this headset's outer half-FOV
+            const float gx = g_gazeTanX.load(std::memory_order_relaxed) / kFovealHalfTan;
+            const float gy = g_gazeTanY.load(std::memory_order_relaxed) / kFovealHalfTan;
+            cx += static_cast<int>(gx * static_cast<float>(r.w) * 0.5f);
+            cy -= static_cast<int>(gy * static_cast<float>(r.h) * 0.5f);  // +tanY is up, +y is down
+        }
+
         cx = std::max<int>(static_cast<int>(r.x),
                            std::min<int>(cx, static_cast<int>(r.x + r.w - *w)));
+        cy = std::max<int>(static_cast<int>(r.y),
+                           std::min<int>(cy, static_cast<int>(r.y + r.h - *h)));
         *x = NrAlign8Down(static_cast<uint32_t>(cx));
-        *y = r.y + NrAlign8Down((r.h - *h) / 2);
+        *y = NrAlign8Down(static_cast<uint32_t>(cy));
+        if (*y < r.y) *y = r.y;
     }
     return *x >= r.x && *y >= r.y && *x + *w <= r.x + r.w && *y + *h <= r.y + r.h;
 }
@@ -2370,4 +2407,21 @@ bool NgxSetDlssNrFovealSelectedPreset(int preset) {
     Log("[DLSSNR-FOV] live preset requested: %d (%s); waiting for a gameplay MAIN boundary\n",
         preset, kNrFovealPresets[preset].label);
     return true;
+}
+
+// ── gaze publication, called from the XR frame loop ──────────────────────────────────────────
+// Two plain stores and a timestamp. Deliberately not a lock: the consumer is the feature-18
+// prehook on the render thread, it reads once per evaluation, and a half-updated pair is at worst
+// one frame of a slightly wrong centre -- where a lock would put the render thread behind the
+// input thread for the same information.
+extern "C" void CyberpunkVR_SetGazeTangent(float tanX, float tanY) {
+    g_gazeTanX.store(tanX, std::memory_order_relaxed);
+    g_gazeTanY.store(tanY, std::memory_order_relaxed);
+    g_gazeTickMs.store(GetTickCount64(), std::memory_order_relaxed);
+}
+
+// Stop claiming a centre the moment gaze stops being tracked, rather than letting the last known
+// look direction persist. ComputeNrRegion falls back to the fixed centre once the stamp goes cold.
+extern "C" void CyberpunkVR_ClearGaze() {
+    g_gazeTickMs.store(0, std::memory_order_relaxed);
 }

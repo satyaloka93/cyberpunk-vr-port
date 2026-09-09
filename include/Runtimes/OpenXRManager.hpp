@@ -893,6 +893,16 @@ private:
     XrAction m_handPoseAction = XR_NULL_HANDLE;          // grip pose (palm) -- used by VRIK
     XrAction m_handAimPoseAction = XR_NULL_HANDLE;       // aim pose (pointing) -- used by hand-locomotion
     XrSpace  m_handAimSpaces[2] = { XR_NULL_HANDLE, XR_NULL_HANDLE };
+    // EYE GAZE. The action lives in m_actionSet above rather than in a set of its own, because
+    // xrAttachSessionActionSets may be called ONCE per session and the hands already claim that
+    // call -- a second set would silently attach nothing and read exactly like "no eye tracker".
+    // Measured on PSVR2 + PSVR2Toolkit: SteamVR/OpenXR 2.17.8 advertises XR_EXT_eye_gaze_interaction
+    // v2, reports supportsEyeGazeInteraction TRUE, and the pose goes VALID|TRACKED (flags 0xF) --
+    // but only once the session reaches FOCUSED. Before that it is flags 0x0, which is not a
+    // failure and must not be read as one.
+    bool     m_eyeGazeSupported = false;
+    XrAction m_eyeGazeAction = XR_NULL_HANDLE;
+    XrSpace  m_eyeGazeSpace = XR_NULL_HANDLE;
     // Gameplay input actions (synced each frame, exposed via GetControllerState).
     XrAction m_thumbstickAction = XR_NULL_HANDLE;        // Vector2f, per hand
     XrAction m_triggerAction = XR_NULL_HANDLE;           // Float, per hand

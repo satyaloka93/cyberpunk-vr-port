@@ -112,22 +112,48 @@ int main(int argc, char** argv) {
     std::vector<XrExtensionProperties> exts(extCount, { XR_TYPE_EXTENSION_PROPERTIES });
     if (extCount) xrEnumerateInstanceExtensionProperties(nullptr, extCount, &extCount, exts.data());
     bool haveD3D11 = false;
+    bool haveEyeGaze = false;   // XR_EXT_eye_gaze_interaction -- the cross-vendor one
     for (const auto& e : exts) {
         if (std::strcmp(e.extensionName, XR_KHR_D3D11_ENABLE_EXTENSION_NAME) == 0) haveD3D11 = true;
+        if (std::strcmp(e.extensionName, XR_EXT_EYE_GAZE_INTERACTION_EXTENSION_NAME) == 0)
+            haveEyeGaze = true;
     }
-    std::printf("Runtime extensions: %u (D3D11 binding %s)\n\n",
-                extCount, haveD3D11 ? "available" : "MISSING");
+    std::printf("Runtime extensions: %u (D3D11 binding %s)\n", extCount,
+                haveD3D11 ? "available" : "MISSING");
+
+    // EVERY extension, printed. The eye-tracking question is asked of this list first, and a
+    // runtime that does not advertise the extension cannot be made to produce gaze by any amount
+    // of application-side work -- so seeing the whole list is what separates "the driver is not
+    // exposing it" from "something above the runtime is dropping it".
+    std::printf("\nExtensions the runtime advertises:\n");
+    for (const auto& e : exts) {
+        const bool eyeish = std::strstr(e.extensionName, "eye") != nullptr ||
+                            std::strstr(e.extensionName, "gaze") != nullptr ||
+                            std::strstr(e.extensionName, "EYE") != nullptr;
+        std::printf("  %s%s (v%u)\n", eyeish ? "* " : "  ", e.extensionName,
+                    e.extensionVersion);
+    }
+    std::printf("\nEye tracking: %s%s\n\n",
+                haveEyeGaze ? "XR_EXT_eye_gaze_interaction ADVERTISED"
+                            : "XR_EXT_eye_gaze_interaction NOT ADVERTISED",
+                haveEyeGaze ? "" : "  <- the runtime is not offering eye gaze at all");
 
     // ── instance ─────────────────────────────────────────────────────────────────────────────
-    const char* wanted[] = { XR_KHR_D3D11_ENABLE_EXTENSION_NAME };
+    // Eye gaze is requested only when advertised: naming an unsupported extension makes
+    // xrCreateInstance fail outright, which would lose every other answer this tool gives.
+    const char* wanted[3] = {};
+    uint32_t wantedCount = 0;
+    if (haveD3D11)   wanted[wantedCount++] = XR_KHR_D3D11_ENABLE_EXTENSION_NAME;
+    if (haveEyeGaze) wanted[wantedCount++] = XR_EXT_EYE_GAZE_INTERACTION_EXTENSION_NAME;
+
     XrInstanceCreateInfo ici{ XR_TYPE_INSTANCE_CREATE_INFO };
     strcpy_s(ici.applicationInfo.applicationName, "xrprobe");
     ici.applicationInfo.applicationVersion = 1;
     strcpy_s(ici.applicationInfo.engineName, "CyberpunkVRPort");
     ici.applicationInfo.engineVersion = 1;
     ici.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
-    ici.enabledExtensionCount = haveD3D11 ? 1u : 0u;
-    ici.enabledExtensionNames = haveD3D11 ? wanted : nullptr;
+    ici.enabledExtensionCount = wantedCount;
+    ici.enabledExtensionNames = wantedCount ? wanted : nullptr;
 
     if (!Check(xrCreateInstance(&ici, &g_instance), "xrCreateInstance")) return 1;
 
@@ -147,8 +173,19 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // THE RUNTIME'S OWN ANSWER, chained onto the system query. Advertising the extension only says
+    // the runtime implements the API; supportsEyeGazeInteraction says THIS headset, with the driver
+    // currently loaded, actually has an eye tracker behind it. The two differ exactly when a driver
+    // is the thing at fault, which is the case being tested here.
+    XrSystemEyeGazeInteractionPropertiesEXT eyeProps{
+        XR_TYPE_SYSTEM_EYE_GAZE_INTERACTION_PROPERTIES_EXT };
     XrSystemProperties sp{ XR_TYPE_SYSTEM_PROPERTIES };
+    if (haveEyeGaze) sp.next = &eyeProps;
     if (Check(xrGetSystemProperties(g_instance, systemId, &sp), "xrGetSystemProperties")) {
+        if (haveEyeGaze) {
+            std::printf("  eye gaze : supportsEyeGazeInteraction = %s\n",
+                        eyeProps.supportsEyeGazeInteraction ? "TRUE" : "FALSE");
+        }
         std::printf("System : %s\n", sp.systemName);
         std::printf("  vendorId 0x%08x   maxSwapchain %ux%u   maxLayers %u\n",
                     sp.vendorId, sp.graphicsProperties.maxSwapchainImageWidth,
@@ -274,7 +311,64 @@ int main(int argc, char** argv) {
     XrSwapchain swapchain = XR_NULL_HANDLE;
     Check(xrCreateSwapchain(session, &scci, &swapchain), "xrCreateSwapchain");
 
+    // ── eye gaze action, bound the way the spec requires ─────────────────────────────────────
+    //
+    // supportsEyeGazeInteraction is a claim; this is the proof. Gaze arrives as a POSE ACTION on
+    // the /interaction_profiles/ext/eye_gaze_interaction profile, so it needs an action set, a
+    // suggested binding, an attached set, xrSyncActions every frame, and an action space to
+    // locate. A runtime can advertise the extension, answer TRUE, and still never mark the pose
+    // TRACKED -- which is exactly what a driver that is not delivering samples looks like, and it
+    // cannot be distinguished any other way.
+    XrActionSet gazeSet = XR_NULL_HANDLE;
+    XrAction gazeAction = XR_NULL_HANDLE;
+    XrSpace gazeSpace = XR_NULL_HANDLE;
+    if (haveEyeGaze) {
+        XrActionSetCreateInfo asci{ XR_TYPE_ACTION_SET_CREATE_INFO };
+        strcpy_s(asci.actionSetName, "gaze_probe");
+        strcpy_s(asci.localizedActionSetName, "Gaze Probe");
+        asci.priority = 0;
+        if (Check(xrCreateActionSet(g_instance, &asci, &gazeSet), "xrCreateActionSet(gaze)")) {
+            XrActionCreateInfo aci{ XR_TYPE_ACTION_CREATE_INFO };
+            strcpy_s(aci.actionName, "gaze_pose");
+            strcpy_s(aci.localizedActionName, "Gaze Pose");
+            aci.actionType = XR_ACTION_TYPE_POSE_INPUT;
+            Check(xrCreateAction(gazeSet, &aci, &gazeAction), "xrCreateAction(gaze_pose)");
+        }
+        if (gazeAction) {
+            XrPath profile = XR_NULL_PATH, gazePath = XR_NULL_PATH;
+            xrStringToPath(g_instance, "/interaction_profiles/ext/eye_gaze_interaction", &profile);
+            xrStringToPath(g_instance, "/user/eyes_ext/input/gaze_ext/pose", &gazePath);
+            XrActionSuggestedBinding bind{ gazeAction, gazePath };
+            XrInteractionProfileSuggestedBinding sb{
+                XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING };
+            sb.interactionProfile = profile;
+            sb.countSuggestedBindings = 1;
+            sb.suggestedBindings = &bind;
+            Check(xrSuggestInteractionProfileBindings(g_instance, &sb),
+                  "xrSuggestInteractionProfileBindings(eye_gaze)");
+
+            XrSessionActionSetsAttachInfo attach{ XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO };
+            attach.countActionSets = 1;
+            attach.actionSets = &gazeSet;
+            Check(xrAttachSessionActionSets(session, &attach), "xrAttachSessionActionSets");
+
+            XrActionSpaceCreateInfo asp{ XR_TYPE_ACTION_SPACE_CREATE_INFO };
+            asp.action = gazeAction;
+            asp.poseInActionSpace.orientation.w = 1.0f;
+            Check(xrCreateActionSpace(session, &asp, &gazeSpace), "xrCreateActionSpace(gaze)");
+        }
+    }
+
     // ── wait for READY, then run the frame loop ──────────────────────────────────────────────
+    // FOCUS IS A PRECONDITION FOR ACTIONS, not a detail. xrSyncActions returns
+    // XR_SESSION_NOT_FOCUSED and every action stays inactive unless the session is FOCUSED, so a
+    // probe that tops out at VISIBLE reads a perfectly healthy eye tracker as flags=0x0. The first
+    // run of this tool did exactly that and the verdict blamed the driver. Track the state, count
+    // only focused frames, and say so when focus never arrives.
+    unsigned gazeValid = 0, gazeTracked = 0, gazeFrames = 0, focusedFrames = 0;
+    XrSessionState sessionState = XR_SESSION_STATE_UNKNOWN;
+    bool reachedFocus = false;
+    XrResult lastSyncResult = XR_SUCCESS;
     bool running = false, done = false;
     int guard = 0;
     while (!done && guard++ < 2000) {
@@ -282,7 +376,11 @@ int main(int argc, char** argv) {
         while (xrPollEvent(g_instance, &ev) == XR_SUCCESS) {
             if (ev.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED) {
                 const auto* s = reinterpret_cast<const XrEventDataSessionStateChanged*>(&ev);
-                std::printf("  session state -> %d\n", static_cast<int>(s->state));
+                sessionState = s->state;
+                if (s->state == XR_SESSION_STATE_FOCUSED) reachedFocus = true;
+                std::printf("  session state -> %d%s\n", static_cast<int>(s->state),
+                            s->state == XR_SESSION_STATE_FOCUSED ? "  (FOCUSED -- actions live)"
+                                                                 : "");
                 if (s->state == XR_SESSION_STATE_READY && !running) {
                     XrSessionBeginInfo sbi{ XR_TYPE_SESSION_BEGIN_INFO };
                     sbi.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
@@ -300,6 +398,36 @@ int main(int argc, char** argv) {
         XrFrameState fs{ XR_TYPE_FRAME_STATE };
         if (!Check(xrWaitFrame(session, nullptr, &fs), "xrWaitFrame")) break;
         Check(xrBeginFrame(session, nullptr), "xrBeginFrame");
+
+        // Gaze, sampled every frame. xrSyncActions first -- an action space locates to nothing
+        // without it, and that omission reads identically to a headset with no eye tracker.
+        if (gazeSpace && gazeSet) {
+            XrActiveActionSet active{ gazeSet, XR_NULL_PATH };
+            XrActionsSyncInfo sync{ XR_TYPE_ACTIONS_SYNC_INFO };
+            sync.countActiveActionSets = 1;
+            sync.activeActionSets = &active;
+            lastSyncResult = xrSyncActions(session, &sync);
+            if (sessionState == XR_SESSION_STATE_FOCUSED) ++focusedFrames;
+
+            XrSpaceLocation loc{ XR_TYPE_SPACE_LOCATION };
+            if (xrLocateSpace(gazeSpace, localSpace, fs.predictedDisplayTime, &loc) == XR_SUCCESS) {
+                ++gazeFrames;
+                const bool valid = (loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0;
+                const bool tracked =
+                    (loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT) != 0;
+                if (valid)   ++gazeValid;
+                if (tracked) ++gazeTracked;
+                if (gazeFrames <= 3 || (tracked && gazeTracked <= 3)) {
+                    std::printf("  gaze frame %u: flags=0x%llX valid=%d tracked=%d "
+                                "quat=(%.3f %.3f %.3f %.3f)\n",
+                                gazeFrames,
+                                static_cast<unsigned long long>(loc.locationFlags),
+                                valid ? 1 : 0, tracked ? 1 : 0,
+                                loc.pose.orientation.x, loc.pose.orientation.y,
+                                loc.pose.orientation.z, loc.pose.orientation.w);
+                }
+            }
+        }
 
         XrViewLocateInfo vli{ XR_TYPE_VIEW_LOCATE_INFO };
         vli.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
@@ -383,10 +511,54 @@ int main(int argc, char** argv) {
         fei.layers = fei.layerCount ? layerList : nullptr;
         xrEndFrame(session, &fei);
 
-        if (++submitted >= wantFrames) done = true;
+        // Don't stop the moment the frame budget is met: 60 frames is two thirds of a second, and
+        // focus routinely arrives later than that. Once focused, take 60 FOCUSED frames -- those
+        // are the only ones that can carry gaze. If focus never comes, give up at ~10 s rather
+        // than reporting a verdict from frames that were never entitled to action data.
+        ++submitted;
+        if (submitted >= wantFrames &&
+            (reachedFocus ? focusedFrames >= 60u : submitted >= 900)) {
+            done = true;
+        }
+    }
+
+    // ── the eye-tracking verdict, in one place ───────────────────────────────────────────────
+    // Four distinguishable outcomes, and each points somewhere different. Printed last so it is
+    // the thing still on screen when the tool exits.
+    std::printf("\n=== EYE TRACKING ===\n");
+    if (!haveEyeGaze) {
+        std::printf("  XR_EXT_eye_gaze_interaction: NOT ADVERTISED by the runtime.\n"
+                    "  Nothing above the runtime can supply gaze. Check that the driver providing\n"
+                    "  eye tracking is loaded and that this runtime is the one it plugs into.\n");
+    } else if (gazeFrames == 0) {
+        std::printf("  Extension advertised, but the gaze space never located.\n"
+                    "  The action never bound -- look at the xrSuggestInteractionProfileBindings\n"
+                    "  and xrAttachSessionActionSets results above.\n");
+    } else if (!reachedFocus) {
+        std::printf("  INCONCLUSIVE -- the session never reached FOCUSED (stopped at state %d).\n"
+                    "  OpenXR delivers no action data outside FOCUSED: xrSyncActions returns\n"
+                    "  XR_SESSION_NOT_FOCUSED and every action stays inactive, so gaze reads\n"
+                    "  flags=0x0 even from a perfectly working tracker. Last xrSyncActions = %d.\n"
+                    "  Close the SteamVR dashboard, put the headset ON so user presence is\n"
+                    "  detected, and run again -- focus is usually withheld for one of those.\n",
+                    static_cast<int>(sessionState), static_cast<int>(lastSyncResult));
+    } else if (gazeTracked == 0) {
+        std::printf("  Extension advertised, bound, and the session WAS focused (%u focused\n"
+                    "  frame(s) of %u located), but TRACKED on 0.\n"
+                    "  The runtime accepts the API and returns no gaze samples -- the signature of\n"
+                    "  a driver that is not delivering eye data, or eyes not detected in-headset.\n",
+                    focusedFrames, gazeFrames);
+    } else {
+        std::printf("  WORKING: %u/%u frames tracked (%u valid).\n"
+                    "  Eye tracking reaches OpenXR on this setup. Anything that cannot see gaze is\n"
+                    "  failing above the runtime, not below it.\n",
+                    gazeTracked, gazeFrames, gazeValid);
     }
 
     if (running) xrEndSession(session);
+    if (gazeSpace) xrDestroySpace(gazeSpace);
+    if (gazeAction) xrDestroyAction(gazeAction);
+    if (gazeSet) xrDestroyActionSet(gazeSet);
     if (swapchain) xrDestroySwapchain(swapchain);
     if (localSpace) xrDestroySpace(localSpace);
     if (session) xrDestroySession(session);
