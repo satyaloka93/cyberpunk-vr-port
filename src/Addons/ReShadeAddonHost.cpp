@@ -133,6 +133,41 @@ char  g_addonDesc[256] = {};
 HMODULE g_forwardTo = nullptr;
 bool    g_forwardResolved = false;
 
+// Our own module handle. The addon needs it as the "reshade module" argument, because to the
+// addon WE are the host -- we are the thing exporting ReShadeRegisterAddon.
+HMODULE SelfModule() {
+    HMODULE m = nullptr;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCSTR>(&SelfModule), &m);
+    return m;
+}
+
+// ADDONINIT IS PART OF THE CONTRACT, and omitting it looks exactly like a working addon.
+//
+// ReShade calls AddonInit(addon_module, reshade_module) after loading, and an addon may do ALL of
+// its real work there -- logger, hooks, config reads. renodx-dlss5 does not export it, so this
+// host was written without it and nothing ever noticed. CheekyFoveatedDLSS does export it: it
+// registered, took the ImGui function table, then subscribed to no events, read no config and
+// wrote no log file, because the call that starts it never came. Three symptoms, one missing call.
+//
+// Separate function so the __try has no objects requiring unwinding, and guarded because a third
+// party's init running inside our load loop must not take the process with it.
+bool CallAddonInitGuarded(HMODULE addon, const char* name) {
+    using AddonInitFn = bool(*)(HMODULE, HMODULE);
+    auto init = reinterpret_cast<AddonInitFn>(GetProcAddress(addon, "AddonInit"));
+    if (!init) return true;   // optional export; most addons do everything in DllMain
+    __try {
+        const bool ok = init(addon, SelfModule());
+        Log("[addonhost] %s AddonInit -> %s\n", name, ok ? "true" : "false");
+        return ok;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        Log("[addonhost] %s AddonInit FAULTED (0x%08X); loaded but NOT initialised\n",
+            name, static_cast<unsigned>(GetExceptionCode()));
+        return false;
+    }
+}
+
 HMODULE FindOtherReShadeHost() {
     using PFN_Enum = BOOL(WINAPI*)(HANDLE, HMODULE*, DWORD, LPDWORD);
     HMODULE k32 = GetModuleHandleW(L"kernel32.dll");
@@ -760,6 +795,9 @@ void LoadAddonsNow() {
             continue;
         }
         ++g_addonsLoaded;
+
+        CallAddonInitGuarded(m, fd.cFileName);
+
         Log("[addonhost] loaded %s -- %s\n", fd.cFileName,
             g_addonsRegistered > before ? "registered" : "did NOT register (see its own log lines)");
     } while (FindNextFileA(h, &fd));

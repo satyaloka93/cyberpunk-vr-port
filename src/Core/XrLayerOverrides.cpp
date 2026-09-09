@@ -26,7 +26,7 @@ constexpr const char* kDefaultDisables = "DISABLE_XR_APILAYER_reshade_1";
 //
 // An ABSENT key takes the default above. A key present but EMPTY disables nothing, which is how
 // to get the stock layer chain back without deleting the line.
-bool ReadDisableList(char* out, size_t size) {
+bool ReadIniKey(const char* wantKey, char* out, size_t size) {
     out[0] = '\0';
 
     char iniPath[MAX_PATH];
@@ -45,7 +45,7 @@ bool ReadDisableList(char* out, size_t size) {
         char* equals = strchr(line, '=');
         if (!equals) continue;
         *equals = '\0';
-        if (_stricmp(line, "xr_disable_api_layers") != 0) continue;
+        if (_stricmp(line, wantKey) != 0) continue;
 
         char* value = equals + 1;
         size_t len = strlen(value);
@@ -64,9 +64,34 @@ bool ReadDisableList(char* out, size_t size) {
 
 } // namespace
 
+void ApplyExplicitLayerEnables() {
+    // ENABLING an EXPLICIT layer, which is a different mechanism from disabling an implicit one.
+    //
+    // An explicit layer is registered but inert until something names it in XR_ENABLE_API_LAYERS.
+    // Setting that variable with `reg add` is not enough: unlike setx it does not broadcast
+    // WM_SETTINGCHANGE, so Steam and everything it launches keep their old environment and the
+    // layer silently never loads. It still ENUMERATES, so a probe listing "API layers visible to
+    // the loader" shows it and looks like success -- which is exactly how an hour went missing.
+    //
+    // Setting it here removes the whole question: it lands in OUR environment block before
+    // xrCreateInstance, so it cannot be defeated by propagation, and it affects no other process.
+    char enables[1024];
+    if (ReadIniKey("xr_enable_api_layers", enables, sizeof(enables)) && enables[0] != '\0') {
+        if (SetEnvironmentVariableA("XR_ENABLE_API_LAYERS", enables)) {
+            Log("[XR] XR_ENABLE_API_LAYERS=%s set for this process only\n", enables);
+        } else {
+            Log("[XR] XR_ENABLE_API_LAYERS set FAILED (err=%lu)\n", GetLastError());
+        }
+    }
+}
+
 void ApplyOpenXrLayerOverrides() {
+    // Runs FIRST and unconditionally: enabling an explicit layer is independent of the disable
+    // list, and an empty xr_disable_api_layers used to return early and skip it.
+    ApplyExplicitLayerEnables();
+
     char configured[1024];
-    const bool explicitKey = ReadDisableList(configured, sizeof(configured));
+    const bool explicitKey = ReadIniKey("xr_disable_api_layers", configured, sizeof(configured));
 
     char list[1024];
     strncpy_s(list, sizeof(list), explicitKey ? configured : kDefaultDisables, _TRUNCATE);
@@ -97,4 +122,5 @@ void ApplyOpenXrLayerOverrides() {
 
     Log("[XR] api-layer overrides applied: %d (%s)\n", applied,
         explicitKey ? "from vrport.ini" : "default");
+
 }
