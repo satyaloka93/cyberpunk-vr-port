@@ -13,6 +13,11 @@
 #include <atomic>
 #include <wrl.h>
 
+// NR foveation caches raw ID3D12Resource* for the DLSSNR colour/output planes. A resize
+// releases exactly those, so it has to be told -- the overlay already invalidates here.
+extern "C" void CyberpunkVR_NrFoveationInvalidate(const char* reason);
+
+
 // Defined in Stereo/CommandListCensus.cpp: hooks the game-facing command-list vtable so the port markers
 // land above a capture layer. Declared here because this is where the game-facing device is in hand.
 extern "C" void RegisterGameFacingListVtable(ID3D12Device* device);
@@ -322,6 +327,7 @@ HRESULT STDMETHODCALLTYPE HookedResizeBuffers(IDXGISwapChain* swapChain, UINT bu
     void** vtable = *reinterpret_cast<void***>(swapChain);
     ResizeBuffersFn originalFn = GetOriginalMethod<ResizeBuffersFn>(vtable, 13);
     OverlayInvalidateSwapchainResources();
+    CyberpunkVR_NrFoveationInvalidate("ResizeBuffers");
     return originalFn ? originalFn(swapChain, bufferCount, outWidth, outHeight, newFormat, flags) : DXGI_ERROR_INVALID_CALL;
 }
 
@@ -342,6 +348,7 @@ HRESULT STDMETHODCALLTYPE HookedResizeBuffers1(IDXGISwapChain3* swapChain, UINT 
     void** vtable = *reinterpret_cast<void***>(swapChain);
     ResizeBuffers1Fn originalFn = GetOriginalMethod<ResizeBuffers1Fn>(vtable, 39);
     OverlayInvalidateSwapchainResources();
+    CyberpunkVR_NrFoveationInvalidate("ResizeBuffers1");
     return originalFn ? originalFn(swapChain, bufferCount, outWidth, outHeight, format, flags, creationNodeMask, presentQueue) : DXGI_ERROR_INVALID_CALL;
 }
 

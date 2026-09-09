@@ -446,6 +446,10 @@ std::atomic<ID3D12Resource*> g_nrFovealOutput[3];
 std::atomic<uint64_t> g_nrFovealApplies[3];
 std::atomic<uint64_t> g_nrFovealCopies[3];
 std::atomic<uint64_t> g_nrFovealRejects[3];
+// Non-zero = skip foveation for this many more evaluations. Set by
+// CyberpunkVR_NrFoveationInvalidate at the bottom of this file; see the note there for why a
+// clear alone is not enough.
+std::atomic<uint32_t> g_nrFovealStandDown{0};
 
 bool CopyNrParameterName(const char* src, char (&dst)[80]) {
     if (!src) return false;
@@ -802,7 +806,14 @@ void __fastcall NrTailPrehook(ID3D12GraphicsCommandList* list, const void* handl
         SampleNrParameters(params, side, key, menu);
     InstallNrSlot1Recorder(params);
 
-    if (g_nrFoveationEnabled.load(std::memory_order_relaxed) && !menu &&
+    // Stand down after a resize until the addon has re-recorded its resources and the GPU has
+    // drained the work referencing the old ones. Counted in evaluations rather than on a clock,
+    // because evaluations are what actually have to pass before the stale pointers are gone.
+    uint32_t standDown = g_nrFovealStandDown.load(std::memory_order_acquire);
+    if (standDown != 0) g_nrFovealStandDown.store(standDown - 1, std::memory_order_release);
+
+    if (standDown == 0 &&
+        g_nrFoveationEnabled.load(std::memory_order_relaxed) && !menu &&
         g_nrVrcamOuterSeen.load(std::memory_order_relaxed) && hasOuter &&
         (side == 0 || side == 1) && outerSide == side) {
         ID3D12Resource* color = g_nrFovealColor[side].load(std::memory_order_acquire);
@@ -2424,4 +2435,31 @@ extern "C" void CyberpunkVR_SetGazeTangent(float tanX, float tanY) {
 // look direction persist. ComputeNrRegion falls back to the fixed centre once the stamp goes cold.
 extern "C" void CyberpunkVR_ClearGaze() {
     g_gazeTickMs.store(0, std::memory_order_relaxed);
+}
+
+// ── foveation resource invalidation ──────────────────────────────────────────────────────────
+//
+// g_nrFovealColor / g_nrFovealOutput are RAW ID3D12Resource* recorded from the addon's parameter
+// setter. Nothing used to clear them, and a swapchain resize releases exactly those textures --
+// so the next feature-18 prehook called GetDesc() and recorded CopyTextureRegion on freed memory.
+// Worse by construction: the copy is recorded into a command list that executes LATER, so even a
+// pointer still valid at record time can be dead before the GPU reaches it.
+//
+// Observed as an engine assert 9 ms after a resize, changing the DLSS quality setting:
+//     ResizeBuffers: requested 3584x3584 -> using 3584x3584 -- releasing overlay targets
+//     int 3 at Cyberpunk2077.exe+0x2A43F4B
+// The overlay already invalidated its own targets on that call; NR never learned to.
+//
+// The cooldown matters as much as the clear. The addon re-records resources on its next parameter
+// set, so the pointers refresh quickly -- but the GPU may still be draining work that references
+// the old ones. Standing down for a few frames costs a few unfoveated frames during a resize,
+// which nobody can see, and removes the window entirely.
+extern "C" void CyberpunkVR_NrFoveationInvalidate(const char* reason) {
+    for (int side = 0; side < 3; ++side) {
+        g_nrFovealColor[side].store(nullptr, std::memory_order_release);
+        g_nrFovealOutput[side].store(nullptr, std::memory_order_release);
+    }
+    g_nrFovealStandDown.store(120, std::memory_order_release);   // ~2 s at 60, ~1.3 s at 90
+    Log("[DLSSNR-FOV] resources invalidated (%s); foveation stands down for 120 frames\n",
+        reason ? reason : "unspecified");
 }

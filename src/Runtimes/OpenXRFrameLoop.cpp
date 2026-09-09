@@ -1518,7 +1518,7 @@ DWORD OpenXRManager::FrameThreadMain() {
                             // suppressed, so relocating then is close to free -- the region is
                             // stationary for exactly the periods when a moving one would be seen.
                             static float s_cx = 0.0f, s_cy = 0.0f;
-                            constexpr float kGazeDeadbandTan = 0.06f;   // ~3.4 degrees
+                            constexpr float kGazeDeadbandTan = 0.105f;  // ~6 degrees; 0.06 gave 811 relocations a session
                             const float dx = s_gx - s_cx;
                             const float dy = s_gy - s_cy;
                             if (!s_gazeInit || (dx * dx + dy * dy) >
