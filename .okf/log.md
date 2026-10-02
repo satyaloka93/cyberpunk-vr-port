@@ -2,6 +2,8 @@
 
 ## 2026-10-02
 
+* **Clean release candidate verified**: Commit d57af2c built in an isolated checkout, two local ZIPs packaged, and the switcher passed 30 assertions against the real fork ZIP in a temporary game fixture. The exact ZIP hashes and remaining headset gate are in [0.1.7 release changes](release-017-changes.md).
+
 * **Release scope isolated**: PSVR2 haptics IPC and the session-only empty-overlay pacing toggle were separated from experimental GPU/HUD probes. MSVC Release build and five grip-only Lua tests passed. See [0.1.7 release changes](release-017-changes.md).
 
 * **Switcher prepared**: Added separate upstream/fork switcher asset, pinned dependency acquisition, Nexus handoff, backup/restore and optional PSVR2Toolkit guidance. The 21 non-integration fixture assertions pass; no live game installation or public Cyberpunk release was performed. See [release switcher](release-switcher.md).

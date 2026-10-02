@@ -1,7 +1,7 @@
 # CyberpunkVRPort 0.1.7-psvr2.1 release candidate
 
 Based on upstream 0.1.7. This is a local release candidate, not a published
-GitHub release; final source commit and headset validation are still pending.
+GitHub release; combined headset validation is still pending.
 
 - PSVR2 Sense Triangle touch + right stick provides D-pad shift while
   suppressing turn input; Triangle click remains the normal Y action.
