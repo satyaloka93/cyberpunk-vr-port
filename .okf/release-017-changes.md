@@ -3,7 +3,7 @@ type: Configuration
 title: Upstream 0.1.7 PSVR2 release changes
 description: Scope and validation status for isolated haptics and empty-overlay pacing.
 tags: [psvr2, release, haptics, pacing]
-timestamp: 2026-10-02T17:20:00+09:00
+timestamp: 2026-10-02T22:00:00+09:00
 ---
 
 # Scope
@@ -23,24 +23,24 @@ It is not a frame-generation toggle or a guaranteed FPS improvement.
 
 # Validation boundary
 
-An isolated checkout at commit `d57af2c` built the MSVC Release plugin from
-the committed source and pinned SDK revisions. DLL SHA-256 is
+An isolated checkout built the MSVC Release plugin from the committed source
+and pinned SDK revisions. The code was unchanged from commit `d57af2c` through
+release commit `a839acb`. DLL SHA-256 is
 `04db4378fc95636cd4fa662049f54e9162fd9f2fe341d4792336bf7bb72fd4d2`.
-The two local packages are `CyberpunkVRPort-0.1.7-psvr2.1.zip` (SHA-256
-`08bf536819ca2dd6d2db088d4f17dfb7b5a98e0b97e4b5a24e6b561f11ab2e06`)
+Published prerelease [`0.1.7-psvr2.1`](https://github.com/satyaloka93/cyberpunk-vr-port/releases/tag/0.1.7-psvr2.1)
+contains `CyberpunkVRPort-0.1.7-psvr2.1.zip` (SHA-256
+`567042039099859b5b675c5a5887663c2eecc0195ba19a1c54f9effb0301e7f0`)
 and `CyberpunkVRPort-Switcher.zip` (SHA-256
-`678bac4f51087070989a352fd535d81f58ff2c20f23c4c8ab747c823f1f1bc47`).
+`13231143f0995aac358b4c477d4e2e7bcd9f8b4f947dc99bdafca69713fa1f22`).
 The switcher passed 30 assertions using the real game ZIP against a temporary
 fake game, including install, restore and failure gates. Five grip-only Lua
 tests passed. These are build/fixture checks, not runtime compatibility tests.
 
-The user previously confirmed PSVR2 trigger feel and external-OFXR bike
-stability in headset runs, but this exact build and F10 toggle have not
-received a combined headset test. With Cyberpunk closed, only the clean-built
-DLL and matching PDB were deployed for that test; their installed hashes match
-the build. The previous pair is backed up under the clean checkout's ignored
-`dist/live-test-backups/plugin-qHLWRnmg/`. The live Weapon CET script already
-matched the package byte-for-byte. The full switcher plan would have disabled
-ReShade/HUDitor, so it was **not** applied; other game files and settings were
-left unchanged. No GitHub release has been performed. Experimental GPU/HUD
-diagnostics remain outside the release commit.
+With Cyberpunk closed, only the clean-built DLL and matching PDB were deployed;
+their installed hashes matched the build and the previous pair was backed up
+under the ignored local `dist/live-test-backups/` directory. The live Weapon
+CET script matched the package byte-for-byte. The user reports the headset
+result is mostly good, with some tuning still needed. The full switcher plan
+would have disabled ReShade/HUDitor, so it was not applied; other game files
+and settings were left unchanged. Experimental GPU/HUD diagnostics remain
+outside the release commit.

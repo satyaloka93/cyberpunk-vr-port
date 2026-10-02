@@ -2,6 +2,8 @@
 
 ## 2026-10-02
 
+* **0.1.7 PSVR2 prerelease published**: Published tag `0.1.7-psvr2.1` on the fork with both the game ZIP and switcher ZIP; current asset hashes and headset status are in [release changes](release-017-changes.md). Opened focused upstream PR [#96](https://github.com/dariulone/cyberpunk-vr-port/pull/96) for the controls, haptics, FOV and pacing changes.
+
 * **Plugin-only headset candidate deployed**: After matching backups, copied only the clean-built DLL/PDB into the closed game and verified installed hashes. Full switcher was not applied because it would disable ReShade/HUDitor. See [0.1.7 release changes](release-017-changes.md); headset outcome pending.
 
 * **Clean release candidate verified**: Commit d57af2c built in an isolated checkout, two local ZIPs packaged, and the switcher passed 30 assertions against the real fork ZIP in a temporary game fixture. The exact ZIP hashes and remaining headset gate are in [0.1.7 release changes](release-017-changes.md).
