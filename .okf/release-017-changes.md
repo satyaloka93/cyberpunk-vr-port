@@ -3,7 +3,7 @@ type: Configuration
 title: Upstream 0.1.7 PSVR2 release changes
 description: Scope and validation status for isolated haptics and empty-overlay pacing.
 tags: [psvr2, release, haptics, pacing]
-timestamp: 2026-10-02T17:00:00+09:00
+timestamp: 2026-10-02T17:20:00+09:00
 ---
 
 # Scope
@@ -35,7 +35,12 @@ fake game, including install, restore and failure gates. Five grip-only Lua
 tests passed. These are build/fixture checks, not runtime compatibility tests.
 
 The user previously confirmed PSVR2 trigger feel and external-OFXR bike
-stability in headset runs, but this exact packaged build and F10 toggle have
-not received a combined headset test. No live game installation or GitHub
-release has been performed. Experimental GPU/HUD diagnostics remain outside
-the release commit.
+stability in headset runs, but this exact build and F10 toggle have not
+received a combined headset test. With Cyberpunk closed, only the clean-built
+DLL and matching PDB were deployed for that test; their installed hashes match
+the build. The previous pair is backed up under the clean checkout's ignored
+`dist/live-test-backups/plugin-qHLWRnmg/`. The live Weapon CET script already
+matched the package byte-for-byte. The full switcher plan would have disabled
+ReShade/HUDitor, so it was **not** applied; other game files and settings were
+left unchanged. No GitHub release has been performed. Experimental GPU/HUD
+diagnostics remain outside the release commit.

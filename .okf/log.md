@@ -2,6 +2,8 @@
 
 ## 2026-10-02
 
+* **Plugin-only headset candidate deployed**: After matching backups, copied only the clean-built DLL/PDB into the closed game and verified installed hashes. Full switcher was not applied because it would disable ReShade/HUDitor. See [0.1.7 release changes](release-017-changes.md); headset outcome pending.
+
 * **Clean release candidate verified**: Commit d57af2c built in an isolated checkout, two local ZIPs packaged, and the switcher passed 30 assertions against the real fork ZIP in a temporary game fixture. The exact ZIP hashes and remaining headset gate are in [0.1.7 release changes](release-017-changes.md).
 
 * **Release scope isolated**: PSVR2 haptics IPC and the session-only empty-overlay pacing toggle were separated from experimental GPU/HUD probes. MSVC Release build and five grip-only Lua tests passed. See [0.1.7 release changes](release-017-changes.md).
