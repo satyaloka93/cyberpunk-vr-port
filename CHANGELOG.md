@@ -1,7 +1,7 @@
-# CyberpunkVRPort 0.1.7-psvr2.1 release candidate
+# CyberpunkVRPort 0.1.7-psvr2.1 prerelease
 
-Based on upstream 0.1.7. This is a local release candidate, not a published
-GitHub release; combined headset validation is still pending.
+Based on upstream 0.1.7. This prerelease packages the PSVR2 controls, haptics,
+FOV override and pacing changes for wider testing. Some headset tuning remains.
 
 - PSVR2 Sense Triangle touch + right stick provides D-pad shift while
   suppressing turn input; Triangle click remains the normal Y action.
