@@ -12,6 +12,7 @@ param(
     [ValidatePattern('^\d+\.\d+\.\d+(?:-[A-Za-z0-9][A-Za-z0-9.-]*)?$')]
     [string]$Version = "0.1.7",
     [string]$BuildDir = "build",
+    [ValidatePattern('^[0-9a-fA-F]{7,40}$')][string]$SourceCommit,
     [switch]$Zip,
     [switch]$Force
 )
@@ -51,6 +52,27 @@ function Copy-Tree($src, $dst) {
 function Need($p, $what) {
     if (-not (Test-Path -LiteralPath $p)) { throw "$what not found: $p" }
     return $p
+}
+
+function Get-SourceCommit {
+    if ($SourceCommit) { return $SourceCommit }
+    # A worktree created by WSL can have a Linux-absolute gitdir in its .git file.
+    $dotGit = Join-Path $RepoRoot '.git'
+    if (Test-Path -LiteralPath $dotGit -PathType Leaf) {
+        $pointer = (Get-Content -LiteralPath $dotGit -Raw).Trim()
+        if ($pointer -match '^gitdir: /mnt/([a-zA-Z])/(.+)$') {
+            $gitDir = $Matches[1].ToUpperInvariant() + ':\' + $Matches[2].Replace('/','\')
+            try {
+                $value = & git --git-dir=$gitDir rev-parse --short HEAD 2>$null
+                if ($LASTEXITCODE -eq 0 -and $value) { return $value }
+            } catch { }
+        }
+    }
+    try {
+        $value = & git -C $RepoRoot rev-parse --short HEAD 2>$null
+        if ($LASTEXITCODE -eq 0 -and $value) { return $value }
+    } catch { }
+    return 'unavailable (worktree metadata inaccessible to this build host)'
 }
 
 if (Test-Path $Out) {
@@ -248,7 +270,7 @@ IF SOMETHING IS WRONG
     package added and then offers your own settings back. UNINSTALL.txt is the same thing
     written out by hand, including the two things neither of them can put back for you.
 
-Built from commit $(git -C $RepoRoot rev-parse --short HEAD 2>$null) on $(Get-Date -Format "yyyy-MM-dd").
+Source base commit $(Get-SourceCommit) (local changes may be present); packaged on $(Get-Date -Format "yyyy-MM-dd").
 "@
 Set-Content (Join-Path $Out "INSTALL.txt") $readme -Encoding utf8
 
@@ -354,7 +376,7 @@ $looseLines
     Each has its own uninstall; the lists above remove only what carries the
     CyberpunkVRPort name.
 
-Generated from commit $(git -C $RepoRoot rev-parse --short HEAD 2>$null) on $(Get-Date -Format "yyyy-MM-dd").
+Source base commit $(Get-SourceCommit) (local changes may be present); packaged on $(Get-Date -Format "yyyy-MM-dd").
 "@
 Set-Content (Join-Path $Out "UNINSTALL.txt") $uninstall -Encoding utf8
 
@@ -549,4 +571,36 @@ if ($Zip) {
     if (Test-Path $archivePath) { Remove-Item $archivePath -Force }
     Compress-Archive -Path (Join-Path $Out "*") -DestinationPath $archivePath
     Write-Host ("  packaged -> {0}  ({1:N0} bytes)" -f $archivePath, (Get-Item $archivePath).Length)
+
+    # Separate installer asset: these scripts must NOT be extracted into the game root.
+    # Its dependency manifest and core live beside the entrypoint, so the ZIP is portable.
+    $switcherOut = Join-Path $DistRoot 'CyberpunkVRPort-Switcher'
+    if (Test-Path -LiteralPath $switcherOut) {
+        if (-not $Force) { throw "Switcher package already exists: $switcherOut. Use -Force to rebuild it." }
+        if ((Get-Item -LiteralPath $switcherOut).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Refusing linked switcher package' }
+        Remove-Item -LiteralPath $switcherOut -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path (Join-Path $switcherOut 'scripts'), (Join-Path $switcherOut 'wabbajack'), (Join-Path $switcherOut 'docs'), (Join-Path $switcherOut 'patches\dualsense') -Force | Out-Null
+    foreach ($name in @('Switch-CyberpunkVRPort.ps1','CyberpunkVR-Switcher.Core.ps1','README-SWITCHER.txt','Install-PSVR2AutoFireGrip.ps1')) {
+        Copy-Item -LiteralPath (Need (Join-Path $RepoRoot "scripts\$name") $name) -Destination (Join-Path $switcherOut 'scripts')
+    }
+    Copy-Item -LiteralPath (Need (Join-Path $RepoRoot 'Switch-CyberpunkVRPort.bat') 'switcher batch') -Destination $switcherOut
+    Copy-Item -LiteralPath (Need (Join-Path $RepoRoot 'wabbajack\manifest.json') 'dependency manifest') -Destination (Join-Path $switcherOut 'wabbajack')
+    Copy-Item -LiteralPath (Need (Join-Path $RepoRoot 'docs\PSVR2-TWEAKS-017.md') 'PSVR2 instructions') -Destination (Join-Path $switcherOut 'docs')
+    Copy-Item -LiteralPath (Need (Join-Path $RepoRoot 'patches\dualsense\PSVR2AutoFireGrip.lua') 'optional PSVR2 grip helper') -Destination (Join-Path $switcherOut 'patches\dualsense')
+    $archiveName = [IO.Path]::GetFileName($archivePath)
+    $selection = [ordered]@{
+        schemaVersion = 1
+        fork = [ordered]@{
+            name = "CyberpunkVRPort PSVR2 fork $Version"
+            fileName = $archiveName
+            url = "https://github.com/satyaloka93/cyberpunk-vr-port/releases/download/$Version/$archiveName"
+            sha256 = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+    }
+    $selection | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $switcherOut 'wabbajack\release-selection.json') -Encoding UTF8
+    $switcherZip = "$switcherOut.zip"
+    if (Test-Path -LiteralPath $switcherZip) { Remove-Item -LiteralPath $switcherZip -Force }
+    Compress-Archive -Path (Join-Path $switcherOut '*') -DestinationPath $switcherZip
+    Write-Host ("  switcher -> {0}  ({1:N0} bytes)" -f $switcherZip, (Get-Item $switcherZip).Length)
 }

@@ -41,9 +41,16 @@ physical/Steam XInput look contributions and pending snap rotation.
 
 ## Optional adaptive triggers / advanced haptics
 
-Run `scripts\Start-PSVR2Bridge.bat` **after starting SteamVR and before the game**.
-Defaults match the existing local installation; use `-GameRoot` and `-BridgeRoot`
-for other locations. `-CheckOnly` validates without starting the bridge.
+The supported bridge/launcher belongs to the external
+[PSVR2Toolkit v0.3.1 release](https://github.com/satyaloka93/PSVR2Toolkit/releases/tag/cyberpunk-dsx-bridge-v0.3.1), not the
+Cyberpunk game-root ZIP. Use the Toolkit's Cyberpunk **0.1.7** bridge build;
+do not substitute its older legacy shared-slot bridge. Its installer/driver
+steps are intentionally separate from switching the game mod.
+
+Run the Cyberpunk 0.1.7 launcher supplied by the external PSVR2Toolkit
+**after starting SteamVR and before the game**. For this developer checkout,
+`scripts\Start-PSVR2Bridge.bat` is also available; it is not bundled in the
+game ZIP or switcher asset because the Toolkit owns the release launcher.
 
 Requirements installed separately:
 
@@ -54,20 +61,63 @@ Requirements installed separately:
 - Disable the unnecessary Enhanced DualSense Support native launcher DLL if
   present. Never patch its advertised game version to bypass RED4ext validation.
 
-The wrapper does not edit those third-party settings, install drivers, start/kill
-processes automatically, or expose an OpenXR vibration-output action. It passes
-`--no-vr-motion-haptics` to the existing bridge. Weapon/adaptive-trigger profile
-translation and audio-derived grip haptics remain available.
+## Release switcher
 
-### Why legacy motion haptics are disabled
+The separate `CyberpunkVRPort-Switcher.zip` contains the Windows PowerShell
+switcher, batch entrypoint, pinned dependency manifest and this guide. Extract
+it **outside** the game folder. It can stage/install the official upstream
+0.1.7 ZIP or the PSVR2-fork game-root ZIP. Its generated release metadata pins
+the fork ZIP's planned GitHub URL and SHA-256; automatic download works after
+the corresponding GitHub asset is published. Before publication, use
+`-ForkArchive` with the local ZIP. Pass `-ForkSha256` for a differently named
+local ZIP. Existing Nexus mods are kept by presence/version
+checks; missing GitHub dependencies download with pinned SHA-256, while Nexus
+account downloads require a manual ZIP. The switcher backs up replaced port
+files and can restore them. It preserves `xr_force_fov` and other personal fit
+settings, but resets experimental render/FG options for a clean migration.
+
+The switcher prints the Toolkit link when it detects PSVR2/Sense hardware or
+the fork is selected. It never installs a driver or registers an OpenXR layer.
+For a no-write dependency/plan check, use `-Action Prepare`; installation
+requires the game to be closed and an explicit confirmation.
+
+## F10 rendering choices
+
+The FOV override remains under STEREO VIEW, with PSVR2/Quest presets and an
+explicit enable checkbox. The experimental performance-test buttons have been
+removed from F10. A session-only **Stable pacing with no overlay graphics**
+checkbox is under STEREO > PERFORMANCE. On (the tested default) retains an
+empty overlay frame in the runtime scheduling path and stabilized the bike
+ride with external OFXR on this setup. Off skips it and may reduce submission
+work, but the earlier bike slowdown can return. This is not a universal FPS
+gain, and changing it does not alter FOV or frame-generation settings.
+
+The wrapper does not edit those third-party settings, install drivers, start/kill
+processes automatically, or expose an OpenXR vibration-output action. The
+current 0.1.7 bridge uses its isolated haptic IPC for melee pulses, without
+reusing upstream's input slots. Weapon/adaptive-trigger profile translation
+and audio-derived grip haptics remain available.
+
+For rapid automatic firearms, the switcher asset includes the optional
+`scripts/Install-PSVR2AutoFireGrip.ps1`, which installs
+a narrow Enhanced DualSense Support hook with the game closed. It reads the
+equipped weapon's live CycleTime, not a name list. `FullAuto` or tech `Charge`
+discharge above 5 shots/s receives extra right-hand grip rhythm only when the
+stock profile lacks one. It does **not** replace the adaptive R2 mode or force
+curve. The earlier `Install-PSVR2FastAutoTrigger.ps1` was retired after a
+headset regression: substituting Machine vibration removed resistance feel.
+The current installer backs up the third-party `init.lua`; mod updates may
+require reapplying it. Category settings remain stock.
+
+### Why the legacy motion watcher is not used
 
 The old bridge interpreted shared float slots 157-160 as sequence, hand,
 amplitude and duration. Upstream 0.1.7 assigns those same slots to right B,
 left Y, R3 and right-trigger analog. Enabling the old watcher would misinterpret
-input as haptic events. This commit deliberately does **not** overwrite upstream
-slots or claim explicit swing/impact pulses work. Restoring those pulses needs
-a separate versioned IPC channel and matching bridge consumer/producer changes.
-Use this launcher, not the old bridge shortcut that enables that watcher.
+input as haptic events. The later 0.1.7 bridge restoration added a separate
+versioned IPC channel for swing/impact pulses; upstream input slots are never
+overwritten. Use this launcher, not the old bridge shortcut that enables its
+legacy watcher.
 
 ## Validation and headset checklist
 
@@ -83,8 +133,9 @@ Before considering a bundle release, test on the headset:
 3. Tap and hold Create; verify one correct menu event, including release behavior.
 4. Test Triangle+R3 fallback and L3+R3 overlay priority; L3 alone still works.
 5. Open/close the VR overlay and lose/regain focus; no delayed menu event.
-6. With only the safe bridge running, verify weapon trigger resistance/recoil
-   and audio haptics. Explicit legacy VR melee pulses are intentionally absent.
+6. With only the safe bridge running, compare an already-good Power SMG against
+   a fast tech automatic and full-auto rifle, then verify semi-auto and charging
+   still feel distinct. Check katana swing/impact and audio haptics too.
 
 Successful builds, action suggestions and preflight checks do not establish
 physical Sense input or haptic correctness; retain the runtime/headset test gate.

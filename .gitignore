@@ -16,6 +16,7 @@ CyberpunkVRProxy.log
 # itself and git never descends into an excluded directory, so the negation below would not fire.
 tools/*
 !tools/psvr2_input_tests/
+!tools/psvr2_trigger_tests/
 !tools/roomscale_tests/
 !tools/vrik_tests/
 !tools/xr_probe/
@@ -42,6 +43,7 @@ releases/
 !tools/single_pass_tests/*.py
 !tools/roomscale_tests/*.py
 !tools/vrik_tests/*.py
+!tools/psvr2_trigger_tests/*.py
 !tools/story_attention_tests/*.py
 tools/story_attention_tests/__pycache__/
 tools/vrik_tests/__pycache__/
@@ -60,6 +62,10 @@ package.json
 *.zip
 *.ps1
 !scripts/Start-PSVR2Bridge.ps1
+!scripts/Install-PSVR2AutoFireGrip.ps1
+!scripts/Switch-CyberpunkVRPort.ps1
+!scripts/CyberpunkVR-Switcher.Core.ps1
+!scripts/Test-CyberpunkVRSwitcher.ps1
 # ...except the probe layer install scripts, which are part of the tool,
 !tools/xr_probe/*.ps1
 # the install/uninstall pair, which is how the mod is meant to be deployed,
@@ -97,8 +103,8 @@ mods/cet/**/vrik_recenter.ini
 # Release staging / packaging output
 /dist/
 
-# Local changelog (kept on disk, not tracked)
-/CHANGELOG.md
+# Release changelog is tracked; local release description remains private.
+!/CHANGELOG.md
 /description.txt
 
 # Local working backups

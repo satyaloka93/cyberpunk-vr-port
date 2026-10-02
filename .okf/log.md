@@ -4,6 +4,8 @@
 
 * **Release scope isolated**: PSVR2 haptics IPC and the session-only empty-overlay pacing toggle were separated from experimental GPU/HUD probes. MSVC Release build and five grip-only Lua tests passed. See [0.1.7 release changes](release-017-changes.md).
 
+* **Switcher prepared**: Added separate upstream/fork switcher asset, pinned dependency acquisition, Nexus handoff, backup/restore and optional PSVR2Toolkit guidance. The 21 non-integration fixture assertions pass; no live game installation or public Cyberpunk release was performed. See [release switcher](release-switcher.md).
+
 ## 2026-09-29
 
 * **FOV control**: Restored the user's 104.5-degree override; added explicit override/preset controls and camera FOV readout. Corrected the misleading projection-only label. See [FOV override](fov-override.md); headset edge/clarity validation pending.
