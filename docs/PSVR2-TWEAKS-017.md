@@ -98,6 +98,17 @@ current 0.1.7 bridge uses its isolated haptic IPC for melee pulses, without
 reusing upstream's input slots. Weapon/adaptive-trigger profile translation
 and audio-derived grip haptics remain available.
 
+## Driving and riding
+
+With **Grab the wheel with the grips** enabled in F10, bring either hand within
+the configured grab radius of the animated wheel/handlebar and click that
+hand's grip once. The arm latches to Cyberpunk's driving animation, including
+its natural finger curl; release the physical grip and it stays latched. Click
+that grip again to release the arm back to controller tracking, even after
+moving the hand away. Each hand toggles independently. A drawn weapon blocks
+the right-hand wheel grab; the left-hand grab remains available for one-handed
+steering. Steering continuity and tracking-loss behavior remain unchanged.
+
 For rapid automatic firearms, the switcher asset includes the optional
 `scripts/Install-PSVR2AutoFireGrip.ps1`, which installs
 a narrow Enhanced DualSense Support hook with the game closed. It reads the

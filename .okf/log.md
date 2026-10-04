@@ -1,5 +1,9 @@
 # Update Log
 
+## 2026-10-03
+
+* **Vehicle grip toggle**: Restored the fork's per-hand driving grip toggle on the 0.1.7 branch: first click near the animated wheel/handlebar latches the arm; the next click releases it anywhere. Camera-loss maintenance preserves a latched grab until tracking, vehicle state, or hand ownership is lost. Updated the existing driving regression and F10 documentation. See [vehicle grip toggle](vehicle-grip-toggle.md).
+
 ## 2026-10-02
 
 * **0.1.7 PSVR2 prerelease published**: Published tag `0.1.7-psvr2.1` on the fork with both the game ZIP and switcher ZIP; current asset hashes and headset status are in [release changes](release-017-changes.md). Opened focused upstream PR [#96](https://github.com/dariulone/cyberpunk-vr-port/pull/96) for the controls, haptics, FOV and pacing changes.

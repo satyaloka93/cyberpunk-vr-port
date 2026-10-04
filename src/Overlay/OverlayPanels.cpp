@@ -624,11 +624,11 @@ static bool DrawDrivingControls(LiveControlsUiState& state) {
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip(
                     "While DRIVING, bring a hand to where the driving animation holds the\n"
-                    "wheel (or the handlebars) and squeeze that grip: the arm is handed back\n"
+                    "wheel (or handlebars) and click that grip: the arm is handed back\n"
                     "to the game's own animation -- hand on the wheel, fingers wrapped around\n"
-                    "it -- instead of following the controller. Release the grip and it goes\n"
-                    "back to your hand.\n\n"
-                    "Each hand is independent: hold the wheel with one and keep the other on\n"
+                    "it -- instead of following the controller. Click again to release it,\n"
+                    "even if your hand has moved away.\n\n"
+                    "Each hand is independent: latch one on the wheel and keep the other on\n"
                     "a gun. While a hand is at the wheel that grip does nothing else (no\n"
                     "holster equip, no magazine grab).");
             }
@@ -683,7 +683,7 @@ static bool DrawDrivingControls(LiveControlsUiState& state) {
                     ImGui::SetTooltip(
                         "While DRIVING, put a hand on the MIDDLE of the wheel -- where you would\n"
                         "slap a real horn -- and the car honks for as long as it stays there.\n"
-                        "No grip needed; a hand that is GRABBING the wheel never honks.");
+                        "No grip needed; a hand latched onto the wheel never honks.");
                 }
                 float hr = state.xrWheelHornRadius > 0.0f ? state.xrWheelHornRadius : 0.12f;
                 if (widgets::SliderFloat("Horn hub radius (m)", &hr, 0.04f, 0.30f, "%.2f")) {
@@ -727,7 +727,7 @@ static bool DrawDrivingControls(LiveControlsUiState& state) {
                     const int mask = static_cast<int>(
                         OpenXRManager::Get().GetSharedSlot(vrshared::kWheelArmedMask));
                     const int horn = cvr::anim::g_wheelHornMask.load(std::memory_order_relaxed);
-                    ImGui::Text("driving %d   at wheel  L %d R %d   hold  L %.2f R %.2f",
+                    ImGui::Text("driving %d   at wheel  L %d R %d   blend L %.2f R %.2f",
                                 g_isDriving.load(std::memory_order_relaxed) ? 1 : 0,
                                 (mask & vrshared::kWheelArmedLeftBit) ? 1 : 0,
                                 (mask & vrshared::kWheelArmedRightBit) ? 1 : 0,

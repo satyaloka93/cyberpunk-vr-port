@@ -4,6 +4,8 @@ okf_version: '0.1'
 
 # Upstream-based PSVR2 tweaks
 
+* [Vehicle grip toggle](vehicle-grip-toggle.md) — Per-hand click-to-latch wheel/handlebar grab, continuity, and test coverage.
+
 * [0.1.7 release changes](release-017-changes.md) — Isolated haptics IPC, F10 pacing toggle and validation boundary.
 * [Release switcher](release-switcher.md) — Upstream/fork selection, dependency acquisition, backup/restore and PSVR2Toolkit guidance.
 * [FOV override](fov-override.md) — Explicit checkbox, headset comparison presets, camera FOV readout and coverage tradeoffs.
