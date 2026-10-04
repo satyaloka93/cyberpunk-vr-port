@@ -1,5 +1,9 @@
 # Update Log
 
+## 2026-10-04
+
+* **Confirmed bike haptics**: User confirmed bilateral road feedback and the corrected R2 clutch feel. Transfer the full original L2 resistance/shift/resistance sequence to R2, with continuous engine trigger feedback on L2. Installer supports clean setup and the earlier patch, with backups and regression coverage. The bridge audio change is committed separately in PSVR2Toolkit as `c080162`. See [bike haptics](bike-haptics.md).
+
 ## 2026-10-03
 
 * **Vehicle grip toggle**: Restored the fork's per-hand driving grip toggle on the 0.1.7 branch: first click near the animated wheel/handlebar latches the arm; the next click releases it anywhere. Camera-loss maintenance preserves a latched grab until tracking, vehicle state, or hand ownership is lost. Updated the existing driving regression and F10 documentation. See [vehicle grip toggle](vehicle-grip-toggle.md).

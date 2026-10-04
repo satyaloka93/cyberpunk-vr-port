@@ -4,6 +4,8 @@ okf_version: '0.1'
 
 # Upstream-based PSVR2 tweaks
 
+* [Bike grip and trigger haptics](bike-haptics.md) — Shared road/engine grip rumble and the confirmed right-trigger clutch sequence.
+
 * [Vehicle grip toggle](vehicle-grip-toggle.md) — Per-hand click-to-latch wheel/handlebar grab, continuity, and test coverage.
 
 * [0.1.7 release changes](release-017-changes.md) — Isolated haptics IPC, F10 pacing toggle and validation boundary.

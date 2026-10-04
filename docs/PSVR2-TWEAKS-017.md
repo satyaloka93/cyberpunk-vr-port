@@ -100,6 +100,14 @@ and audio-derived grip haptics remain available.
 
 ## Driving and riding
 
+The bridge mirrors the stereo audio's low-frequency road/engine rumble to both
+grip motors, while retaining the existing shared transient layer. The optional
+`scripts/Install-PSVR2BikeShiftPop.ps1 -ModRoot "<CET mods>\DualSense Support"`
+patch moves the bike's original L2 resistance/shift/resistance sequence to R2
+and its continuous engine trigger profile to L2; cars and weapon
+profiles are unchanged. It requires Cyberpunk to be closed and backs up the
+third-party CET `init.lua`. Reapply after updating Enhanced DualSense Support.
+
 With **Grab the wheel with the grips** enabled in F10, bring either hand within
 the configured grab radius of the animated wheel/handlebar and click that
 hand's grip once. The arm latches to Cyberpunk's driving animation, including
@@ -108,6 +116,10 @@ that grip again to release the arm back to controller tracking, even after
 moving the hand away. Each hand toggles independently. A drawn weapon blocks
 the right-hand wheel grab; the left-hand grab remains available for one-handed
 steering. Steering continuity and tracking-loss behavior remain unchanged.
+
+Both grip toggling and the corrected right-trigger bike shift have been
+confirmed in game. The bike script change takes effect on the next game launch;
+an already-running matching Toolkit bridge does not need to restart.
 
 For rapid automatic firearms, the switcher asset includes the optional
 `scripts/Install-PSVR2AutoFireGrip.ps1`, which installs
