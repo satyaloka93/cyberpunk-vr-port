@@ -24,6 +24,11 @@ The bridge is required for PSVR2 vibration in this build. FOV remains on the
 
 # Artifact provenance
 
+Published October21,2026 at00:50:23UTC, GitHub release419023033, prerelease=true.
+Source/tag commit092278213eb410efe74c443c168e7065622d89a6; remote existing
+psvr2-tweaks-0.1.7 branch advanced without force/new branch. The old0.1.7
+worktree remains detached at22478c5 with its tracked diff hash unchanged.
+
 Retain the exact tested native DLL, SHA256
 f93440a74da3890d3354d758787b3a4c75653c26fb26ff8fc9ff553ce401a3e1.
 It matches both the existing MSVC Release build and installed game. Incremental
@@ -86,8 +91,12 @@ regressions pass at20/30/60/90/120Hz. Windows PowerShell5.1 fixture suite passes
 all53 assertions using the packaged installer and final candidate ZIP: install,
 upgrade, two restores, loader/settings preservation, checksum/dependency refusal
 and injected corruption rollback. Archive integrity and OKF validation pass.
-Published automatic download is the final post-publication check on a disposable
-game, not the user's active installation. No live haptic-channel test is run while it could write to
+Published automatic download also passed: downloaded the public switcher ZIP,
+checked its SHA256, ran Prepare/EditionFork with an empty cache against a fake
+game, and verified its automatic download hash and staged native DLL hash.
+All fixture file hashes/counts remained unchanged. Report is retained in the
+local cpvr-published018-21705c69e8f14a5f9a42a79ffd18e1ec temporary directory.
+No live haptic-channel test is run while it could write to
 the user's controller bridge mapping.
 
 # Citations
