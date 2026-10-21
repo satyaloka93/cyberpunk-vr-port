@@ -61,6 +61,11 @@ constexpr uintptr_t RT_DECLARE_WORK_RVA           = 0xC66188; // names RT_viewDe
                                                               // render-target declarations
 constexpr uintptr_t GATE_READER_770268_RVA        = 0x770268; // the fifth reader, unnamed
 constexpr uintptr_t COMP_ASSIGN_RVA               = 0x201A68; // the composition-state assign
+constexpr uintptr_t COMP_ASSIGN_FRAME_RET_RVA     = 0x29AA53; // return address of that assign in the game
+                                                              // frame sub_140292A54 (menus, loading)
+constexpr uintptr_t COMP_ASSIGN_VIEW_RET_RVA      = 0x29CEB1; // ...and in the view fill sub_14029CDD8 (in the world)
+constexpr uintptr_t HANDLE_COPY_RVA               = 0xACE86C; // copy of a refcounted {object, count} handle:
+                                                              // takes a count on the source, releases the target
 constexpr uintptr_t EXTRACTION_FINAL_COLOR_WORK_RVA = 0x209CD4; // ExtractionFinalColor
 constexpr uintptr_t CLEAR_FINAL_COLOR_WORK_RVA    = 0x209DA0; // ClearFinalColorTarget
 constexpr uintptr_t GRAPH_REQUEST_REGISTER_RVA = 0x2906A28;
@@ -195,6 +200,13 @@ constexpr uintptr_t LIGHTING_GLOBALS_NODE_RVA = 0xBB8D40;  // CRenderNode_BindLi
 // filled. It uploads nothing, which is why a probe aimed at it printed nothing at all.
 // The volumetric fog pass, whose froxel grid is what the blocky sun shafts in a room actually are.
 constexpr uintptr_t VOLUMETRIC_FOG_NODE_RVA = 0x61C3BC;  // CRenderNode_VolumetricFog work
+// The cone ambient occlusion: five compute shaders over one block of its own (b3).
+constexpr uintptr_t CONE_AO_NODE_RVA = 0x61EE78;  // DrawConeAO work
+// The auto-exposure: luminance image, histogram and adaptation, each dispatch over a small block (b6).
+constexpr uintptr_t HISTOGRAM_UPDATE_NODE_RVA = 0x774CF8;  // HistogramUpdate work
+constexpr uintptr_t SSR_NODE_RVA = 0x157B24;  // ScreenSpaceReflections work
+constexpr uintptr_t PS_B6_UPLOAD_RVA = 0xAD2254; // sub_140AD2254(size, src): pixel-stage b6 constant block
+constexpr uintptr_t SSPR_NODE_RVA = 0x78A6B8; // ScreenSpacePlanarReflections work (same CB_SSRRaymarch upload)
 // The per-BIT feature test the nodes themselves use: sub_14023AF5C(work_ctx, bit_index). NOT the same
 // function as VIEW_FEATURE_CHECK_RVA (sub_14021BE28), which takes a render-mask DESCRIPTOR -- that
 // confusion is why a probe hung on the latter never fired for the shadow-mask pass.
@@ -229,6 +241,8 @@ constexpr uintptr_t DLSS_EVAL_RVA  = 0x1D4FDC0;   // sub_141D4FDC0 slSetTag+slEv
 constexpr uintptr_t DLSS_CONST_RVA = 0x78933C;    // sub_14078933C slSetConstants
 constexpr uintptr_t READBACK_NODE_RVA = 0x292DD50;   // sub_14292DD50
 constexpr uintptr_t APPLYDLSS_WORK_RVA = 0x37D5C4;   // sub_14037D5C4 (ApplyDLSS node work)
+constexpr uintptr_t FFX_API_PROVIDERS_RVA = 0x1D4C3D0;   // sub_141D4C3D0: FidelityFX API upscaler versions (FSR 2/3/4)
+constexpr uintptr_t FFX_API_LOADER_RVA = 0x1D4DEA0;   // sub_141D4DEA0: GetProcAddress of amd_fidelityfx_dx12 (FSR 3.1+)
 constexpr uintptr_t GETTER_RVA = 0x1ED8E4;   // sub_1401ED8E4 view-dims getter entry
 constexpr uintptr_t RENDER_RES_RVA = 0x4E42A0;   // sub_1404E42A0 per-view DLSS render-res compute
 

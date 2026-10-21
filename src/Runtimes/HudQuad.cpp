@@ -1,4 +1,5 @@
 #include "Runtimes/HudQuad.hpp"
+#include "Camera/GazeCenter.hpp"
 #include "Render/GpuStageProfile.hpp"
 #include "Core/LiveControls.hpp"
 #include "Utils/DebugGate.hpp"
@@ -12,6 +13,7 @@ extern void Log(const char*, ...);
 extern "C" {
 __declspec(dllexport) cvr::hud::PoseDebug CyberpunkVR_HudPoseDebug{};
 __declspec(dllexport) std::atomic<uint32_t> CyberpunkVR_HudPoseDebugSeq{0};
+__declspec(dllexport) std::atomic<uint64_t> CyberpunkVR_HudSubmittedFrames{0};
 // Internal A/B: 0 preserves the prior per-panel fence wait; 1 rotates fenced
 // command allocators and reuses the last published HUD when all slots are busy.
 __declspec(dllexport) std::atomic<uint32_t> CyberpunkVR_HudSubmitRing{1};
@@ -128,11 +130,24 @@ const XrCompositionLayerBaseHeader* Quad::Prepare(XrSession session, XrSpace spa
     bool tracked, const XrPosef& head, uint64_t origin,
     XrTime displayTime, const XrVector3f* eyeOffsets, float bodyYaw) {
     secondEye=false;
+    // THE SCANNER STAYS AT INFINITY with stereo depth on. Its reticle marks what is scanned, wherever that
+    // is, and its quickhack list and key hints are drawn in the eye with no parallax; at the panel's
+    // depth the reticle and the details sat on the target differently in each eye (17 px apart at 1.5 m on
+    // the simulator, 2026-10-18) and split from the in-eye half of the scanner.
+    const bool stereoDepth=g_liveControls.xrHudStereoDepth && channel!=Channel::Surveillance;
     if (!enabled || !g_liveControls.xrHudPanel || (channel==Channel::Interaction && !g_liveControls.xrInteractionPanel)) {
         if(fence && !submissionFailed)RetireCompleted(fence->GetCompletedValue());
         SetConsumerReady(false,channel); follow.Reset(); clock.Reset(); return nullptr;
     }
     auto frame=Latest(channel);
+    if (frame && frame->empty) {
+        // The channel has nothing visible: no layer, but the consumer stays ready so the native
+        // slots stay masked and the next visible content appears here, not natively first.
+        if(fence && !submissionFailed)RetireCompleted(fence->GetCompletedValue());
+        const bool eyesReady=stereoDepth || eyeOffsets || eyeOffsetsValid;
+        SetConsumerReady((tracked || follow.valid) && eyesReady,channel);
+        return nullptr;
+    }
     if (!frame || !device || !queue) {
         if(fence && !submissionFailed)RetireCompleted(fence->GetCompletedValue());
         SetConsumerReady(false,channel);return nullptr;
@@ -143,11 +158,19 @@ const XrCompositionLayerBaseHeader* Quad::Prepare(XrSession session, XrSpace spa
     }
     if(!UpdateImage(frame,queue,CyberpunkVR_HudSubmitRing.load(std::memory_order_relaxed)!=0) ||
        !lastStamp || GetTickCount64()-publishedTick>=300) {SetConsumerReady(false,channel);return nullptr;}
-    const bool eyesReady=g_liveControls.xrHudStereoDepth || eyeOffsets || eyeOffsetsValid;
+    const bool eyesReady=stereoDepth || eyeOffsets || eyeOffsetsValid;
     SetConsumerReady((tracked || follow.valid) && eyesReady,channel);
     if(!eyesReady)return nullptr;
     if (!publishedMasked) return nullptr; // Preparation succeeded; UI may now mask the native slots.
-    const bool headLocked=channel==Channel::Basilisk || channel==Channel::Surveillance;
+    // Loot and its tooltip share the native interaction texture. Carry its
+    // visible content with the captured frame so the cone changes with the
+    // image, without allocating a third canvas or resetting its yaw anchor.
+    const float degrees=channel==Channel::Interaction
+        ? (publishedLootVisible?g_liveControls.xrLootFollowDeg:g_liveControls.xrInteractionFollowDeg)
+        : g_liveControls.xrHudFollowDeg;
+    // A zero interaction or loot cone is the head-locked panel, like the hit marker's.
+    const bool headLocked=channel==Channel::Basilisk || channel==Channel::Surveillance || channel==Channel::HitMarker ||
+        (channel==Channel::Interaction && degrees<=0.0f);
     const int wantedMode=headLocked?2:(channel==Channel::Main?g_liveControls.xrHudFollowMode:0);
     if (originSerial!=origin || followMode!=wantedMode) {
         follow.Reset();clock.Reset();originSerial=origin;followMode=wantedMode;
@@ -156,12 +179,6 @@ const XrCompositionLayerBaseHeader* Quad::Prepare(XrSession session, XrSpace spa
     if (tracked) {
         const auto& q=head.orientation;
         const float headYaw=HeadYaw(q.x,q.y,q.z,q.w,follow.valid?follow.yaw:bodyYaw);
-        // Loot and its tooltip share the native interaction texture. Carry its
-        // visible content with the captured frame so the cone changes with the
-        // image, without allocating a third canvas or resetting its yaw anchor.
-        const float degrees=channel==Channel::Interaction
-            ? (publishedLootVisible?g_liveControls.xrLootFollowDeg:g_liveControls.xrInteractionFollowDeg)
-            : g_liveControls.xrHudFollowDeg;
         const float cone=std::clamp(degrees,5.0f,90.0f)*0.01745329252f;
         const float yaw=headLocked?headYaw:(followMode==1 && std::isfinite(bodyYaw) ? bodyYaw : follow.Update(headYaw,cone,clock.elapsed,DelayedFollow(channel)));
         if(headLocked || followMode==1) {follow.yaw=yaw;follow.valid=true;follow.following=false;follow.ResetDelay();}
@@ -172,7 +189,8 @@ const XrCompositionLayerBaseHeader* Quad::Prepare(XrSession session, XrSpace spa
             // Zero cone follows the complete HMD pose immediately: yaw, pitch
             // and roll, with no catch-up speed or three-second rest timer.
             anchor.orientation=head.orientation;
-            const auto offset=RotateVector(head.orientation,{0,0,-distance});
+            const float gazeY=channel==Channel::Surveillance ? cvr::gaze::Read().tangentY : 0.f;
+            const auto offset=RotateVector(head.orientation,{0,distance*gazeY,-distance});
             anchor.position={head.position.x+offset.x,head.position.y+offset.y,head.position.z+offset.z};
         }
         const float fov=std::clamp(static_cast<float>(channel==Channel::Interaction?g_liveControls.xrInteractionFov:g_liveControls.xrHudFov),30.0f,120.0f)*0.01745329252f;
@@ -185,7 +203,7 @@ const XrCompositionLayerBaseHeader* Quad::Prepare(XrSession session, XrSpace spa
     layer.space=space; layer.eyeVisibility=XR_EYE_VISIBILITY_BOTH;
     layer.subImage={swapchain,{{0,0},{static_cast<int32_t>(width),static_cast<int32_t>(height)}},0};
     if(eyeOffsets && tracked) {lastEyeOffsets[0]=eyeOffsets[0];lastEyeOffsets[1]=eyeOffsets[1];eyeOffsetsValid=true;}
-    if(!g_liveControls.xrHudStereoDepth && eyeOffsetsValid) {
+    if(!stereoDepth && eyeOffsetsValid) {
         // Each eye sees the same angular direction, including canted/asymmetric
         // views. Cancel only eye translation; the common orientation is retained.
         rightLayer=layer;
@@ -199,6 +217,7 @@ const XrCompositionLayerBaseHeader* Quad::Prepare(XrSession session, XrSpace spa
     CyberpunkVR_HudPoseDebugSeq.fetch_add(1,std::memory_order_acq_rel);
     auto& debug=CyberpunkVR_HudPoseDebug;
     ++debug.frames;debug.displayTime=displayTime;debug.panelYaw=follow.yaw;debug.dt=dt;
+    debug.sourceSerial=lastStamp;debug.sourceTick=publishedTick;
     const auto& q=head.orientation;
     debug.headYaw=HeadYaw(q.x,q.y,q.z,q.w,follow.yaw);
     debug.mode=followMode;debug.tracked=tracked;debug.layers=secondEye?2:1;

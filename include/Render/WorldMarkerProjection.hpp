@@ -41,15 +41,35 @@ inline float StereoScale(float ipd, float verticalFovDeg, float aspect, float zo
     const float scale = ipd * zoom / (std::tan(verticalFovDeg * .00872664626f) * aspect);
     return mainRight ? scale : -scale;
 }
+// The flat ink camera's matrix for a w x h canvas, exactly as the engine writes it.
+inline bool IsInkMatrix(const float* m, float w, float h) {
+    const float expected[16]={2/w,0,0,-1, 0,-2/h,0,1, 0,0,1,0, 0,0,0,1};
+    for(int i=0;i<16;++i)
+        if(!std::isfinite(m[i]) || std::abs(m[i]-expected[i])>1e-7f) return false;
+    return true;
+}
 // Identify the game's flat ink camera, never a perspective/shadow/world camera.
 inline bool IsInkCamera(const void* data, size_t bytes) {
     if (!data || bytes != 848) return false;
     const auto* p=static_cast<const float*>(data);
     const float w=p[188],h=p[189];
     if (!(w>=640 && w<=16384 && h>=360 && h<=16384)) return false;
-    const float expected[16]={2/w,0,0,-1, 0,-2/h,0,1, 0,0,1,0, 0,0,0,1};
-    for(int i=0;i<16;++i)
-        if(!std::isfinite(p[i]) || std::abs(p[i]-expected[i])>1e-7f) return false;
-    return true;
+    return IsInkMatrix(p,w,h);
+}
+// Squeezes clip x about the canvas centre and moves the centre to (shiftX, shiftY), in the camera's
+// first matrix AND in every other copy of the canvas matrix the block carries. The engine writes that
+// matrix five times (floats 0, 32, 48, 64 and 112; measured on the 2.31 HUD canvas). Ink's own sprite
+// and text shaders read the first; the video widget's Bink material reads one of the others, so with
+// only the first moved a tutorial popup's video stayed at the centred-frustum pixels in both eyes
+// while its panel moved: doubled, and over the right eye's prompt. Returns the copies moved.
+inline int ShiftInkCamera(float* out, const float* source, size_t bytes, float squeeze, float shiftX, float shiftY) {
+    const float w=source[188],h=source[189];
+    int copies=0;
+    for(size_t m=0;m+16<=bytes/sizeof(float);m+=16) {
+        if(m && !IsInkMatrix(source+m,w,h)) continue;
+        out[m]*=squeeze;out[m+3]=out[m+3]*squeeze+shiftX;out[m+7]+=shiftY;
+        if(m) ++copies;
+    }
+    return copies;
 }
 }

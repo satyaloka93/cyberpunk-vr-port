@@ -83,7 +83,9 @@ enum HudSnapSlot { kSnapHud = 0, kSnapBlur, kSnapMainOut, kSnapMainScene, kSnapV
 struct MappedUpload { ID3D12Resource* res; uint8_t* ptr; uint64_t size; uint64_t va; };
 // The descriptor-handle -> dimensions map entry. The HUD asks what a bound target's size is, and the
 // answer is recorded by the capture path, so the type is complete here.
-inline constexpr uint32_t RtvDescriptorCapacity=8192;
+inline constexpr uint32_t RtvDescriptorCapacity=8192;   // the floor; the RTV heaps raise it
+void rtv_descriptor_heap_created(UINT slots);   // Capture.cpp, from the CreateDescriptorHeap hook
+uint32_t rtv_descriptor_limit();
 
 // The light-upload destination record. A complete type at the TOP of this namespace, because
 // std::array<LightDst, 24> below needs it complete -- a definition appended after its use is how the
@@ -168,6 +170,7 @@ using PFN_RSSetScissorRects = void (STDMETHODCALLTYPE*)
     (ID3D12GraphicsCommandList*, UINT, const D3D12_RECT*);
 using PFN_GfxReset = HRESULT (STDMETHODCALLTYPE*)
     (ID3D12GraphicsCommandList*, ID3D12CommandAllocator*, ID3D12PipelineState*);
+using PFN_GfxClose = HRESULT (STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*);
 using PFN_CreateCommittedResource = HRESULT (STDMETHODCALLTYPE*)(
     ID3D12Device*, const D3D12_HEAP_PROPERTIES*, D3D12_HEAP_FLAGS,
     const D3D12_RESOURCE_DESC*, D3D12_RESOURCE_STATES, const D3D12_CLEAR_VALUE*, REFIID, void**);
@@ -233,6 +236,34 @@ struct CommandListVtableHook {
     PFN_ProbeShadingRate shading_rate_original = nullptr; // slot 77, optional list5
     PFN_ProbeShadingImage shading_image_original = nullptr; // slot 78, optional list5
     bool shading_state_known = false;
+    PFN_GfxClose close_original = nullptr;
+    void (STDMETHODCALLTYPE* clear_state_original)(ID3D12GraphicsCommandList*,ID3D12PipelineState*) = nullptr;
+    void (STDMETHODCALLTYPE* bundle_original)(ID3D12GraphicsCommandList*,ID3D12GraphicsCommandList*) = nullptr;
+    void (STDMETHODCALLTYPE* discard_original)(ID3D12GraphicsCommandList*,ID3D12Resource*,const D3D12_DISCARD_REGION*) = nullptr;
+    void (STDMETHODCALLTYPE* blend_factor_original)(ID3D12GraphicsCommandList*,const FLOAT*) = nullptr;
+    void (STDMETHODCALLTYPE* resolve_query_original)(ID3D12GraphicsCommandList*,ID3D12QueryHeap*,D3D12_QUERY_TYPE,UINT,UINT,ID3D12Resource*,UINT64)=nullptr;
+    void (STDMETHODCALLTYPE* write_immediate_original)(ID3D12GraphicsCommandList2*,UINT,const D3D12_WRITEBUFFERIMMEDIATE_PARAMETER*,const D3D12_WRITEBUFFERIMMEDIATE_MODE*)=nullptr;
+    void (STDMETHODCALLTYPE* enhanced_barrier_original)(ID3D12GraphicsCommandList7*,UINT,const D3D12_BARRIER_GROUP*)=nullptr;
+    void (STDMETHODCALLTYPE* stream_output_original)(ID3D12GraphicsCommandList*,UINT,UINT,const D3D12_STREAM_OUTPUT_BUFFER_VIEW*)=nullptr;
+    void (STDMETHODCALLTYPE* copy_tiles_original)(ID3D12GraphicsCommandList*,ID3D12Resource*,const D3D12_TILED_RESOURCE_COORDINATE*,const D3D12_TILE_REGION_SIZE*,ID3D12Resource*,UINT64,D3D12_TILE_COPY_FLAGS)=nullptr;
+    void (STDMETHODCALLTYPE* atomic_copy32_original)(ID3D12GraphicsCommandList1*,ID3D12Resource*,UINT64,ID3D12Resource*,UINT64,UINT,ID3D12Resource* const*,const D3D12_SUBRESOURCE_RANGE_UINT64*)=nullptr;
+    decltype(atomic_copy32_original) atomic_copy64_original=nullptr;
+    void (STDMETHODCALLTYPE* clear_rtv_original)(ID3D12GraphicsCommandList*,D3D12_CPU_DESCRIPTOR_HANDLE,const FLOAT*,UINT,const D3D12_RECT*)=nullptr;
+    void (STDMETHODCALLTYPE* resolve_subresource_original)(ID3D12GraphicsCommandList*,ID3D12Resource*,UINT,ID3D12Resource*,UINT,DXGI_FORMAT)=nullptr;
+    void (STDMETHODCALLTYPE* resolve_subresource_region_original)(ID3D12GraphicsCommandList1*,ID3D12Resource*,UINT,UINT,UINT,ID3D12Resource*,UINT,const D3D12_RECT*,DXGI_FORMAT,D3D12_RESOLVE_MODE)=nullptr;
+    void (STDMETHODCALLTYPE* begin_render_pass_original)(ID3D12GraphicsCommandList4*,UINT,const D3D12_RENDER_PASS_RENDER_TARGET_DESC*,const D3D12_RENDER_PASS_DEPTH_STENCIL_DESC*,D3D12_RENDER_PASS_FLAGS)=nullptr;
+    void (STDMETHODCALLTYPE* end_render_pass_original)(ID3D12GraphicsCommandList4*)=nullptr;
+    void (STDMETHODCALLTYPE* clear_uav_uint_original)(ID3D12GraphicsCommandList*,D3D12_GPU_DESCRIPTOR_HANDLE,D3D12_CPU_DESCRIPTOR_HANDLE,
+        ID3D12Resource*,const UINT*,UINT,const D3D12_RECT*)=nullptr;
+      void (STDMETHODCALLTYPE* clear_uav_float_original)(ID3D12GraphicsCommandList*,D3D12_GPU_DESCRIPTOR_HANDLE,D3D12_CPU_DESCRIPTOR_HANDLE,
+          ID3D12Resource*,const FLOAT*,UINT,const D3D12_RECT*)=nullptr;
+      void (STDMETHODCALLTYPE* initialize_meta_original)(ID3D12GraphicsCommandList4*,ID3D12MetaCommand*,const void*,SIZE_T)=nullptr;
+      decltype(initialize_meta_original) execute_meta_original=nullptr;
+      void (STDMETHODCALLTYPE* build_ray_original)(ID3D12GraphicsCommandList4*,const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC*,UINT,const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC*)=nullptr;
+      void (STDMETHODCALLTYPE* emit_ray_original)(ID3D12GraphicsCommandList4*,const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC*,UINT,const D3D12_GPU_VIRTUAL_ADDRESS*)=nullptr;
+      void (STDMETHODCALLTYPE* copy_ray_original)(ID3D12GraphicsCommandList4*,D3D12_GPU_VIRTUAL_ADDRESS,D3D12_GPU_VIRTUAL_ADDRESS,D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE)=nullptr;
+      void (STDMETHODCALLTYPE* dispatch_ray_original)(ID3D12GraphicsCommandList4*,const D3D12_DISPATCH_RAYS_DESC*)=nullptr;
+      void (STDMETHODCALLTYPE* dispatch_mesh_original)(ID3D12GraphicsCommandList6*,UINT,UINT,UINT)=nullptr;
 };
 
 // Function-pointer types the trampoline pointers are declared in terms of. They have to be here
@@ -293,6 +324,11 @@ extern std::atomic<uint64_t> g_prof_frames;
 extern std::atomic<uint64_t> g_prof_top_main;
 extern std::atomic<uint64_t> g_prof_top_vrcam;
 int64_t prof_now();
+// The node timeline (Profiler.cpp): one span per top-level node, graph build and Present.
+struct ProfSpan { int64_t start; int64_t end; uint32_t rva; uint32_t kind; uint32_t thread; uint32_t reserved; };
+constexpr uint64_t ProfSpanCount = 1u << 19;   // room for every job of a few frames (job spans, ViewChainTimeline.cpp)
+extern "C" __declspec(dllexport) int32_t CyberpunkVR_NodeTimeline;
+void prof_timeline_add(int64_t start, int64_t end, uint32_t rva, uint32_t kind, uint32_t extra = 0);
 
 // ---- shared with the culling / visibility / prepare subsystem ---------------------------------
 bool is_main_view(const void* view);
@@ -375,6 +411,7 @@ extern std::vector<ReplayVisibilityBatch> g_vrcam_visibility_batches;
 
 // ---- shared with the DLSS / Streamline subsystem ----------------------------------------------
 const CommandListVtableHook* command_list_hook_entry( ID3D12GraphicsCommandList* command_list);
+uint32_t command_list_hook_entries(const CommandListVtableHook** out,uint32_t max);
 extern "C" __declspec(dllexport) float CyberpunkVR_DebugMainCamFov;
 extern "C" __declspec(dllexport) float CyberpunkVR_DebugMainProjYY;
 extern "C" __declspec(dllexport) float CyberpunkVR_DebugVrcamWantFov;
@@ -492,7 +529,7 @@ extern GiNodeFn g_orig_gi_node;
 extern SkyWorkFn g_orig_sky_work;
 void __fastcall Detour_SkyWork(void* a1, void* a2);
 
-void viewdata_fill_from_wc(void* wc);
+void viewdata_fill_from_wc(void* wc,bool environmentOnly=false);
 
 ColorBlit::HudParams hud_composite_params();
 bool d12_mirror_ensure(const D3D12_RESOURCE_DESC& src);
@@ -583,7 +620,7 @@ extern ID3D12Resource*          g_ti_rb[4];
 extern ID3D12Resource*          g_ti_src[4][24];
 extern ID3D12Resource* g_cb_rb[4];
 extern ID3D12Resource* g_luma_rb[4];
-extern PFN_ExecuteCommandLists g_orig_ExecuteCommandLists;
+PFN_ExecuteCommandLists command_queue_original_execute(ID3D12CommandQueue*);
 // The tonemap input-capture record. A complete type rather than a forward declaration, because the
 // mirror's luma probe indexes the array and reads its members.
 struct TmInCap {
@@ -630,6 +667,7 @@ extern thread_local UINT t_last_disp[3];
 extern thread_local bool t_2rt_cb_armed;
 extern thread_local bool t_in_vrcam_2rt;
 extern thread_local uintptr_t t_current_node_work;
+extern thread_local uintptr_t t_current_node_view;
 extern uint32_t g_light_dst_n;
 
 // ---- the command-list hooks the census owns -------------------------------------------------
@@ -637,6 +675,8 @@ extern uint32_t g_light_dst_n;
 // registry, so the patcher has to name every hook, which is the coupling CVR_DETOUR removed for
 // the RVA detours. Until a slot registry exists, they are declared here.
 void STDMETHODCALLTYPE hk_Dispatch(ID3D12GraphicsCommandList*, UINT, UINT, UINT);
+// DispatchRays into the shader census (no shader: the rays' state object is not a pipeline).
+void census_dispatch_rays(const D3D12_DISPATCH_RAYS_DESC*);
 void STDMETHODCALLTYPE hk_ExecuteIndirect(ID3D12GraphicsCommandList*, ID3D12CommandSignature*, UINT, ID3D12Resource*, UINT64, ID3D12Resource*, UINT64);
 void STDMETHODCALLTYPE hk_DrawInstanced(ID3D12GraphicsCommandList*, UINT, UINT, UINT, UINT);
 void STDMETHODCALLTYPE hk_SetPipelineState(ID3D12GraphicsCommandList*, ID3D12PipelineState*);
@@ -657,8 +697,10 @@ void STDMETHODCALLTYPE hk_ClearDepthStencilView(ID3D12GraphicsCommandList*, D3D1
                                                D3D12_CLEAR_FLAGS, FLOAT, UINT8, UINT, const D3D12_RECT*);
 void STDMETHODCALLTYPE hk_CopyBufferRegion(ID3D12GraphicsCommandList*, ID3D12Resource*, UINT64, ID3D12Resource*, UINT64, UINT64);
 void STDMETHODCALLTYPE probe_CopyResource(ID3D12GraphicsCommandList*, ID3D12Resource*, ID3D12Resource*);
+void STDMETHODCALLTYPE probe_CopyTextureRegion(ID3D12GraphicsCommandList*,const D3D12_TEXTURE_COPY_LOCATION*,UINT,UINT,UINT,const D3D12_TEXTURE_COPY_LOCATION*,const D3D12_BOX*);
+void STDMETHODCALLTYPE hk_CopyTextureRegion(ID3D12GraphicsCommandList*,const D3D12_TEXTURE_COPY_LOCATION*,UINT,UINT,UINT,const D3D12_TEXTURE_COPY_LOCATION*,const D3D12_BOX*);
 
-void expo_probe_copy(ID3D12GraphicsCommandList*, ID3D12Resource*, bool);
+void expo_probe_copy(ID3D12GraphicsCommandList*, ID3D12Resource*, int);
 void expo_mirror(ID3D12GraphicsCommandList*, ID3D12Resource*, bool);
 void expo_probe_report();
 bool tile_is_grid(const D3D12_RESOURCE_DESC&);
@@ -667,6 +709,9 @@ void cull_count_report();
 void tile_probe_copy(ID3D12GraphicsCommandList*, ID3D12Resource*, const D3D12_RESOURCE_DESC&, D3D12_RESOURCE_STATES, bool);
 void tile_probe_report();
 void pso_ids_record(void*, const D3D12_SHADER_BYTECODE&, const D3D12_SHADER_BYTECODE&);
+// The sight pipeline's scope-variant twin while the optics path is 'shader', else pso itself.
+ID3D12PipelineState* sight_scope_twin(ID3D12PipelineState*);
+ID3D12PipelineState* sight_mask_twin(ID3D12PipelineState*);
 uint64_t fnv1a(const void*, size_t);
 void sight_ps_dump(const void*, size_t, const char*);
 void buf_note(ID3D12Resource*, uint64_t, uint64_t);
@@ -711,7 +756,6 @@ extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugExecTotal;
 extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugMirrorGameQueue;
 extern ID3D12CommandQueue* g_game_queue;
 extern PFN_CreateCommandQueue  g_orig_CreateCommandQueue;
-extern std::atomic<bool>     g_queue_vtable_patched;
 extern std::atomic<uint64_t> g_exec_total;
 extern std::mutex g_game_object_mtx;
 void STDMETHODCALLTYPE hk_OMSetRenderTargets( ID3D12GraphicsCommandList* self, UINT count, const D3D12_CPU_DESCRIPTOR_HANDLE* handles, BOOL contiguous, const D3D12_CPU_DESCRIPTOR_HANDLE* depth);

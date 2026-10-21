@@ -105,8 +105,9 @@ class Symbols:
 
 
 # ---- minidump --------------------------------------------------------------------------------
-def report(path, syms):
-    D = open(path, "rb").read()
+def report(path, syms, threads=False):
+    with open(path, "rb") as source:
+        D = source.read()
     sig, _ver, nstreams, dir_rva = struct.unpack_from("<4sIII", D, 0)
     if sig != b"MDMP":
         print("not a minidump: %s" % path)
@@ -149,6 +150,31 @@ def report(path, syms):
 
     print("=" * 100)
     print(os.path.basename(os.path.dirname(path)))
+    if threads and 3 in streams:
+        _, thread_rva = streams[3]
+        count, = struct.unpack_from('<I', D, thread_rva)
+        if count > 4096 or thread_rva + 4 + count * 48 > len(D):
+            raise ValueError('Invalid thread-list extent')
+        print('  THREAD STACK SCANS (candidates, not an unwind):')
+        for index in range(count):
+            row = struct.unpack_from('<IIIIQQIIII', D, thread_rva + 4 + index * 48)
+            tid, _, _, _, _, start, size, stack_rva, context_size, context_rva = row
+            if context_size < 256 or context_rva + context_size > len(D) or stack_rva + size > len(D):
+                continue
+            rsp, = struct.unpack_from('<Q', D, context_rva + 0x98)
+            rip, = struct.unpack_from('<Q', D, context_rva + 0xF8)
+            print('  THREAD %u RIP %s' % (tid, fmt(rip)))
+            offset = max(0, rsp-start)
+            offset = (offset+7) & ~7
+            shown = 0
+            for position in range(offset, min(size-7, offset+131072), 8):
+                value, = struct.unpack_from('<Q', D, stack_rva+position)
+                name, _ = whose(value)
+                if name and (shown < 12 or os.path.splitext(name)[0] in OURS):
+                    print('    +%05X  %s' % (start+position-rsp, fmt(value)))
+                    shown += 1
+                    if shown >= 48:
+                        break
     if 6 not in streams:
         print("  no exception stream")
         return
@@ -219,6 +245,7 @@ def report(path, syms):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--image-dir',help='Exact archived DLL/PDB directory for this crash build')
+    parser.add_argument('--threads',action='store_true',help='Include bounded stack scans for all captured threads, including live dumps')
     parser.add_argument('dumps',nargs='*')
     options=parser.parse_args();args=options.dumps
     if not args:
@@ -232,7 +259,7 @@ def main():
     if not syms.ok:
         print("dbghelp unavailable: addresses will be module+RVA only\n")
     for a in args:
-        report(a, syms)
+        report(a, syms, options.threads)
 
 
 if __name__ == "__main__":

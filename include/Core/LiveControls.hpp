@@ -1,4 +1,5 @@
 #pragma once
+#include "Render/SharpenPolicy.hpp"
 
 // ================================================================================================
 // The live settings block -- vrport.ini, re-read whenever the file's timestamp changes.
@@ -26,14 +27,14 @@ struct LiveControls {
     volatile int xrHudPanel = 1;
     volatile float xrHudFollowDeg = 60.0f;
     volatile int xrInteractionPanel = 1;
-    volatile float xrInteractionFollowDeg = 90.0f;
-    volatile float xrLootFollowDeg = 10.0f;
-    volatile float xrInteractionDistance = 1.5f;
-    volatile float xrInteractionFov = 65.4f;
+    volatile float xrInteractionFollowDeg = 0.0f; // 0 = head-locked
+    volatile float xrLootFollowDeg = 0.0f;
+    volatile float xrInteractionDistance = 2.0f;
+    volatile float xrInteractionFov = 75.0f;
     volatile float xrHudFov = 65.4f;
     volatile float xrHudDistance = 1.5f;
     volatile int xrHudFollowMode = 0; // 0=head cone, 1=physical body
-    volatile int xrHudStereoDepth = 0; // 0=same angular position for both eyes
+    volatile int xrHudStereoDepth = 1; // 0=same angular position for both eyes
     volatile float xrHudBrightness = 1.0f;
     volatile float xrHudShadow = 1.0f;
     volatile float xrHudGlow = 1.0f;
@@ -46,8 +47,8 @@ struct LiveControls {
     volatile float xrStereoScale;
     volatile float xrWorldScale;   // uniform world scale (1.0 = default, <1 = world bigger)
     volatile float xrIpdScale;     // eye-separation multiplier on runtime IPD
-    volatile float xrSharpness;    // CAS sharpen strength (0 = off .. 1)
-    volatile float xrSharpmix;     // CAS sharpen mix (0..1)
+    volatile float xrSharpness;    // CAS Emphasis (0..1; zero still sharpens)
+    volatile float xrSharpmix = cvr::sharpen::DefaultAmount; // CAS Sharpening (0..1 -> shader mix 0..4)
     volatile int xrReuseLastFrame; // 1 = reuse last clean frame on stale ticks
     volatile int xrPairLock;       // 1 = freeze tracked pose per stereo pair (anti-tear). 0 = live pose every locate.
     volatile int xrRenderPoseSubmit;
@@ -88,7 +89,7 @@ struct LiveControls {
     // XInput merge) are in this DLL and read them straight from here.
     volatile int xrWheelGrab;        // 1 (default) = while DRIVING, a grip squeezed with the hand on the animated wheel pose hands that arm back to the driving animation. Per hand.
     volatile float xrWheelRadius;    // how near the animated hand the controller must be for the grip to mean "grab", metres. Default 0.28.
-    volatile float xrWheelSteerMaxDeg;  // controller tilt that means full lock, degrees. 90 (default) = hands vertical, a real wheel 1:1. Lower turns less wrist into more steering.
+    volatile float xrWheelSteerMaxDeg;  // car hand travel to full lock per side; default 180 degrees. Road-wheel lock remains native.
     volatile float xrWheelSteerDeadDeg; // steering deadzone around centre, degrees. 1.5 (default) swallows tremor only; every degree here is a degree of dead wheel.
     volatile int xrWheelPrediction = 0; // optional conservative history-based steering lead
     volatile float xrWheelPredictionMs = 8.0f; // 0..8 ms, additionally limited to half a degree
@@ -101,6 +102,8 @@ struct LiveControls {
     volatile int xrHybridBodyRotation = 1; // upright head cone; tracked body yaw on looking down / bending
     volatile int xrBodyRotationMode = 3; // derived single-scalar publication; never serialize separately
     volatile int xrRoomscaleMovement = 1; // horizontal physical displacement through the native CCT
+    volatile int xrPhysicalCrouch = 1;
+    volatile float xrPhysicalCrouchDepth = .45f; // height loss after measured hinge contribution, metres (default: the user's own tuned value, 2026-10-17)
     volatile float xrBodyFreeLookDeg = 10.0f;
     volatile float xrBodyMoveRadius = .10f; // metres; roomscale movement starts outside this radius
     volatile float xrBodyFreeLookDownDeg = 30.0f;

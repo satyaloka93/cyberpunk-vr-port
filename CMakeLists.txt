@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(CyberpunkVRPort VERSION 0.1.7 LANGUAGES CXX C ASM_MASM)
+project(CyberpunkVRPort VERSION 0.1.8 LANGUAGES CXX C ASM_MASM)
 
 include(FetchContent)
 FetchContent_Declare(
@@ -90,6 +90,12 @@ add_library(cyberpunkvrport_stereo SHARED
     src/Hooks/SurveillanceInputThunk.asm
     src/Hooks/StoryAttentionThunk.asm
     src/Hooks/RenderGraphCacheThunk.asm
+    src/Hooks/NativeBoundsThunk.asm
+    src/Hooks/NativeDrawOriginThunk.asm
+    src/Hooks/NativeSceneUpdateThunk.asm
+    src/Hooks/NativeUploadReservationThunk.asm
+    src/Hooks/NativeInstanceReservationThunk.asm
+    src/Hooks/NativeSourceSrvBindingThunk.asm
     externals/im3d/im3d.cpp
 )
 include(cmake/WorldMarkerShaders.cmake)
@@ -107,6 +113,7 @@ target_link_libraries(cyberpunkvrport_stereo PRIVATE
     imgui
     d3d12.lib
     d3dcompiler
+    bcrypt
     dxgi.lib        # the SYSTEM import lib -- bare "dxgi" would resolve to our own target
     psapi
     RED4ext::SDK
@@ -157,7 +164,6 @@ set_target_properties(cyberpunkvrport_stereo PROPERTIES
 # Tools. Separate targets, never deployed with the plugin.
 # ============================================================================================
 # xr_probe_layer -- an OpenXR API layer that records what any VR application asks the runtime for
-# and what it submits back. Used to read Quest 3 geometry out of R.E.A.L. VR (a dxgi.dll proxy)
-# without touching its internals. Build it explicitly:
+# and what it submits back, without touching application internals. Build it explicitly:
 #     cmake --build build --config Release --target xr_probe_layer
 add_subdirectory(tools/xr_probe)

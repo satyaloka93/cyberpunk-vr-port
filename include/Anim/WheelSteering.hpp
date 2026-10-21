@@ -1,4 +1,5 @@
 #pragma once
+#include "Anim/WheelRange.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -21,7 +22,7 @@ public:
             Reset();return 0;
         }
         radius=std::isfinite(radius) ? std::clamp(radius,.08f,.45f):.19f;
-        const float limit=MaxDegrees(maxDegrees);
+        const float limit=WheelFullLockDegrees(maxDegrees);
         const bool rebase=held!=m_held || !m_valid;
         if(rebase) {
             m_held=held;
@@ -53,7 +54,7 @@ public:
         return Output(m_angle,limit,deadDegrees);
     }
     static float Output(float angle,float maxDegrees,float deadDegrees) {
-        const float limit=MaxDegrees(maxDegrees);
+        const float limit=WheelFullLockDegrees(maxDegrees);
         float dead=std::isfinite(deadDegrees) && deadDegrees>=0 && deadDegrees<=20 ? deadDegrees:1.5f;
         dead=std::min(dead,limit-5);
         const float n=std::clamp((std::abs(angle)-dead)/(limit-dead),0.f,1.f);
@@ -65,14 +66,13 @@ private:
     static bool Finite(WheelPoint p) { return std::isfinite(p.x)&&std::isfinite(p.y); }
     static WheelPoint Sub(WheelPoint a,WheelPoint b) { return {a.x-b.x,a.y-b.y}; }
     static float Length(WheelPoint p) { return std::hypot(p.x,p.y); }
-    static float MaxDegrees(float value) { return std::isfinite(value)&&value>=30&&value<=120 ? value:90.f; }
     uint8_t m_held{};
     bool m_valid{};
     float m_angle{};
     WheelPoint m_pivot{},m_previous{};
 };
 
-// Encode the desired post-deadzone axis without changing the user's settings.
+// Encode the desired post-deadzone axis without changing the player's settings.
 // Vehicle TurnX uses the game's inner/outer stick range, not the VR stick range.
 inline float WheelGamepadAxis(float value,float inner,float outer) {
     if(!std::isfinite(value))return 0;

@@ -9,6 +9,7 @@
 namespace cvr::stereo {
 using InvertShaderMatrix=void*(*)(const void*,void*);
 using ShaderCamera=std::array<uint8_t,848>;
+struct ShaderCameraHistory {std::array<uint8_t,0x184> bytes{};};
 namespace camera_math {
 struct alignas(16) Matrix { float v[4][4]; };
 inline Matrix Load(const uint8_t* data,size_t offset) {
@@ -88,6 +89,29 @@ inline bool BuildPeerShaderCamera(const ShaderCamera& shared,const CameraInput& 
     if(!std::isfinite(jitter[0]) || !std::isfinite(jitter[1]))return false;
     put(816,jitter,8);put(824,current.bytes.data()+0x380,4);
     output=result;return true;
+}
+
+// The paired graph has already prepared both current cameras. Its history
+// object is separate from camera +0x70: native 0x1E2C94 reads pose at +8/+0x20,
+// view/projection at +0x30/+0xB0 and the temporal weight at +0x180.
+inline bool DecodeShaderCameraHistory(const CameraInput& current,const ShaderCameraHistory& history,
+    CameraInput& previous,float& temporalWeight){
+    if(!history.bytes[0])return false;
+    float weight{};std::memcpy(&weight,history.bytes.data()+0x180,4);
+    const auto view=camera_math::Load(history.bytes.data(),0x30),projection=camera_math::Load(history.bytes.data(),0xB0);
+    if(!std::isfinite(weight) || weight<0 || !camera_math::Finite(view) || !camera_math::Finite(projection) ||
+        projection.v[2][0]!=0 || projection.v[2][1]!=0)return false;
+    CameraInput result=current;
+    std::memcpy(result.bytes.data(),history.bytes.data()+8,12);
+    std::memcpy(result.bytes.data()+16,history.bytes.data()+0x20,16);
+    std::memcpy(result.bytes.data()+0x50,&view,64);
+    std::memcpy(result.bytes.data()+0x2F0,&projection,64);
+    constexpr unsigned axes[]{0,2,1};
+    for(unsigned axis=0;axis<3;++axis){
+        const float direction[]{view.v[0][axes[axis]],view.v[1][axes[axis]],view.v[2][axes[axis]],0};
+        std::memcpy(result.bytes.data()+0x250+axis*16,direction,16);
+    }
+    previous=result;temporalWeight=weight;return true;
 }
 }
 #if defined(_MSC_VER)

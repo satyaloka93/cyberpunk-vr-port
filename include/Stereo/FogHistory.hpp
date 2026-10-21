@@ -24,17 +24,31 @@ inline bool SameFogGrid(const FogGrid& a,const FogGrid& b) {
            std::abs(a[i]-b[i])>1e-5f*std::max(1.0f,std::max(std::abs(a[i]),std::abs(b[i]))))return false;
     return true;
 }
+// camera[51].xy: the NDC jitter alone (the native VS removes it this way, see lens_velocity_ps.hlsl).
+// Anything larger than this is not a sub-pixel jitter.
+constexpr unsigned kFogCameraJitter=204;
+constexpr float kFogMaxJitter=0.05f;
+// The projection alone with the jitter taken out: the frustum the view's froxel grid spans.
+inline bool FogFrustum(const FogCamera& camera,FogProjection& output);
 inline bool FogCurrentProjection(const FogCamera& camera,FogProjection& output) {
     // CameraShaderConsts stores transposed matrices. Fog froxels exclude the
-    // temporal projection jitter, as does the native previous-VP matrix.
+    // temporal projection jitter, as does the native previous-VP matrix -- but
+    // NOT the projection's own off-centre shift (Stereo/AsymProjection.cpp),
+    // which P20/P21 (p[2], p[6]) carry next to the jitter. Subtract the jitter
+    // and keep the shift: zeroing P20/P21 dropped the shift as well, and the
+    // second eye then read MAIN's fog history one shift away -- the eyes
+    // disagreed about the haze and glare around the sun (2026-10-15).
     const float* projection=camera.data()+32;
     const float* view=camera.data()+80;
+    const float* jitter=camera.data()+kFogCameraJitter;
     for(unsigned i=0;i<16;++i)
         if(!std::isfinite(projection[i]) || !std::isfinite(view[i]))return false;
     if(projection[0]<=0 || projection[5]<=0 || std::abs(projection[14]-1)>1e-4f ||
        std::abs(projection[15])>1e-4f || std::abs(view[15]-1)>1e-4f)return false;
-    auto p=FogProjection{};std::copy_n(projection,16,p.begin());
-    p[2]=p[6]=0;
+    if(!std::isfinite(jitter[0]) || !std::isfinite(jitter[1]) ||
+       std::abs(jitter[0])>kFogMaxJitter || std::abs(jitter[1])>kFogMaxJitter)return false;
+    FogProjection p{};
+    if(!FogFrustum(camera,p))return false;
     FogProjection result{};
     for(unsigned r=0;r<4;++r)for(unsigned c=0;c<4;++c) {
         float sum{};
@@ -43,6 +57,27 @@ inline bool FogCurrentProjection(const FogCamera& camera,FogProjection& output) 
         result[r*4+c]=sum;
     }
     output=result;return true;
+}
+inline bool FogFrustum(const FogCamera& camera,FogProjection& output) {
+    const float* projection=camera.data()+32;
+    const float* jitter=camera.data()+kFogCameraJitter;
+    for(unsigned i=0;i<16;++i)if(!std::isfinite(projection[i]))return false;
+    if(!std::isfinite(jitter[0]) || !std::isfinite(jitter[1]) ||
+       std::abs(jitter[0])>kFogMaxJitter || std::abs(jitter[1])>kFogMaxJitter)return false;
+    auto p=FogProjection{};std::copy_n(projection,16,p.begin());
+    p[2]-=jitter[0];p[6]-=jitter[1];
+    output=p;return true;
+}
+// MAIN's fog history stands in for the second view's only when both froxel grids span the same
+// frustum. SameFogGrid compares the depth slicing alone; with each eye its own window (asymmetric
+// projection, inner guard 0) the grids cover different frusta, and the borrowed history -- resampled
+// across them -- made the second eye's haze differ from MAIN's instead of agreeing with it (measured:
+// eyes 2.08 apart with the borrow, 1.05 without, at the reported sun/haze spot).
+inline bool SameFogFrustum(const FogProjection& a,const FogProjection& b) {
+    for(unsigned i=0;i<a.size();++i)
+        if(!std::isfinite(a[i]) || !std::isfinite(b[i]) ||
+           std::abs(a[i]-b[i])>1e-4f*std::max(1.0f,std::max(std::abs(a[i]),std::abs(b[i]))))return false;
+    return true;
 }
 inline bool ApplyFogHistoryProjection(const FogCamera& native,const FogProjection& source,FogCamera& output) {
     FogProjection current{};

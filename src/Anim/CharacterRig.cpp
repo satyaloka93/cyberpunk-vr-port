@@ -1,8 +1,9 @@
+#include "Hooks/BodyHeading.hpp"
 #include "Utils/DebugGate.hpp"
 // CharacterRig -- the solve for the PLAYER'S OWN bones.
 //
 // Forward kinematics, the two-bone arm and leg solves, the hand target and its stop, the torso
-// damping and girdle pinning, the arm scaling that fits the avatar to a measured user, and the body
+// damping and girdle pinning, the arm scaling that fits the avatar to a measured player, and the body
 // placement under the HMD. Every function here answers the same question: given a target in some
 // space, what local rotation does this character bone take?
 //
@@ -12,10 +13,12 @@
 
 #include "Anim/VrikHook.hpp"
 #include "Anim/CharacterRig.hpp"
+#include "Anim/Cyberware.hpp"
 #include "Anim/SkeletonPolicy.hpp"
 #include "Anim/UpperBodyPosture.hpp"
 #include "Anim/BodyBend.hpp"
 #include "Anim/LadderGripProfile.hpp"
+#include "Anim/HandGestures.hpp"
 #include "Anim/LadderFingerTuning.hpp"
 #include "Anim/LadderRungPose.hpp"
 #include "Camera/NeckCameraMount.hpp"
@@ -110,6 +113,10 @@ float g_VRIKBodyBendPelvis[3]{};
 float g_VRIKBodyEyeTarget[3]{},g_VRIKBodyEyeSolved[3]{};
 bool g_VRIKBodyEyeBound=false;
 float g_VRIKGirdleReach[2][4]{}; // weight, clavicle degrees, joint advance(m), scapula travel(m)
+int g_VRCyberwareFamily=0;
+extern "C" __declspec(dllexport) int CyberpunkVR_NativeCyberwarePasses=1;
+uint64_t g_VRCyberGraphHashes[16]{},g_VRCyberGraphCalls[16]{};
+bool VRIK_UsesNativeCyberware() {return CyberpunkVR_NativeCyberwarePasses!=0 && g_VRCyberwareFamily!=0;}
 
 bool cvr::camera::ReadNeckCameraMount(AnchorVector* offset) {
     std::lock_guard lock(s_neckMountMutex);
@@ -125,6 +132,14 @@ bool cvr::camera::ReadNeckCameraEyeOffset(AnchorVector* offset) {
 void VRIK_ConfigureRigPolicy(const char* const* names,int count,const uint8_t* reference,int referenceCount,bool female) {
     using namespace cvr::vrik;
     count=std::clamp(count,0,VRIK_MAX_BONES);
+    g_VRCyberwareFamily=0;
+    for(int i=0;i<count;++i)if(names[i]) {
+        if(EqualBoneName(names[i],"l_plate_up_a"))g_VRCyberwareFamily=1;
+        if(EqualBoneName(names[i],"l_wristSuspension01_JNT"))g_VRCyberwareFamily=2;
+        if(EqualBoneName(names[i],"l_nanoWire01_grp"))g_VRCyberwareFamily=3;
+        if(EqualBoneName(names[i],"launcher_base"))g_VRCyberwareFamily=4;
+    }
+    VRIK_ConfigureCyberwareRig(names,count,reference,referenceCount);
     // A meta-rig can change when arms/cyberware are replaced. Neither indices
     // nor captured anatomical axes from the previous layout may survive it.
     uint64_t fingerprint=14695981039346656037ull;
@@ -436,12 +451,47 @@ volatile float g_VRFKSnapPos[VRIK_MAX_BONES][3];
 volatile float g_VRFKSnapRot[VRIK_MAX_BONES][4];
 volatile int   g_VRFKSnapCount = 0;
 
+void VRIK_PublishNativeCyberwarePose(uint8_t* buffer,uint64_t graph) {
+    // Read-only diagnostic of the actual downstream result, rather than the
+    // primary wrist alone (which may only drive a shadow on a cyberware rig).
+    for(int i=0;i<16;++i)if(!g_VRCyberGraphHashes[i] || g_VRCyberGraphHashes[i]==graph) {
+        g_VRCyberGraphHashes[i]=graph;++g_VRCyberGraphCalls[i];break;
+    }
+    if(!g_VRDiagCapture)return;
+    const int count=VRIK_FKCount();VRIK_ComputeFK(buffer,count);
+    for(int i=0;i<count;++i) {
+        for(int k=0;k<3;++k)g_VRFKSnapPos[i][k]=g_fkPos[i][k];
+        for(int k=0;k<4;++k)g_VRFKSnapRot[i][k]=g_fkRot[i][k];
+    }
+    g_VRFKSnapCount=count;
+}
+
 // FK walk length: only the prefix of the rig the solver actually reads
 // (parents precede children, so the prefix is self-contained). Falls back to
 // the full bone count until the resolve publishes the prefix.
 int VRIK_FKCount() {
     const int n = g_VRFKCount;
     return (n > 0) ? n : g_VRBoneCount;
+}
+
+bool VRIK_ReferenceFingerRotation(int bone,float* rotation) {
+    if(!rotation || bone<0 || bone>=g_VRBoneCount || !s_referenceValid[bone])return false;
+    std::copy_n(s_referenceLocalRot[bone],4,rotation);return true;
+}
+bool cvr::gestures::ThumbReference(int side,float* rotation) {
+    if(side<0 || side>1 || !rotation)return false;
+    const int root=s_ladderFingers[side][0],tip=s_ladderFingers[side][10];
+    const int index=s_ladderFingers[side][1],indexTip=s_ladderFingers[side][15];
+    for(int bone:{root,tip,index,indexTip})if(bone<0 || bone>=g_VRBoneCount || !s_referenceValid[bone])return false;
+    const int parent=g_VRBoneParent[root];if(parent<0 || !s_referenceValid[parent])return false;
+    float from[3],to[3],inverse[4],a[3],b[3],delta[4];
+    for(int k=0;k<3;++k){from[k]=s_referenceModelPos[tip][k]-s_referenceModelPos[root][k];to[k]=s_referenceModelPos[indexTip][k]-s_referenceModelPos[index][k];}
+    VRIK_QuatConj(s_referenceModelRot[parent],inverse);
+    VRIK_QuatRotateVec(inverse,from,a);VRIK_QuatRotateVec(inverse,to,b);
+    if(VRIK_Dot3(a,a)<1e-8f || VRIK_Dot3(b,b)<1e-8f)return false;
+    VRIK_Norm3(a);VRIK_Norm3(b);
+    VRIK_QuatFromTo(a,b,delta);VRIK_QuatMul(delta,s_referenceLocalRot[root],rotation);VRIK_QuatNorm(rotation);
+    return true;
 }
 
 // Forward kinematics: accumulate parent-local transforms into model space.
@@ -734,7 +784,7 @@ bool VRIK_BodyAxesFromRig(float* bodyRight,float* bodyUp,float* bodyFwd,bool upp
 }
 
 void VRIK_AnchorShoulder(uint8_t* boneBuf,int upperIdx,const float* anchor,bool isLeft,
-                         const float* bodyRight,const float* bodyUp,float halfWidth,float* outJoint) {
+                         const float* bodyRight,const float* bodyUp,float halfWidth,float* outJoint,bool neckAnchor) {
     float half = std::fabs(halfWidth);
     if (half < 0.13f) half = 0.13f;
     if (half > 0.19f) half = 0.19f;
@@ -744,11 +794,11 @@ void VRIK_AnchorShoulder(uint8_t* boneBuf,int upperIdx,const float* anchor,bool 
         anchor[0] + bodyRight[0]*(side*half) - bodyUp[0]*drop,
         anchor[1] + bodyRight[1]*(side*half) - bodyUp[1]*drop,
         anchor[2] + bodyRight[2]*(side*half) - bodyUp[2]*drop };
-    if(g_VRIKVehicleUpperActive && upperIdx>=0 && upperIdx<g_VRBoneCount &&
+    if(neckAnchor && upperIdx>=0 && upperIdx<g_VRBoneCount &&
        g_VRNeckIdx>=0 && g_VRNeckIdx<g_VRBoneCount &&
        s_referenceValid[upperIdx] && s_referenceValid[g_VRNeckIdx]) {
-        // The corrected Combat neck is anatomical. The legacy head-anchor
-        // drop put shoulders another 17cm below that neck and shortened reach.
+        // The body anchor is the neck on foot as well as in Combat. The legacy
+        // head-anchor drop put shoulders 17cm below the neck and shortened reach.
         // Use the rig's actual neck-to-shoulder height/depth with calibrated width.
         float forward[3];VRIK_Cross3(bodyUp,bodyRight,forward);
         const float height=s_referenceModelPos[upperIdx][2]-s_referenceModelPos[g_VRNeckIdx][2];
@@ -810,6 +860,7 @@ void VRIK_AnchorShoulder(uint8_t* boneBuf,int upperIdx,const float* anchor,bool 
 }
 
 void VRIK_UpdateForearmDeformation(uint8_t* boneBuf,int foreIdx,int handIdx,bool left) {
+    if(VRIK_UsesNativeCyberware())return;
     if(foreIdx<0 || handIdx<0 || foreIdx>=g_VRBoneCount || handIdx>=g_VRBoneCount ||
        g_VRBoneParent[handIdx]!=foreIdx || !s_referenceValid[handIdx])return;
     float axis[3];std::copy_n(s_referenceLocalPos[handIdx],3,axis);
@@ -844,7 +895,7 @@ void VRIK_UpdateForearmDeformation(uint8_t* boneBuf,int foreIdx,int handIdx,bool
 // `setArms`), cross-validated against established arm-IK and VR-IK conventions.
 //
 // Approach (different from a naive "law of cosines at the shoulder"):
-//   * xDir   = unit vector from HAND -> SHOULDER (so anchored at the user's actual hand position).
+//   * xDir   = unit vector from HAND -> SHOULDER (so anchored at the player's actual hand position).
 //   * yDir   = unit vector PERPENDICULAR to xDir, in the plane the elbow should sit; built from
 //              anatomical hints (down, back, side) projected onto the plane normal to xDir.
 //   * Cosine law gives the WRIST angle (the angle of the upper/forearm/hand triangle measured at
@@ -910,7 +961,7 @@ static inline void VRIK_QuatExtractTwist(const float* q, const float* axis, floa
     if (outT[3] < 0.0f) { outT[0]=-outT[0]; outT[1]=-outT[1]; outT[2]=-outT[2]; outT[3]=-outT[3]; }
 }
 
-// REVERTED TO THE 0.1.18 SOLVER, on the user's call: with it the shoulders sat right, the elbows
+// REVERTED TO THE 0.1.18 SOLVER: with it the shoulders sat right, the elbows
 // behaved better and the biceps did not stretch. The elbow direction is built the VRArmIK way -- a
 // rest pose (armRest/bendRest) swung onto the current shoulder->hand axis, then deviated by a formula
 // in body-normalised coordinates -- instead of being derived from one anatomical hint per case; the
@@ -946,13 +997,21 @@ static bool VRIK_ReachGirdle(uint8_t* buffer,int upper,const float* target,
     // the avatar's eyes. Let the seated girdle protract for long reaches; keep
     // the sternum pivot, clavicle length and humeral translation limit intact.
     const float protract=ladderReach ? .06f:(g_VRIKVehicleUpperActive ? .07f:.035f);
-    const float elevate=ladderReach ? .035f:(g_VRIKVehicleUpperActive ? .03f:.015f);
-    const float maxClavicle=ladderReach ? .34906585f:(g_VRIKVehicleUpperActive ? .38397244f:.20943951f);
-    const float shoulderGlide=ladderReach ? .022f:.015f;
+    // Raising an extended arm rotates the clavicle upward. The old 15mm/12deg
+    // forward-reach profile left the shoulder down even above the head, so the
+    // wrist hit the segment caps before reaching the tracked hand. Blend only
+    // the on-foot elevated workspace; forward/downward and mounted poses keep
+    // their existing geometry and neither arm segment gets a larger stretch cap.
+    const float overhead=cvr::body::SmoothRange(rise,.15f,.9f);
+    const float downward=(!ladderReach && !g_VRIKVehicleUpperActive)
+        ? cvr::body::SmoothRange(-VRIK_Dot3(dir,up),.3f,.9f):0.0f;
+    const float elevate=ladderReach ? .035f:(g_VRIKVehicleUpperActive ? .03f:(.015f+.085f*overhead));
+    const float maxClavicle=ladderReach ? .34906585f:(g_VRIKVehicleUpperActive ? .38397244f:(.20943951f+.40142573f*overhead+.17453293f*downward));
+    const float shoulderGlide=ladderReach ? .022f:(.015f+.02f*downward);
     const float bladeShare=ladderReach ? .75f:.6f;
     float desired[3],current[3],arc[3];
     for(int k=0;k<3;++k) {
-        desired[k]=start[k]+weight*(forward[k]*protract*front+up[k]*elevate*rise);
+        desired[k]=start[k]+weight*(forward[k]*protract*front+up[k]*(elevate*rise-.045f*downward));
         current[k]=start[k]-g_fkPos[clavicle][k];arc[k]=desired[k]-g_fkPos[clavicle][k];
     }
     float rotationDelta[4]={0,0,0,1};
@@ -1017,6 +1076,12 @@ void VRIK_SolveArm(uint8_t* boneBuf, int upperIdx, int foreIdx, int handIdx,
     const float* sh = g_fkPos[upperIdx];
     const float* el = g_fkPos[foreIdx];
     const float* wr = g_fkPos[handIdx];
+    // Mix the free combat swivel with the existing relaxed elbow policy.
+    // Only the swivel changes: the wrist target and both segment lengths stay fixed.
+    const float combatBlend=g_VRBind!=4 || ladderReach || !s_referenceValid[foreIdx] || !s_referenceValid[handIdx] ? 0.f :
+        VRIK_UsesNativeCyberware() && (g_VRCyberwareFamily==1 || g_VRCyberwareFamily==2) ? 1.f :
+        VRIK_UsesNativeCyberware() && g_VRCyberwareFamily==3 ? .5f : .25f;
+    const bool combatElbow=combatBlend>0.f;
 
     float curUp[3]   = { el[0]-sh[0], el[1]-sh[1], el[2]-sh[2] };
     float curFore[3] = { wr[0]-el[0], wr[1]-el[1], wr[2]-el[2] };
@@ -1104,7 +1169,7 @@ void VRIK_SolveArm(uint8_t* boneBuf, int upperIdx, int foreIdx, int handIdx,
     if (hsLen < 1e-4f) return; // hand on top of shoulder; no defined direction
     float xDir[3] = { handToShoulder[0]/hsLen, handToShoulder[1]/hsLen, handToShoulder[2]/hsLen };
 
-    // STRETCH instead of clamp (per F4VR). If the user reaches farther than the rest-pose arm
+    // STRETCH instead of clamp (per F4VR). If the player reaches farther than the rest-pose arm
     // length, we keep the arm STRAIGHT by lengthening upLen+foreLen proportionally to cover hsLen.
     // The cosine law then computes a wrist angle of 0 (cos=1, sin=0) -> elbow lies on the
     // hand-shoulder line -> arm is perfectly straight. NOT clamping with an epsilon is the fix
@@ -1209,6 +1274,7 @@ void VRIK_SolveArm(uint8_t* boneBuf, int upperIdx, int foreIdx, int handIdx,
         out[2] = v[2] - axis[2]*d;
     };
     auto stripForwardBend = [&](float* dir) {
+        if(combatBlend>=1.f)return;
         float fc = VRIK_Dot3(dir, bodyFwd);
         if (fc > 0.0f) {
             dir[0] -= bodyFwd[0] * fc;
@@ -1304,7 +1370,7 @@ void VRIK_SolveArm(uint8_t* boneBuf, int upperIdx, int foreIdx, int handIdx,
         // the bend depend on our own previous solve -> two attractors -> elbow TELEPORT).
         // b is now a PURE function of the target position: continuous, deterministic.
         b[0] += dirN[0]; b[1] += dirN[1]; b[2] += dirN[2];
-        // Palm/wrist term DISABLED (user: rotating the wrist must not move the elbow).
+        // Palm/wrist term DISABLED (rotating the wrist must not move the elbow).
         // Kept for future tuning: kPalmW ~0.3 would give FinalIK-style pronation coupling.
         const float kPalmW = 0.0f;
         if (kPalmW > 0.0f && s_rigCap[sideI]) {
@@ -1420,15 +1486,126 @@ void VRIK_SolveArm(uint8_t* boneBuf, int upperIdx, int foreIdx, int handIdx,
         }
     }
 
+    // F4VR formula: wristAngle = acos((fore^2 + hs^2 - up^2) / (2*fore*hs)). This is the angle of
+    // the triangle measured AT THE HAND, not the shoulder. Elbow position is then offset from the
+    // hand by (cos*fore) along xDir + (sin*fore) along yDir.
+    float cosWrist = (foreL*foreL + hsLen*hsLen - upL*upL) / (2.0f * foreL * hsLen);
+    if (cosWrist < -1.0f) cosWrist = -1.0f; if (cosWrist > 1.0f) cosWrist = 1.0f;
+    float sinWrist = std::sqrt(std::fmax(0.0f, 1.0f - cosWrist*cosWrist));
+
+    float xDist = cosWrist * foreL;
+    float yDist = sinWrist * foreL;
+
+    auto relaxedElbowPolicy = [&](float* bend) {
+        if(!CyberpunkVR_VrikElbowPolicy || yDist<=1e-4f)return;
+        const float armLenTot = upL + foreL;
+        if (armLenTot > 1e-3f) {
+            float w = 1.0f - hsLen / (0.5f * armLenTot);
+            if (w < 0.0f) w = 0.0f;
+            if (w > 1.0f) w = 1.0f;
+            w *= 0.75f;
+            if (w > 0.0f) {
+                const float rest[3] = {
+                    0.30f * outRef[0] - bodyUp[0] - 2.0f * bodyFwd[0],
+                    0.30f * outRef[1] - bodyUp[1] - 2.0f * bodyFwd[1],
+                    0.30f * outRef[2] - bodyUp[2] - 2.0f * bodyFwd[2] };
+                float rp[3]; projectPerp(rest, xDir, rp);
+                if (VRIK_Norm3(rp) > 1e-3f) {
+                    bend[0] = bend[0]*(1.0f-w) + rp[0]*w;
+                    bend[1] = bend[1]*(1.0f-w) + rp[1]*w;
+                    bend[2] = bend[2]*(1.0f-w) + rp[2]*w;
+                    projectPerp(bend, xDir, bend);
+                    if (VRIK_Norm3(bend) < 1e-3f) { bend[0]=rp[0]; bend[1]=rp[1]; bend[2]=rp[2]; }
+                }
+            }
+        }
+        const float handUp = VRIK_Dot3(targetModel, bodyUp);
+        const float shUp   = VRIK_Dot3(shP, bodyUp);
+        if (handUp <= shUp + 0.05f) {                       // arm not raised above the shoulder
+            const float capUp = (handUp < shUp) ? handUp : shUp;
+            float u[3]; projectPerp(bodyUp, xDir, u);
+            const float r = VRIK_Norm3(u);                  // normalises u, returns the old length
+            if (r > 1e-3f) {
+                const float baseUp = handUp + xDist * VRIK_Dot3(xDir, bodyUp);
+                float aMax = (capUp - baseUp) / (yDist * r);
+                if (aMax < -1.0f) aMax = -1.0f;
+                if (aMax <  1.0f) {                         // >= 1 cannot be violated
+                    float v[3]; VRIK_Cross3(xDir, u, v); VRIK_Norm3(v);
+                    const float a = VRIK_Dot3(bend, u);
+                    if (a > aMax) {
+                        const float b = VRIK_Dot3(bend, v);
+                        float bNew = std::sqrt(std::fmax(0.0f, 1.0f - aMax * aMax));
+                        if (b < 0.0f) bNew = -bNew;
+                        bend[0] = u[0]*aMax + v[0]*bNew;
+                        bend[1] = u[1]*aMax + v[1]*bNew;
+                        bend[2] = u[2]*aMax + v[2]*bNew;
+                        VRIK_Norm3(bend);
+                    }
+                }
+            }
+        }
+    };
+
+    auto separateElbow = [&](float* bend) {
+        float oP[3]; projectPerp(outRef, xDir, oP);
+        if (VRIK_Norm3(oP) > 1e-3f) {
+            const float minOut = 0.12f;                // ~sin(7 deg)
+            const float dOut = VRIK_Dot3(bend, oP);
+            if (dOut < minOut) {
+                bend[0] += oP[0] * (minOut - dOut);
+                bend[1] += oP[1] * (minOut - dOut);
+                bend[2] += oP[2] * (minOut - dOut);
+                projectPerp(bend, xDir, bend);
+                if (VRIK_Norm3(bend) < 1e-3f) {
+                    bend[0]=oP[0]; bend[1]=oP[1]; bend[2]=oP[2];
+                }
+            }
+        }
+    };
+
+    if(combatElbow && s_referenceValid[foreIdx] && s_referenceValid[handIdx]) {
+        // A hook needs the elbow beside the fist, not pinned below it. Infer
+        // forearm continuation from the wrist's aim (NOT its roll), then choose
+        // the point on the shoulder/wrist elbow circle closest to that aim.
+        // Guard/uppercut -> elbow down; a sideways fist -> elbow out. The same
+        // rule gives Mantis a free cutting plane without moving the wrist target.
+        float baseBend[3];std::copy_n(yDir,3,baseBend);
+        if(combatBlend<1.f){separateElbow(baseBend);relaxedElbowPolicy(baseBend);}
+        float continuation[3],inverseHand[4],local[3],aim[3],guide[3],relaxed[3];
+        for(int k=0;k<3;++k)continuation[k]=s_referenceModelPos[handIdx][k]-s_referenceModelPos[foreIdx][k];
+        VRIK_Norm3(continuation);VRIK_QuatConj(s_referenceModelRot[handIdx],inverseHand);
+        VRIK_QuatRotateVec(inverseHand,continuation,local);VRIK_QuatRotateVec(handModelRot,local,aim);
+        for(int k=0;k<3;++k) { guide[k]=-aim[k];relaxed[k]=-bodyUp[k]+.30f*outRef[k]; }
+        projectPerp(guide,xDir,guide);projectPerp(relaxed,xDir,relaxed);
+        const float leverage=VRIK_Norm3(guide);
+        if(VRIK_Norm3(relaxed)<1e-4f)std::copy_n(oPerp,3,relaxed);
+        const float weight=std::clamp((leverage-.10f)/.55f,0.f,1.f)*.90f;
+        for(int k=0;k<3;++k)yDir[k]=relaxed[k]*(1-weight)+guide[k]*weight;
+        if(VRIK_Norm3(yDir)<1e-4f)std::copy_n(relaxed,3,yDir);
+        if(combatBlend<1.f) {
+            separateElbow(yDir);VRIK_Norm3(baseBend);VRIK_Norm3(yDir);
+            float cross[3];VRIK_Cross3(baseBend,yDir,cross);
+            const float angle=std::atan2(VRIK_Dot3(cross,xDir),VRIK_Dot3(baseBend,yDir))*combatBlend;
+            VRIK_Cross3(xDir,baseBend,cross);
+            for(int k=0;k<3;++k)yDir[k]=baseBend[k]*std::cos(angle)+cross[k]*std::sin(angle);
+            VRIK_Norm3(yDir);
+        }
+    }
+
     // TEMPORAL SMOOTHING (anti-teleport). The bend direction is now a pure function of the
     // target, but crossing workspace zones (chest reach, overhead) can still swing it fast --
     // the elbow visibly TELEPORTED between poses. A real arm re-poses smoothly: exponentially
-    // smooth yDir over time (tau = 80ms) and cap the swing rate at 540 deg/s, then re-project
+    // smooth yDir over time (80ms relaxed -> 25ms combat) and interpolate its rate cap, then re-project
     // perpendicular to the arm axis (the cosine-law placement assumes yDir ⊥ xDir).
     {
         static float s_ySm[2][3];
         static bool  s_yInit[2] = { false, false };
         static long long s_yT[2] = { 0, 0 };
+        static uint64_t s_yRevision[2]{};
+        static float s_yBlend[2]={-1.f,-1.f};
+        if(s_yRevision[sideI]!=s_rigRevision || s_yBlend[sideI]!=combatBlend) {
+            s_yRevision[sideI]=s_rigRevision;s_yBlend[sideI]=combatBlend;s_yInit[sideI]=false;s_yT[sideI]=0;
+        }
         LARGE_INTEGER qn, qf;
         QueryPerformanceCounter(&qn); QueryPerformanceFrequency(&qf);
         float dt = 0.016f;
@@ -1442,12 +1619,12 @@ void VRIK_SolveArm(uint8_t* boneBuf, int upperIdx, int foreIdx, int handIdx,
             s_ySm[sideI][0]=yDir[0]; s_ySm[sideI][1]=yDir[1]; s_ySm[sideI][2]=yDir[2];
             s_yInit[sideI] = true;
         } else {
-            float alpha = 1.0f - std::exp(-dt / 0.08f);
+            float alpha = 1.0f - std::exp(-dt / (.08f+(.025f-.08f)*combatBlend));
             float dotp = s_ySm[sideI][0]*yDir[0] + s_ySm[sideI][1]*yDir[1] + s_ySm[sideI][2]*yDir[2];
             if (dotp < -1.0f) dotp = -1.0f;
             if (dotp >  1.0f) dotp =  1.0f;
             const float ang = std::acos(dotp);
-            const float maxStep = 9.42477f * dt;              // 540 deg/s
+            const float maxStep = (9.42477f+(25.13274f-9.42477f)*combatBlend) * dt;
             if (ang > 1e-4f && ang * alpha > maxStep) alpha = maxStep / ang;
             float ns[3] = {
                 s_ySm[sideI][0] + (yDir[0]-s_ySm[sideI][0])*alpha,
@@ -1465,108 +1642,9 @@ void VRIK_SolveArm(uint8_t* boneBuf, int upperIdx, int foreIdx, int handIdx,
         if (VRIK_Norm3(yP) > 1e-3f) { yDir[0]=yP[0]; yDir[1]=yP[1]; yDir[2]=yP[2]; }
     }
 
-    // ANATOMICAL SEPARATION (hard, applied LAST). Two facts in one clamp: (a) the humerus
-    // cannot internally rotate the elbow across the body's midline at all, and (b) a human
-    // elbow practically never rests flat ON the torso -- the arm always keeps a few degrees
-    // of abduction ("локоть всегда слегка под углом от груди"). Enforce a MINIMUM OUTWARD
-    // component (~7 deg) on the bend direction; more outward / back / down remain free.
-    {
-        float oP[3]; projectPerp(outRef, xDir, oP);
-        if (VRIK_Norm3(oP) > 1e-3f) {
-            const float minOut = 0.12f;                // ~sin(7 deg)
-            const float dOut = VRIK_Dot3(yDir, oP);
-            if (dOut < minOut) {
-                yDir[0] += oP[0] * (minOut - dOut);
-                yDir[1] += oP[1] * (minOut - dOut);
-                yDir[2] += oP[2] * (minOut - dOut);
-                projectPerp(yDir, xDir, yDir);
-                if (VRIK_Norm3(yDir) < 1e-3f) {
-                    yDir[0]=oP[0]; yDir[1]=oP[1]; yDir[2]=oP[2];
-                }
-            }
-        }
-    }
+    separateElbow(yDir);
 
-    // F4VR formula: wristAngle = acos((fore^2 + hs^2 - up^2) / (2*fore*hs)). This is the angle of
-    // the triangle measured AT THE HAND, not the shoulder. Elbow position is then offset from the
-    // hand by (cos*fore) along xDir + (sin*fore) along yDir.
-    float cosWrist = (foreL*foreL + hsLen*hsLen - upL*upL) / (2.0f * foreL * hsLen);
-    if (cosWrist < -1.0f) cosWrist = -1.0f; if (cosWrist > 1.0f) cosWrist = 1.0f;
-    float sinWrist = std::sqrt(std::fmax(0.0f, 1.0f - cosWrist*cosWrist));
-
-    float xDist = cosWrist * foreL;
-    float yDist = sinWrist * foreL;
-
-    // ---- ELBOW POLICY: close to the body, never above the wrist or the shoulder ----------------
-    //
-    // Two rules, both taken from how VR arm solvers actually behave rather than from what a free IK
-    // picks, and both matching what a relaxed arm does.
-    //
-    // (1) NEAR-SHOULDER REST. VRArmIK blends the elbow toward a FIXED local direction once the hand
-    //     comes within half an arm of the shoulder (useFixedElbowWhenNearShoulder: startBelowDistance
-    //     0.5, weight 2, localElbowPos (0.3, -1, -2) -- a little outward, down, and well back). That
-    //     is the pose a relaxed arm takes with the hand near the chest, and it is what stops the elbow
-    //     from flaring out or hunting when the triangle is nearly degenerate. Their weight is a spring
-    //     gain; here it is a direct blend, so it is scaled to 0.75 at the shoulder.
-    //
-    // (2) HEIGHT CAP. A relaxed elbow hangs BELOW the wrist and BELOW the shoulder. It only comes up
-    //     when the hand itself is raised above shoulder height -- held out level, the elbow is level
-    //     anyway, which the cap allows because the wrist is then the binding limit.
-    //
-    //     Enforced by SWIVELLING the bend direction about the arm axis, never by moving the elbow:
-    //     the elbow lives on a circle around the shoulder-hand line and the segment lengths depend on
-    //     it staying there. The swivel is solved in closed form. Writing yDir = a*u + b*v with
-    //     u = normalize(bodyUp perpendicular to xDir) and v = xDir x u, the elbow's height is
-    //     linear in a, so the cap is just a <= aMax; clamp a and rebuild b with its sign kept, which
-    //     keeps the elbow on the same (outward) side it was already on.
-    if (CyberpunkVR_VrikElbowPolicy && yDist > 1e-4f) {
-        const float armLenTot = upL + foreL;
-        if (armLenTot > 1e-3f) {
-            float w = 1.0f - hsLen / (0.5f * armLenTot);
-            if (w < 0.0f) w = 0.0f;
-            if (w > 1.0f) w = 1.0f;
-            w *= 0.75f;
-            if (w > 0.0f) {
-                const float rest[3] = {
-                    0.30f * outRef[0] - bodyUp[0] - 2.0f * bodyFwd[0],
-                    0.30f * outRef[1] - bodyUp[1] - 2.0f * bodyFwd[1],
-                    0.30f * outRef[2] - bodyUp[2] - 2.0f * bodyFwd[2] };
-                float rp[3]; projectPerp(rest, xDir, rp);
-                if (VRIK_Norm3(rp) > 1e-3f) {
-                    yDir[0] = yDir[0]*(1.0f-w) + rp[0]*w;
-                    yDir[1] = yDir[1]*(1.0f-w) + rp[1]*w;
-                    yDir[2] = yDir[2]*(1.0f-w) + rp[2]*w;
-                    projectPerp(yDir, xDir, yDir);
-                    if (VRIK_Norm3(yDir) < 1e-3f) { yDir[0]=rp[0]; yDir[1]=rp[1]; yDir[2]=rp[2]; }
-                }
-            }
-        }
-        const float handUp = VRIK_Dot3(targetModel, bodyUp);
-        const float shUp   = VRIK_Dot3(shP, bodyUp);
-        if (handUp <= shUp + 0.05f) {                       // arm not raised above the shoulder
-            const float capUp = (handUp < shUp) ? handUp : shUp;
-            float u[3]; projectPerp(bodyUp, xDir, u);
-            const float r = VRIK_Norm3(u);                  // normalises u, returns the old length
-            if (r > 1e-3f) {
-                const float baseUp = handUp + xDist * VRIK_Dot3(xDir, bodyUp);
-                float aMax = (capUp - baseUp) / (yDist * r);
-                if (aMax < -1.0f) aMax = -1.0f;
-                if (aMax <  1.0f) {                         // >= 1 cannot be violated
-                    float v[3]; VRIK_Cross3(xDir, u, v); VRIK_Norm3(v);
-                    const float a = VRIK_Dot3(yDir, u);
-                    if (a > aMax) {
-                        const float b = VRIK_Dot3(yDir, v);
-                        float bNew = std::sqrt(std::fmax(0.0f, 1.0f - aMax * aMax));
-                        if (b < 0.0f) bNew = -bNew;
-                        yDir[0] = u[0]*aMax + v[0]*bNew;
-                        yDir[1] = u[1]*aMax + v[1]*bNew;
-                        yDir[2] = u[2]*aMax + v[2]*bNew;
-                        VRIK_Norm3(yDir);
-                    }
-                }
-            }
-        }
-    }
+    if(!combatElbow)relaxedElbowPolicy(yDir);
 
     float newElbow[3] = {
         targetModel[0] + xDir[0]*xDist + yDir[0]*yDist,
@@ -1600,8 +1678,8 @@ void VRIK_SolveArm(uint8_t* boneBuf, int upperIdx, int foreIdx, int handIdx,
     // bicep roll, moving SHL/deltoid skin even with identical shoulder/hand targets.
     // The anatomical basis is used only as a LIMIT REFERENCE: extract how
     // far the basis solution would twist the segment vs the plain swing, and apply that roll
-    // only in EXTREMES -- 25deg dead zone, then eased, capped at 60deg (user: "бицепс только в
-    // крайнем случае должен подворачиваться").
+    // only in EXTREMES -- 25deg dead zone, then eased, capped at 60deg (the biceps should turn
+    // only as a last resort).
     float swingSource[4],swingAxis[3];
     std::copy_n(g_fkRot[upperIdx],4,swingSource);std::copy_n(curUp,3,swingAxis);
     const int referenceParent=g_VRBoneParent[upperIdx];
@@ -1638,32 +1716,31 @@ void VRIK_SolveArm(uint8_t* boneBuf, int upperIdx, int foreIdx, int handIdx,
     float identity[4] = { 0,0,0,1 };
     VRIK_WriteLocalRot(boneBuf, upperIdx, upParentModel ? upParentModel : identity, newUpModel);
 
-    // Forearm: hinge-consistent basis + LIGHT pronation: the forearm should only SLIGHTLY
-    // follow the wrist roll (user feedback: 0.7 was far too much) -- 25% of the hand's twist
-    // about the forearm axis, capped at 45deg; the rest stays in the wrist/hand.
+    // Share pronation with the wrist in the same way for skin and cyberware.
+    // A mechanical hand must follow its wrist target independently; rotating
+    // the whole forearm to compensate for a disconnected wrist is incorrect.
     float newForeModel[4];
     if (s_rigCap[sideI]) {
-        float fr0[4]; VRIK_QuatAlignTwo(s_axLocFore[sideI], s_hgLocFore[sideI], desFore, hDes, fr0);
-        float frc[4] = { -fr0[0], -fr0[1], -fr0[2], fr0[3] };
-        float rel[4]; VRIK_QuatMul(handModelRot, frc, rel); VRIK_QuatNorm(rel);
-        float tw[4];  VRIK_QuatExtractTwist(rel, desFore, tw);
-        float proj2 = tw[0]*desFore[0] + tw[1]*desFore[1] + tw[2]*desFore[2];
-        float angS2 = 2.0f * std::atan2(proj2, tw[3]);
-        float eff2 = angS2 * 0.25f;                            // light follow
-        const float kProCap = 0.7854f;                         // 45 deg
-        if (eff2 >  kProCap) eff2 =  kProCap;
-        if (eff2 < -kProCap) eff2 = -kProCap;
-        float s2 = std::sin(eff2 * 0.5f);
-        float aa2[4] = { desFore[0]*s2, desFore[1]*s2, desFore[2]*s2, std::cos(eff2 * 0.5f) };
-        VRIK_QuatMul(aa2, fr0, newForeModel); VRIK_QuatNorm(newForeModel);
+        VRIK_QuatAlignTwo(s_axLocFore[sideI], s_hgLocFore[sideI], desFore, hDes, newForeModel);
     } else {
-        // Until the hinge can be identified, this fallback still transports
-        // the native forearm and therefore needs its own native swing delta.
+        // Until the hinge can be identified, transport the native forearm.
         float nativeDelta[4];VRIK_QuatFromTo(curUp,desUp,nativeDelta);
         float foreBase[3]; VRIK_QuatRotateVec(nativeDelta, curFore, foreBase);
         float delta2[4]; VRIK_QuatFromTo(foreBase, desFore, delta2);
         float tmp[4]; VRIK_QuatMul(delta2, nativeDelta, tmp);
         VRIK_QuatMul(tmp, g_fkRot[foreIdx], newForeModel); VRIK_QuatNorm(newForeModel);
+    }
+    if (s_rigCap[sideI]) {
+        float inverse[4];VRIK_QuatConj(newForeModel,inverse);
+        float relative[4];VRIK_QuatMul(handModelRot,inverse,relative);VRIK_QuatNorm(relative);
+        float twist[4];VRIK_QuatExtractTwist(relative,desFore,twist);
+        const float projected=twist[0]*desFore[0]+twist[1]*desFore[1]+twist[2]*desFore[2];
+        const float angle=2.0f*std::atan2(projected,twist[3]);
+        const float applied=std::clamp(angle*.25f,-.7854f,.7854f);
+        const float sine=std::sin(applied*.5f);
+        const float roll[4]={desFore[0]*sine,desFore[1]*sine,desFore[2]*sine,std::cos(applied*.5f)};
+        float rotated[4];VRIK_QuatMul(roll,newForeModel,rotated);
+        std::copy_n(rotated,4,newForeModel);VRIK_QuatNorm(newForeModel);
     }
     VRIK_WriteLocalRot(boneBuf, foreIdx, newUpModel, newForeModel);
 
@@ -1689,7 +1766,7 @@ void VRIK_SolveArm(uint8_t* boneBuf, int upperIdx, int foreIdx, int handIdx,
     // Hand orientation written local to the new forearm.
     VRIK_WriteLocalRot(boneBuf, handIdx, newForeModel, handModelRot);
 
-    // HAND PIN (hand == target EXACTLY, user principle "кисть = gizmo, остальное подстраивается").
+    // HAND PIN (hand == target EXACTLY: the hand is the gizmo, the rest adapts).
     // The two-bone solve lands short whenever the avatar arm and the real reach disagree; instead
     // of letting the wrist float off the gizmo, write the hand bone's parent-local TRANSLATION so
     // the wrist sits ON the target. The visual forearm segment stretches/shrinks within anatomical
@@ -1730,7 +1807,7 @@ void VRIK_SolveArm(uint8_t* boneBuf, int upperIdx, int foreIdx, int handIdx,
 //
 // The controller pose in shared memory is HMD-local, exactly like the visible gizmo hands.
 // hmdRel rotates it back into the recenter/body frame so the hand target stays in place when
-// the user turns their head. The shoulder pivot comes from auto-calibration in the same body
+// the player turns their head. The shoulder pivot comes from auto-calibration in the same body
 // frame (OpenXR axes: X right, Y up, Z back) instead of from the animated head bone; deriving
 // it from the head bone made the wrist target inherit small head-animation arcs.
 //
@@ -1843,7 +1920,7 @@ void VRIK_BuildHandTarget(const float* shoulderModelPos,
         controllerBody[2] - shoulderBody[2]
     };
 
-    // 4. Axis-swap OpenXR -> game body, then scale by user's arm-length ratio.
+    // 4. Axis-swap OpenXR -> game body, then scale by the player's arm-length ratio.
     float mapLocal[3] = {
          handFromShoulderBody[0] * s,
         -handFromShoulderBody[2] * s,
@@ -2029,7 +2106,7 @@ bool VRIK_ComputeCamModel(float* outPos, float* outRot, float* outEntityQuat,
                         VRIK_QuatNorm(currentEntQ);
                         float invCurrentEnt[4]; VRIK_QuatConj(currentEntQ, invCurrentEnt);
 
-                        float viewYaw = 2.0f * std::atan2(wz, ww) - BodyYawFollowOffset();
+                        float viewYaw = BodyTrackingYaw(2.0f * std::atan2(wz, ww));
                         const float yawQ[4] = { 0.0f, 0.0f,
                                                 std::sin(viewYaw * 0.5f),
                                                 std::cos(viewYaw * 0.5f) };
@@ -2135,7 +2212,7 @@ static inline void VRIK_BuildHandTargetGizmo(const float* camModelPos, const flo
 
 // Arm-length calibration. A bone's parent-local translation IS its segment length, so the
 // avatar arm length = |foreArm.translation| (upper-arm) + |hand.translation| (forearm).
-// We scale those two translations so the avatar arm length matches the user's T-pose-measured
+// We scale those two translations so the avatar arm length matches the player's T-pose-measured
 // arm length: a straight real arm then yields a straight avatar arm at the 1:1 gizmo target
 // (fixes "arm down but elbow still bent"). Hand + fingers keep their normal size.
 static inline float VRIK_ArmScale(uint8_t* boneBuf, int foreIdx, int handIdx, float userArmLen) {
@@ -2200,7 +2277,7 @@ void VRIK_ScaleArmBonesFromRest(uint8_t* boneBuf, uintptr_t trackBuf, int boneCo
 
     // Human shoulder->wrist split. The old uniform scale preserved the avatar's bad bicep/forearm
     // ratio; this gives each segment its own calibrated length while preserving its rest direction.
-    // Even 50/50 split. The user's real bicep/forearm are near-equal (~33/~35cm); 0.515 forearm
+    // Even 50/50 split. The measured real bicep/forearm are near-equal (~33/~35cm); 0.515 forearm
     // read as "forearm too long" in game (amplified by the reach stretch), and the old 0.52 bicep
     // read as bicep too long. Neutral 50/50 avoids both; revisit only if a clear asymmetry shows.
     float targetUpper = userArmLen * 0.50f;
@@ -2405,7 +2482,7 @@ static void VRIK_ApplyBodyBend(uint8_t* boneBuf,float angle,const float* headRot
     if(headBound)for(int k=0;k<3;++k)headBound=headBound && std::isfinite(headDeltaModel[k]);
     float eyeTarget[3]{};
     if(headBound)for(int k=0;k<3;++k)eyeTarget[k]=s_neutralEyeModel[k]+headDeltaModel[k]+
-        (k==2 ? initialPelvis[2]-s_referenceModelPos[hips][2]:0);
+        initialPelvis[k]-s_referenceModelPos[hips][k];
     auto fit=[&](const VrikTorsoCandidate& candidate,float* pelvis) {
         if(!candidate.valid)return 1e6f;
         for(int k=0;k<3;++k) {
@@ -2739,7 +2816,8 @@ bool VRIK_PlaceSwimmingBody(uint8_t* boneBuf,const float* cameraTarget,const flo
 // Camera alignment is a separate neutral-neck mount, not an animated measurement.
 void VRIK_PlaceBodyUnderHMD(uint8_t* boneBuf,
                                           const float* camModelPos, const float* camModelRot,
-                                          int headIdx, const float* /*bodyFwd*/,const float* pairedHeadDeltaModel) {
+                                          int headIdx, const float* /*bodyFwd*/,const float* pairedHeadDeltaModel,
+                                          const float* bodyOrbitModel) {
     if(headIdx<0 || headIdx>=g_VRBoneCount || !g_VRHeadReferenceValid)return;
     VRIK_BeginBodySolve(boneBuf);
     const float bendAngle=SharedPose(115)==2.0f ? SharedPose(114):0;
@@ -2798,6 +2876,12 @@ void VRIK_PlaceBodyUnderHMD(uint8_t* boneBuf,
             // the knees instead of translating the feet below the ground.
             s_referenceModelPos[hips][2]+camModelPos[2]-s_referenceCameraHeight-
                 (bendAngle>1e-5f ? 0.0f:squatDrop)};
+        // Calibration stays at the physical tracking origin. Place the avatar
+        // about that optical centre in model space; never move the camera to
+        // follow a pelvis rotation. All native leg local animation is retained.
+        if(bodyOrbitModel && std::isfinite(bodyOrbitModel[0]) && std::isfinite(bodyOrbitModel[1])) {
+            target[0]+=bodyOrbitModel[0];target[1]+=bodyOrbitModel[1];
+        }
         VRIK_WriteLocalPos(boneBuf,hips,parent>=0 ? g_fkPos[parent]:zero,
                           parent>=0 ? g_fkRot[parent]:id,target);
         VRIK_WriteLocalRot(boneBuf,hips,parent>=0 ? g_fkRot[parent]:id,s_referenceModelRot[hips]);

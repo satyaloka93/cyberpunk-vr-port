@@ -18,12 +18,15 @@ constexpr uint32_t RecordCapacity=256,PacketCapacity=262144,MaxSpanPackets=32768
 struct Ticket { uint64_t epoch{}; uint32_t index=UINT32_MAX; };
 // Bounded, opt-in snapshot of native sorted packets before their consumption.
 // Stored addresses are diagnostic identities only; no game pointer is reused.
-void FrameBoundary();
+void FrameBoundary(bool liveInputs=false);
 Ticket Begin(uint32_t node,int side,const void* renderer,const void* arguments,const void* span);
 void End(Ticket);
 }
 extern "C" {
 __declspec(dllexport) extern uint32_t CyberpunkVR_GeometryPacketRecordBytes;
+// 0=not checked, 1=expected native prologue, 2=unsupported executable.
+// Compatibility alone is not proof that hook installation succeeded.
+__declspec(dllexport) extern std::atomic<uint32_t> CyberpunkVR_GeometryPacketHookCompatible;
 __declspec(dllexport) extern std::atomic<uint32_t> CyberpunkVR_GeometryPacketRequest,CyberpunkVR_GeometryPacketState;
 __declspec(dllexport) extern std::atomic<uint32_t> CyberpunkVR_GeometryPacketSeq,CyberpunkVR_GeometryPacketCount,CyberpunkVR_GeometryPacketDataCount;
 __declspec(dllexport) extern cvr::stereo::packets::Record CyberpunkVR_GeometryPacketRecords[cvr::stereo::packets::RecordCapacity];

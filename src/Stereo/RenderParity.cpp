@@ -1,8 +1,11 @@
 #include "Stereo/RenderParity.hpp"
+#include "Stereo/VrcamConfig.hpp"
+#include "Render/StageReplay.hpp"
 #include "Stereo/FogHistory.hpp"
 #include "Stereo/StereoInternal.hpp"
 #include "Stereo/EngineRvas.hpp"
 #include "Stereo/DetourRegistry.hpp"
+#include "Render/NativeDefinitionTracking.hpp"
 #include "Camera/PoseIdentity.hpp"
 #include "Camera/CameraState.hpp"
 #include "Framegen/Inputs.hpp"
@@ -23,6 +26,10 @@ __declspec(dllexport) int CyberpunkVR_RenderCachePerEye=1;
 __declspec(dllexport) int CyberpunkVR_EarlyAaMode=1;
 __declspec(dllexport) int CyberpunkVR_FogHistorySync=1;
 __declspec(dllexport) int CyberpunkVR_SkyRadianceSync=1;
+__declspec(dllexport) int CyberpunkVR_OpticsSkyRadianceSync=1;
+__declspec(dllexport) float CyberpunkVR_OpticsSkyRadianceDebug[8]{};
+__declspec(dllexport) uint32_t CyberpunkVR_OpticsSkyRadianceSeq{};
+__declspec(dllexport) std::atomic<uint64_t> CyberpunkVR_OpticsSkyRadianceWrites{};
 __declspec(dllexport) int CyberpunkVR_RenderParityDebugCapture=0;
 // gated: cache salts / AA MAIN / AA swaps / AA misses / fog MAIN / fog applied /
 // fog different frame-or-owner / fog invalid pose / fog recycled resource / fog same handle
@@ -36,6 +43,15 @@ __declspec(dllexport) float CyberpunkVR_SkyRadianceDebug[8]{}; // native VRCAM /
 // Publications / borrows / unavailable / incompatible / upload failure /
 // camera observations / grid observations / invalid grids.
 __declspec(dllexport) std::atomic<uint64_t> CyberpunkVR_FogReprojectionCounters[8]{};
+// Gated, per view (MAIN, VRCAM): the fog camera's P20, P21 and camera[51] (the NDC jitter). P2x minus
+// the jitter is the projection's off-centre shift, which the borrowed fog history must keep.
+__declspec(dllexport) float CyberpunkVR_FogCameraDebug[2][4]{};
+// History borrows refused because the two views' froxel grids span different frusta (FogHistory.hpp).
+__declspec(dllexport) std::atomic<uint64_t> CyberpunkVR_FogFrustumMismatch{};
+// Gated, per view: the volumetric-fog node's whole camera constants (212 floats) and the prepare-scene
+// fog constants (396 floats) as last seen -- to tell which fields carry the frustum.
+__declspec(dllexport) float CyberpunkVR_FogCameraDump[2][212]{};
+__declspec(dllexport) float CyberpunkVR_FogConstantsDump[2][396]{};
 }
 #define CVR_PARITY_DIAGNOSTIC(...) do { if(CyberpunkVR_RenderParityDebugCapture || ::cvr::RuntimeDiagnosticsEnabled()) { __VA_ARGS__; } } while(false)
 
@@ -49,7 +65,7 @@ std::mutex aaMutex,fogMutex;
 AaSample mainAa;
 SkyRadianceSample mainSkyRadiance;
 struct FogGridSample {RenderOwner owner{};uint32_t frame{};FogGrid grid{};bool valid{};};
-struct FogSource {FogSample sample{};FogProjection projection{};FogGrid grid{};bool valid{};};
+struct FogSource {FogSample sample{};FogProjection projection{};FogGrid grid{};bool valid{};FogProjection frustum{};};
 FogSource mainFog;
 FogGridSample fogGrids[2];
 struct FogWork {FogCamera camera{};RenderOwner owner{};uint32_t frame{},scatteringOutput{};uint64_t pose{};bool cameraValid{};};
@@ -109,7 +125,8 @@ uint64_t GraphKey(uint32_t frame,uint64_t hash,uintptr_t caller) {
     // the same render frame. Nested/other lookups keep their original key.
     if(CyberpunkVR_RenderCachePerEye && prepared.valid && frame==prepared.frame &&
        caller==reinterpret_cast<uintptr_t>(g_exe_base)+0x219B32 &&
-       prepared.name && prepared.name==g_vrcam_ctx_key.load(std::memory_order_acquire)) {
+       prepared.name && (prepared.name==g_vrcam_ctx_key.load(std::memory_order_acquire) ||
+                         prepared.name==cvr::cname_hash("vr_optics_feed"))) {
         // Do not split the startup/menu graph before a live stereo player and
         // MAIN's AA configuration are known. Otherwise a cache entry can be
         // built from provisional feature bits and reused after initialization.
@@ -122,6 +139,9 @@ uint64_t GraphKey(uint32_t frame,uint64_t hash,uintptr_t caller) {
             CVR_PARITY_DIAGNOSTIC(++CyberpunkVR_RenderParityCounters[0]);
         }
     }
+    // Graphs built while a graph-builder patch is active must not share cache entries with the
+    // native ones, or a cached graph would hide (or keep) the patch (Render/StageReplay.cpp).
+    if(caller==reinterpret_cast<uintptr_t>(g_exe_base)+0x219B32)hash^=cvr::stereo::stage_replay::GraphSalt();
     return hash;
 }
 bool CacheSiteMatches() {
@@ -192,6 +212,13 @@ int64_t __fastcall BindFogHistory(uint32_t slot,uint32_t* handle,uintptr_t unuse
         CVR_PARITY_DIAGNOSTIC(++CyberpunkVR_FogReprojectionCounters[2]);
         return originalFogSrv(slot,handle,unused,mip,stage);
     }
+    {
+        FogProjection own{};
+        if(!FogFrustum(fogWork.camera,own) || !SameFogFrustum(own,source.frustum)) {
+            CyberpunkVR_FogFrustumMismatch.fetch_add(1,std::memory_order_relaxed);
+            return originalFogSrv(slot,handle,unused,mip,stage);
+        }
+    }
     FogAllocation live{},scattering{},integrated{};
     FogCamera patched{};
     if(!Allocation(source.sample.handle,live) || !Allocation(fogWork.scatteringOutput,scattering) ||
@@ -211,8 +238,11 @@ int64_t __fastcall BindFogHistory(uint32_t slot,uint32_t* handle,uintptr_t unuse
 }
 CVR_DETOUR("[render-parity] reproject MAIN fog history",0x1FABD0,BindFogHistory,originalFogSrv);
 }
-extern "C" uint64_t CvrRenderGraphKey(uint32_t frame,uint64_t hash,uintptr_t caller) {
-    return GraphKey(frame,hash,caller);
+bool RenderGraphCacheObservationInstalled(){return g_cvrDetourReg_CvrRenderGraphCacheDetour.installed;}
+extern "C" uint64_t CvrRenderGraphKey(uint32_t frame,uint64_t hash,uintptr_t caller,uintptr_t cache,uint32_t views,uintptr_t missed) {
+    const auto key=GraphKey(frame,hash,caller);
+    definition_tracking::BeforeCacheLookup(cache,frame,key,views,missed,caller);
+    return key;
 }
 void ClearPreparedGraph(){prepared={};}
 void ObservePreparedGraph(uintptr_t manager) {
@@ -238,14 +268,23 @@ int64_t ComputeFlagsWithMainAa(FlagComputeFn original,void* a1,int64_t a2,int64_
                 mainAa={owner,frame,mode,true};CVR_PARITY_DIAGNOSTIC(++CyberpunkVR_RenderParityCounters[1]);
                 mainSkyRadiance={owner,nativeSky,frame,skyValid};
                 CVR_PARITY_DIAGNOSTIC(if(skyValid)++CyberpunkVR_SkyRadianceCounters[0]);
-            } else if(name==owner.eyeName) {
+            } else if(name==owner.eyeName || name==cvr::cname_hash("vr_optics_feed")) {
+                const bool optics=name==cvr::cname_hash("vr_optics_feed");
                 const bool available=mainAa.Read(owner,frame,desired);
                 const bool apply=available && CyberpunkVR_EarlyAaMode && CyberpunkVR_StreamlineHistoryFix;
                 if(ready)*ready=apply;
                 change=apply && mode!=desired;
                 if(!available)CVR_PARITY_DIAGNOSTIC(++CyberpunkVR_RenderParityCounters[3]);
                 const bool skyAvailable=skyValid && mainSkyRadiance.Read(owner,frame,desiredSky);
-                changeSky=CyberpunkVR_SkyRadianceSync && skyAvailable && nativeSky!=desiredSky;
+                changeSky=CyberpunkVR_SkyRadianceSync && (!optics || CyberpunkVR_OpticsSkyRadianceSync) &&
+                    skyAvailable && nativeSky!=desiredSky;
+                if(optics) {
+                    ++CyberpunkVR_OpticsSkyRadianceSeq;
+                    std::memcpy(CyberpunkVR_OpticsSkyRadianceDebug,nativeSky.data(),sizeof(nativeSky));
+                    std::memcpy(CyberpunkVR_OpticsSkyRadianceDebug+4,desiredSky.data(),sizeof(desiredSky));
+                    ++CyberpunkVR_OpticsSkyRadianceSeq;
+                    if(changeSky)++CyberpunkVR_OpticsSkyRadianceWrites;
+                }
                 CVR_PARITY_DIAGNOSTIC(
                     if(!skyAvailable)++CyberpunkVR_SkyRadianceCounters[2];
                     ++CyberpunkVR_SkyRadianceDebugSeq;
@@ -296,6 +335,7 @@ void ObserveFogConstants(uint32_t size,const void* source) {
     if(size==1584 && t_current_node_work==base+PREPARE_SCENE_NODE_WORK_RVA) {
         std::array<uint8_t,1584> constants{};FogGrid grid{};
         const bool valid=ReadBytes(reinterpret_cast<uintptr_t>(source),constants.data(),constants.size()) && ReadFogGrid(constants.data(),grid);
+        CVR_PARITY_DIAGNOSTIC(std::memcpy(CyberpunkVR_FogConstantsDump[t_view_side],constants.data(),constants.size()));
         std::lock_guard lock(fogMutex);fogGrids[t_view_side]={owner,frame,grid,valid};
         CVR_PARITY_DIAGNOSTIC(++CyberpunkVR_FogReprojectionCounters[valid?6:7]);
     } else if(size==sizeof(FogCamera) && fogWorkContext) {
@@ -304,7 +344,12 @@ void ObserveFogConstants(uint32_t size,const void* source) {
             ReadBytes(reinterpret_cast<uintptr_t>(source),fogWork.camera.data(),sizeof(fogWork.camera)) &&
             FogCurrentProjection(fogWork.camera,projection);
         fogWork.owner=owner;fogWork.frame=frame;fogWork.pose=pose.poseId;
-        CVR_PARITY_DIAGNOSTIC(if(fogWork.cameraValid)++CyberpunkVR_FogReprojectionCounters[5]);
+        CVR_PARITY_DIAGNOSTIC(if(fogWork.cameraValid) {
+            ++CyberpunkVR_FogReprojectionCounters[5];
+            const float* c=fogWork.camera.data();float* d=CyberpunkVR_FogCameraDebug[t_view_side];
+            d[0]=c[34];d[1]=c[38];d[2]=c[kFogCameraJitter];d[3]=c[kFogCameraJitter+1];
+            std::memcpy(CyberpunkVR_FogCameraDump[t_view_side],c,sizeof(CyberpunkVR_FogCameraDump[0]));
+        });
     }
 }
 void SynchronizeFogHistory(uintptr_t registry,uint32_t* handle,uint32_t logicalId,uintptr_t caller) {
@@ -336,10 +381,10 @@ void SynchronizeFogHistory(uintptr_t registry,uint32_t* handle,uint32_t logicalI
     if(!valid) {mainFog={};CVR_PARITY_DIAGNOSTIC(++CyberpunkVR_RenderParityCounters[7]);return;}
     FogAllocation allocation{};
     if(t_view_side==0) {
-        const auto& grid=fogGrids[0];FogProjection projection{};
+        const auto& grid=fogGrids[0];FogProjection projection{},frustum{};
         if(grid.valid && grid.owner==owner && grid.frame==frame && Allocation(*handle,allocation) &&
-           FogCurrentProjection(fogWork.camera,projection)) {
-            mainFog={{owner,allocation,registry,pose.poseId,now,frame,*handle},projection,grid.grid,true};
+           FogCurrentProjection(fogWork.camera,projection) && FogFrustum(fogWork.camera,frustum)) {
+            mainFog={{owner,allocation,registry,pose.poseId,now,frame,*handle},projection,grid.grid,true,frustum};
             CVR_PARITY_DIAGNOSTIC(++CyberpunkVR_RenderParityCounters[4];++CyberpunkVR_FogReprojectionCounters[0]);
         } else {mainFog={};CVR_PARITY_DIAGNOSTIC(++CyberpunkVR_RenderParityCounters[8]);}
         return;

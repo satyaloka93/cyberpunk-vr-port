@@ -2,8 +2,10 @@
 #include <array>
 #include <algorithm>
 #include <cstdint>
+#include <atomic>
 #include <cmath>
 #include <mutex>
+#include <shared_mutex>
 #include <span>
 #include <unordered_map>
 
@@ -37,12 +39,17 @@ public:
         std::lock_guard lock(m_mutex);
         m_records.erase(address);
     }
+    // Every node dispatch of both eyes reads its camera here, from all render job threads at once.
+    // A shared lock lets those reads run side by side; with the exclusive one they queued and slept
+    // (city stack samples, 2026-10-09). The use stamp is the only thing a read writes: one past the
+    // latest store, so a camera read since then still outranks every record stored before it.
     Receipt Capture(uintptr_t address,const PoseFingerprint& fingerprint) const {
-        std::lock_guard lock(m_mutex);
+        std::shared_lock lock(m_mutex);
         const auto found=m_records.find(address);
         if(found==m_records.end() || found->second.fingerprint!=fingerprint)return {};
         auto& r=found->second;
-        r.lastUse=++m_lastUse;
+        const uint64_t use=m_clock.load(std::memory_order_relaxed)+1;
+        if(r.lastUse.value.load(std::memory_order_relaxed)!=use)r.lastUse.value.store(use,std::memory_order_relaxed);
         return {address,r.generation,r.fingerprint,r.payload};
     }
     // Capture before the engine copy; commit only after it returned. Reusing
@@ -90,21 +97,33 @@ public:
         return true;
     }
 private:
-    struct Record { uint64_t generation,lastUse;PoseFingerprint fingerprint;Payload payload; };
+    // Written by concurrent readers under the shared lock, so atomic; copied only under the exclusive one.
+    struct UseStamp {
+        std::atomic<uint64_t> value;
+        UseStamp(uint64_t v=0):value(v) {}
+        UseStamp(const UseStamp& other):value(other.value.load(std::memory_order_relaxed)) {}
+        UseStamp& operator=(const UseStamp& other) { value.store(other.value.load(std::memory_order_relaxed),std::memory_order_relaxed);return *this; }
+    };
+    struct Record { uint64_t generation;UseStamp lastUse;PoseFingerprint fingerprint;Payload payload; };
     void Store(uintptr_t address,const PoseFingerprint& fingerprint,const Payload& payload) {
         // A cached VRCAM descriptor can remain alive while thousands of MAIN
         // copies update a few other objects. Bound distinct objects, not the
         // number of publications: activity elsewhere must not expire its ID.
         if(!m_records.contains(address) && m_records.size()>=Capacity) {
             const auto oldest=std::min_element(m_records.begin(),m_records.end(),
-                [](const auto& a,const auto& b){ return a.second.lastUse<b.second.lastUse; });
+                [](const auto& a,const auto& b){ return a.second.lastUse.value.load(std::memory_order_relaxed)<
+                                                        b.second.lastUse.value.load(std::memory_order_relaxed); });
             m_records.erase(oldest);
         }
-        m_records.insert_or_assign(address,Record{++m_generation,++m_lastUse,fingerprint,payload});
+        // Stores step the clock by two, so the reads in between (clock + 1) rank above this store
+        // and below the next one.
+        const uint64_t stamp=m_clock.load(std::memory_order_relaxed)+2;
+        m_clock.store(stamp,std::memory_order_relaxed);
+        m_records.insert_or_assign(address,Record{++m_generation,UseStamp{stamp},fingerprint,payload});
     }
-    mutable std::mutex m_mutex;
+    mutable std::shared_mutex m_mutex;
     mutable std::unordered_map<uintptr_t,Record> m_records;
     uint64_t m_generation{};
-    mutable uint64_t m_lastUse{};
+    std::atomic<uint64_t> m_clock{};
 };
 }

@@ -2,6 +2,7 @@
 #include <d3d12sdklayers.h>
 #include <dxgi1_6.h>
 #include <vector>
+#include <algorithm>
 #include <cstring>
 #include <cstdio>
 #include <stdexcept>
@@ -9,6 +10,12 @@ using Microsoft::WRL::ComPtr;
 static void Check(HRESULT hr){if(FAILED(hr))throw std::runtime_error("D3D12 failure");}
 static void Require(bool v){if(!v)throw std::runtime_error("VRS snapshot mismatch");}
 int main() try {
+    const std::array<uint8_t,7> rates{0,1,4,5,6,9,10};std::vector<uint8_t> common;
+    for(const auto a:rates)for(const auto b:rates){const std::array<uint8_t,1> first{a},second{b};
+        Require(cvr::stereo::BuildFinerVrs(first,second,common) && common.size()==1 && (common[0]>>2)<=(a>>2) &&
+            (common[0]>>2)<=(b>>2) && (common[0]&3)<=(a&3) && (common[0]&3)<=(b&3) &&
+            std::find(rates.begin(),rates.end(),common[0])!=rates.end());}
+    const std::array<uint8_t,1> invalid{255};Require(!cvr::stereo::BuildFinerVrs(invalid,invalid,common) && common.empty());
     ComPtr<ID3D12Debug> debug;Check(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)));debug->EnableDebugLayer();
     ComPtr<IDXGIFactory6> factory;Check(CreateDXGIFactory1(IID_PPV_ARGS(&factory)));ComPtr<IDXGIAdapter1> adapter;Check(factory->EnumAdapterByGpuPreference(0,DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,IID_PPV_ARGS(&adapter)));
     ComPtr<ID3D12Device> device;Check(D3D12CreateDevice(adapter.Get(),D3D_FEATURE_LEVEL_12_0,IID_PPV_ARGS(&device)));ComPtr<ID3D12CommandAllocator> allocator;Check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,IID_PPV_ARGS(&allocator)));
@@ -26,6 +33,8 @@ int main() try {
     ComPtr<ID3D12Fence> fence;Check(device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&fence)));Check(queue->Signal(fence.Get(),1));HANDLE event=CreateEventW(nullptr,FALSE,FALSE,nullptr);Require(event!=nullptr);Check(fence->SetEventOnCompletion(1,event));const auto waited=WaitForSingleObject(event,5000);CloseHandle(event);Require(waited==WAIT_OBJECT_0);
     uint64_t differences{};std::array<std::array<uint64_t,16>,2> histogram{};Check(different.Read(differences,histogram));Require(differences==width*height && histogram[0][0]==width*height && histogram[1][5]==width*height);
     Check(frozen.Read(differences,histogram));Require(differences==0 && histogram[0][0]==width*height && histogram[1][0]==width*height);
+    std::vector<uint8_t> pixels;Check(different.ReadEye(1,pixels));Require(pixels.size()==width*height && std::all_of(pixels.begin(),pixels.end(),[](uint8_t x){return x==5;}));
+    Require(FAILED(different.ReadEye(1,pixels)));pixels.clear();Require(FAILED(different.ReadEye(2,pixels)));
     ComPtr<ID3D12InfoQueue> info;Check(device.As(&info));for(UINT64 i=0;i<info->GetNumStoredMessages();++i){SIZE_T n{};info->GetMessage(i,nullptr,&n);std::vector<char> data(n);auto* m=reinterpret_cast<D3D12_MESSAGE*>(data.data());info->GetMessage(i,m,&n);if(m->Severity<=D3D12_MESSAGE_SEVERITY_ERROR){std::fprintf(stderr,"%s\n",m->pDescription);throw std::runtime_error("D3D12 validation error");}}
     std::puts("PASS VRS image capture, preserved source copy, row padding and native state transitions");return 0;
 }catch(const std::exception& e){std::fprintf(stderr,"%s\n",e.what());return 1;}

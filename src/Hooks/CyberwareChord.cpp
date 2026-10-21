@@ -36,7 +36,7 @@ void cvr::input::DispatchCyberwareChord() {
     if(process!=GetCurrentProcessId())return;
     // Input Loader appends F18 to IconicCyberware_Button, with no UI override:
     // game context/cooldown still decides whether the ability may activate.
-    // Unlike E this private key survives a user's keyboard rebinding; unlike
+    // Unlike E this private key survives a player's keyboard rebinding; unlike
     // LB+RB it cannot leak the shoulders' scheme-specific actions.
     INPUT input[2]{};input[0].type=INPUT_KEYBOARD;input[0].ki.wVk=VK_F18;
     input[1]=input[0];input[1].ki.dwFlags=KEYEVENTF_KEYUP;

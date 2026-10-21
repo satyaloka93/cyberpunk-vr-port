@@ -7,7 +7,7 @@
 #include <vector>
 #include "Overlay/LauncherDialog.hpp"
 // Exercise the actual IAT handlers with fake cursor functions. The window test
-// runs on an unshown desktop and never clips or moves the user's real pointer.
+// runs on an unshown desktop and never clips or moves the real pointer.
 #include "../../src/Hooks/OsInput.cpp"
 
 volatile int g_verboseLog=0;
@@ -21,6 +21,13 @@ extern "C" UINT GetForcedSwapchainHeight(){return 4321;}
 extern "C" UINT GetForcedWindowWidth(){return 640;}
 extern "C" UINT GetForcedWindowHeight(){return 480;}
 extern "C" int GetMenuMode(){return 0;}
+// What OsInput.cpp asks of the desktop mirror and the swap chain since the desktop crop: there is no game
+// swap chain or monitor-placed window here, so nothing maps and nothing is placed.
+bool ComputeDesktopCoverTransform(UINT,UINT,UINT,UINT,DesktopCoverTransform& out){out={};return false;}
+bool GetDesktopPhysicalClientRect(HWND,RECT& rect,POINT& origin){rect={};origin={};return false;}
+bool GetDesktopMonitorWindowRect(HWND,RECT& rect,RECT*,RECT*){rect={};return false;}
+void FitRenderSizeInsideBounds(UINT w,UINT h,UINT,UINT,UINT& outW,UINT& outH){outW=w;outH=h;}
+extern "C" __declspec(dllexport) int CyberpunkVR_RuntimeDiagnostics=0;
 int savedWidth=2048,savedHeight=2048,savedHmd=0,savedRuntime=0,savedDebug=0,saves=0;
 extern "C" void SetWindowResolutionAndPersist(int w,int h){savedWidth=w;savedHeight=h;++saves;}
 extern "C" int GetCurrentWindowWidth(){return savedWidth;}
@@ -80,12 +87,23 @@ VOID CALLBACK Inspect(HWND,UINT,UINT_PTR,DWORD){
         if(mode==0) {
             Check(GetDlgItem(window,102) && GetDlgItem(window,104),"launcher controls missing");
             const auto headset=GetDlgItem(window,104);
-            Check(SendMessageW(headset,CB_GETCOUNT,0,0)==15,"headset count changed unexpectedly");
+            Check(SendMessageW(headset,CB_GETCOUNT,0,0)==16,"headset count changed unexpectedly");
             Check(ComboText(headset,3)==L"Pico4" && ComboText(headset,12)==L"Bigscreen Beyond 2/2e","existing headset IDs moved");
             Check(ComboText(headset,13)==L"Steam Frame" && ComboText(headset,14)==L"HP Reverb G2","new headset entries missing");
+            Check(ComboText(headset,15)==L"MeganeX superlight 8K","MeganeX superlight 8K entry missing");
+            // Steam Frame is selected last: the nearest-cost check below reads its ladder.
+            const auto meganex=Resolutions(window,15),quest3=Resolutions(window,2);
+            Check(meganex.size()==8 && meganex.front()==L"3824 x 3568 (cost of the 3552 x 3840 panel)" && meganex.back()==L"6216 x 5792","MeganeX superlight 8K resolution ladder incorrect");
+            Check(quest3.size()==10 && quest3[4]==L"2648 x 2864","Quest 3 resolution ladder incorrect");
             const auto pico=Resolutions(window,3),reverb=Resolutions(window,14),frame=Resolutions(window,13);
-            Check(pico==reverb && pico.size()==8,"Reverb G2 differs from Pico 4 resolutions");
-            Check(frame.size()==8 && frame.front()==L"2160 x 2160 (Native panel)" && frame.back()==L"6000 x 6000","Steam Frame resolution ladder incorrect");
+            Check(pico.size()==8 && pico.front()==L"2160 x 2160 (Native)","Pico 4 resolution ladder incorrect");
+            Check(reverb.size()==8 && reverb.front()==L"2192 x 2136 (cost of the 2160 x 2160 panel)" && reverb.back()==L"6080 x 5928","Reverb G2 resolution ladder incorrect");
+            Check(frame.size()==8 && frame.front()==L"2152 x 2168 (cost of the 2160 x 2160 panel)" && frame.back()==L"5984 x 6024","Steam Frame resolution ladder incorrect");
+            // a saved size no ladder of this headset offers selects the entry nearest in cost
+            Check(SendMessageW(GetDlgItem(window,101),CB_GETCURSEL,0,0)==2,"retired 2048x2048 did not select the Steam Frame entry nearest in cost");
+            int w=2464,h=2448;Check(SnapLauncherResolution(5,&w,&h)==1 && w==2256 && h==2672,"retired Crystal pick was not moved to the nearest cost");
+            Check(SnapLauncherResolution(5,&w,&h)==0 && w==2256 && h==2672,"a ladder entry was moved");
+            w=2648;h=2864;Check(SnapLauncherResolution(99,&w,&h)==0 && w==2648,"an unknown headset moved the pick");
             SelectHmd(window,1);
             SendMessageW(GetDlgItem(window,105),BM_SETCHECK,BST_CHECKED,0);
             SendMessageW(GetDlgItem(window,102),BM_CLICK,0,0);
@@ -95,13 +113,13 @@ VOID CALLBACK Inspect(HWND,UINT,UINT_PTR,DWORD){
             SelectHmd(window,13);
             SendMessageW(GetDlgItem(window,101),CB_SETCURSEL,4,0);
             SendMessageW(GetDlgItem(window,102),BM_CLICK,0,0);
-            Check(savedHmd==13 && savedWidth==3072 && savedHeight==3072,"Steam Frame selection was not saved");
+            Check(savedHmd==13 && savedWidth==3064 && savedHeight==3080,"Steam Frame selection was not saved");
         } else if(mode==4) {
             Check(SendMessageW(GetDlgItem(window,104),CB_GETCURSEL,0,0)==13 && SendMessageW(GetDlgItem(window,101),CB_GETCURSEL,0,0)==4,"Steam Frame selection did not reload");
             SelectHmd(window,14);
             SendMessageW(GetDlgItem(window,101),CB_SETCURSEL,7,0);
             SendMessageW(GetDlgItem(window,102),BM_CLICK,0,0);
-            Check(savedHmd==14 && savedWidth==6000 && savedHeight==6000,"Reverb G2 selection was not saved");
+            Check(savedHmd==14 && savedWidth==6080 && savedHeight==5928,"Reverb G2 selection was not saved");
         } else {
             Check(SendMessageW(GetDlgItem(window,104),CB_GETCURSEL,0,0)==14 && SendMessageW(GetDlgItem(window,101),CB_GETCURSEL,0,0)==7,"Reverb G2 selection did not reload");
             PostMessageW(window,WM_CLOSE,0,0);
@@ -140,6 +158,6 @@ int main()try {
     UnregisterClassW(failed.lpszClassName,failed.hInstance);
     DestroyWindow(g_gameHwnd);g_gameHwnd=nullptr;UnregisterClassW(gameClass.lpszClassName,gameClass.hInstance);
     Check(SetThreadDesktop(originalDesktop),"cannot restore test thread desktop");CloseDesktop(desktop);
-    std::cout<<"PASS Steam Frame/Reverb G2 presets and saved IDs, Unicode title, topmost, hidden fullscreen owner, input passthrough, start/close/quit, reentry and creation failure\n";
+    std::cout<<"PASS window-shaped Steam Frame/Reverb G2/MeganeX ladders, nearest-cost snap of retired picks, saved IDs, Unicode title, topmost, hidden fullscreen owner, input passthrough, start/close/quit, reentry and creation failure\n";
     return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}

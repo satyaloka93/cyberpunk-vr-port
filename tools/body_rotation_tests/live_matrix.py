@@ -285,7 +285,7 @@ class Probe:
   except BaseException as e:error=repr(e)
   finally:
    # Restore poses before returning the original mode; only its own setting is
-   # replaced, preserving any other settings changed by the user in the meantime.
+   # replaced, preserving any other settings changed by hand in the meantime.
    try:
     self.clear_pending()
     if self.alive():

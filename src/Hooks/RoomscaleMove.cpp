@@ -2,6 +2,7 @@
 // Inject displacement at the already-buffered native CCT boundary. The original
 // move owns contacts, steps, gravity, backend velocity and entity propagation.
 #include "Hooks/RoomscaleMove.hpp"
+#include "Hooks/BodyHeading.hpp"
 #include "Hooks/RoomscaleSites.hpp"
 #include "Hooks/RoomscaleEligibility.hpp"
 #include "Hooks/SwimmingInput.hpp"
@@ -130,7 +131,7 @@ uintptr_t __fastcall Move(void* backend, float* displacement, float dt) {
     NativeState before{};
     const bool nativeOk = ReadNative(backend, &before);
     const bool allowed = nativeOk && before.enabled && GameplayAllowed();
-    const float yaw = TrackingYaw(before.yaw, BodyYawFollowOffset());
+    const float yaw = BodyTrackingYaw(before.yaw);
     Step step{};
     const bool waterMode=cvr::swimming::Active();
     {
@@ -308,6 +309,7 @@ void SetPlayer(uintptr_t player) {
     CyberpunkVR_EngineBodyYawValid = 0;
     CyberpunkVR_PlayerEntityValid = 0;
     BodyYawFollowRelease();
+    BodyHeadingReset();
     Log("Roomscale: player identity -> %p, tracking baseline reset.\n", reinterpret_cast<void*>(player));
 }
 

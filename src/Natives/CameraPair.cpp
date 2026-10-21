@@ -273,7 +273,7 @@ void SetVRPlayerYaw(RED4ext::IScriptable* aContext, RED4ext::CStackFrame* aFrame
     bool pairAccepted = false;
     {
         // SPRINT-TRANSIENT AUTO-FREEZE. The manual Log VR Diag click requires the CET
-        // overlay, which blocks movement -- by the time the user stops, opens it and
+        // overlay, which blocks movement -- by the time the player stops, opens it and
         // clicks, the sprint has rolled out of the 256-push (~4.3s) ring (a dump full
         // of standing frames proved it). So: when the entity speed EMA [132..133]
         // falls through 3.5 m/s (sprint stop), record 90 more pushes (~1.5s of stop
@@ -321,7 +321,7 @@ void SetVRPlayerYaw(RED4ext::IScriptable* aContext, RED4ext::CStackFrame* aFrame
     // no seq advance -- publishing "loc=(0,0,0), valid" once made dxgi apply
     // held = entity - camera => the view sank to the feet; publishing entity=(0,0,0)
     // wasted dxgi latch ticks. (No published-pair channel anymore either: the view
-    // runs purely on dxgi's own filter -- user-verified as the stable configuration.)
+    // runs purely on dxgi's own filter -- verified in the headset as the stable configuration.)
     const bool degeneratePush =
         (camX == 0.0f && camY == 0.0f && camZ == 0.0f &&
          entX == 0.0f && entY == 0.0f && entZ == 0.0f);
@@ -332,7 +332,7 @@ void SetVRPlayerYaw(RED4ext::IScriptable* aContext, RED4ext::CStackFrame* aFrame
         // FPP camera ~0.20m AHEAD of the entity -- pair = (-0.155,-0.126,1.6) -- and at
         // sprint stop that lead collapses to (0,0) in ~0.13s. Anchor, IK targets, hand
         // and shoulder all rode that 20cm swing 1:1 (tgtY 0.297->0.093, shY -0.155->
-        // -0.356): the whole body+hands LURCH around the user's stationary real head =
+        // -0.356): the whole body+hands LURCH around the player's stationary real head =
         // the sprint start/stop body/hands dive (world provably stable meanwhile).
         // Steady states are exact by construction (limiter passes constants); only the
         // swing RATE is capped to ~0.5 m/s, stretching the 20cm transition into a soft
@@ -389,7 +389,7 @@ void SetVRPlayerYaw(RED4ext::IScriptable* aContext, RED4ext::CStackFrame* aFrame
         // ENTITY VELOCITY + PUSH TIMESTAMP ([132..136]) for the synthetic-view
         // extrapolation: the view is built from the PUSHED entity while the skeleton
         // renders at the engine's (fresher) entity transform -- during strafe/run the
-        // WHOLE BODY led the view by v*dt (~2cm, user-confirmed). dxgi extrapolates
+        // WHOLE BODY led the view by v*dt (~2cm, confirmed in the headset). dxgi extrapolates
         // ent + v*(tFinalCam - tPush) with the same-process QPC clock.
         {
             static LARGE_INTEGER s_qpf = { 0 };
@@ -425,7 +425,7 @@ void SetVRPlayerYaw(RED4ext::IScriptable* aContext, RED4ext::CStackFrame* aFrame
         // Publish the clean pair on [128..131]. NOT [124..127]: those belong to
         // openxr_manager (HMD position [124..126] + the hands-snapshot SEQLOCK [127]) --
         // writing there clobbered the pair (seq stayed 0, dxgi never saw it and fell
-        // back to its leaky own-filter: the kicks the user kept seeing) AND corrupted
+        // back to its leaky own-filter: the kicks that kept showing) AND corrupted
         // the hands seqlock. Order: velocity/timestamp, then pair [128..131], then
         // entity+seq [96..99].
         if (g_VRCamPairValid) {

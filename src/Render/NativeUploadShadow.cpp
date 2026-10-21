@@ -11,8 +11,9 @@ std::atomic<uint64_t> target{};
 uint64_t resourceId{},size{};bool rejected{};UploadShadow shadow;
 }
 void Watch(uint64_t gpu,uint64_t resource,uint64_t bytes){
-    std::lock_guard lock(mutex);target.store(0,std::memory_order_release);shadow.Reset();resourceId=0;size=0;rejected=false;
+    std::lock_guard lock(mutex);target.store(0,std::memory_order_release);resourceId=0;size=0;rejected=false;
     if(gpu && resource && bytes && bytes<=UploadShadow::Limit){resourceId=resource;size=bytes;shadow.Reset(size);target.store(gpu,std::memory_order_release);}
+    else shadow.Reset();
 }
 void Stop(){std::lock_guard lock(mutex);target.store(0,std::memory_order_release);shadow.Reset();}
 bool Active(){return target.load(std::memory_order_relaxed)!=0;}

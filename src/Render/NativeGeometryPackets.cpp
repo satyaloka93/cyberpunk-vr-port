@@ -1,6 +1,8 @@
 #include "Render/NativeGeometryPackets.hpp"
 #include "Render/NativePacketInputs.hpp"
 #include "Render/NativeUploadShadow.hpp"
+#include "Render/NativePreparation.hpp"
+#include "Render/NativeDrawOrigin.hpp"
 #include <windows.h>
 #include <algorithm>
 #include <cstring>
@@ -10,6 +12,7 @@
 
 extern "C" {
 __declspec(dllexport) uint32_t CyberpunkVR_GeometryPacketRecordBytes=sizeof(cvr::stereo::packets::Record);
+__declspec(dllexport) std::atomic<uint32_t> CyberpunkVR_GeometryPacketHookCompatible{0};
 __declspec(dllexport) std::atomic<uint32_t> CyberpunkVR_GeometryPacketRequest{0},CyberpunkVR_GeometryPacketState{0};
 __declspec(dllexport) std::atomic<uint32_t> CyberpunkVR_GeometryPacketSeq{0},CyberpunkVR_GeometryPacketCount{0},CyberpunkVR_GeometryPacketDataCount{0};
 __declspec(dllexport) cvr::stereo::packets::Record CyberpunkVR_GeometryPacketRecords[cvr::stereo::packets::RecordCapacity]{};
@@ -19,6 +22,8 @@ __declspec(dllexport) uint32_t CyberpunkVR_GeometryPacketInputBytes=sizeof(cvr::
 __declspec(dllexport) uint64_t CyberpunkVR_GeometryPacketInputs{};
 __declspec(dllexport) uint64_t CyberpunkVR_GeometryPacketInputBlob{};
 __declspec(dllexport) std::atomic<uint32_t> CyberpunkVR_GeometryPacketInputBlobBytes{0};
+__declspec(dllexport) std::atomic<uint32_t> CyberpunkVR_GeometryOriginMode{1},CyberpunkVR_GeometryOriginCompatible{},CyberpunkVR_GeometryOriginVerified{};
+__declspec(dllexport) std::atomic<uint64_t> CyberpunkVR_GeometryOriginStats[4]{};
 }
 namespace cvr::stereo::packets {
 namespace {
@@ -28,6 +33,7 @@ uint32_t frame{},limit{};
 std::vector<Inputs> inputs;
 std::vector<uint8_t> inputBlob;
 bool resolveInputs{};
+thread_local DrawOriginStack drawOrigins;
 constexpr uint32_t MaxInputPackets=65536;
 bool Read(uint64_t address,void* destination,size_t size) {
     SIZE_T read{};
@@ -105,7 +111,88 @@ void NativeGroup(Record& row) {
     } __except(EXCEPTION_EXECUTE_HANDLER) {}
 }
 }
-void FrameBoundary() {
+bool ResolveLive(uint64_t renderer,std::span<const Packet> packets,std::vector<Inputs>& result,std::vector<uint8_t>& blob,bool geometryOnly){
+    uint64_t global{},pool{},actual{};const auto game=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    if(packets.size()>MaxSpanPackets || !Read(game+0x3427C00,&global,8) || !global || global>UINT64_MAX-0x4630 ||
+        !Read(global+0x80,&actual,8) || actual!=renderer || !Read(global+0x4628,&pool,8))return false;
+    auto uploaded=Uploaded(renderer);if(!uploaded.cpu)uploaded.cpu=upload_shadow::AddressTag;
+    result.clear();blob.clear();result.reserve(packets.size());
+    for(const auto packet:packets)result.push_back(ResolveDetails(packet,pool,uploaded,ReadInput,&uploaded,blob,geometryOnly));
+    return true;
+}
+static bool DrawGeometryCompatible(uint32_t stride){
+    static const auto compatible=[]{
+        struct Region {uint32_t rva,bytes;uint64_t hash;};
+        // Exclude the existing 15-byte consumer detour, not its body.
+        const Region ordinary[]{{0x1F191C,0x168,0x39E2FE24CD281FF6ull},{0x1F1217,0x705,0xBDB700C0C672A4B3ull}};
+        // The separate skin flush consumes batch+0x1C and binds stride 64;
+        // its gather selects that stream using packet.second bit 50.
+        const Region skinned[]{{0x1F020C,0xD8,0x5DF4615192476948ull},{0x1F1A88,0x3B9,0x85E35E0963682F91ull}};
+        std::array<uint8_t,2048> data{};const auto game=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+        const auto verify=[&](const auto& regions){
+            for(const auto& region:regions){if(!Read(game+region.rva,data.data(),region.bytes))return false;
+                uint64_t hash=14695981039346656037ull;for(UINT i=0;i<region.bytes;++i)hash=(hash^data[i])*1099511628211ull;
+                if(hash!=region.hash)return false;}
+            return true;
+        };
+        return std::array{verify(ordinary),verify(skinned)};
+    }();
+    return compatible[0] && (stride==48 || (stride==64 && compatible[1]));
+}
+static bool LegacyDrawGeometry(uint64_t renderer,uint32_t instances,uint32_t stride,std::array<uint8_t,64>& output){
+    if(!renderer || !instances || !DrawGeometryCompatible(stride))return false;
+    __try {
+        const auto game=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));CONTEXT context{};RtlCaptureContext(&context);
+        ULONG_PTR low{},high{};GetCurrentThreadStackLimits(&low,&high);
+        for(UINT depth=0;depth<48 && context.Rsp>=low && context.Rsp<=high-8;++depth){
+            if(context.Rip==game+(stride==64?0x1F1A56:0x1F19DA)){
+                const DrawOrigin origin{context.Rsi,context.R14,context.Rbx,context.Rdi,context.R15,
+                    stride==64?instances:context.R12,true};
+                const auto read=[](void*,uint64_t address,void* out,size_t bytes){return Read(address,out,bytes);};
+                return ResolveOrigin(origin,renderer,instances,stride,read,nullptr,output);
+            }
+            DWORD64 image{};const auto entry=RtlLookupFunctionEntry(context.Rip,&image,nullptr);
+            if(entry){PVOID handler{};DWORD64 establisher{};RtlVirtualUnwind(UNW_FLAG_NHANDLER,image,context.Rip,entry,&context,&handler,&establisher,nullptr);}
+            else {if(!Read(context.Rsp,&context.Rip,8))return false;context.Rsp+=8;}
+        }
+    }__except(EXCEPTION_EXECUTE_HANDLER){}
+    return false;
+}
+void EnterDrawOrigin(DrawOrigin origin){drawOrigins.Enter(origin);}
+void LeaveDrawOrigin(){drawOrigins.Leave();}
+bool CurrentDrawGeometry(uint64_t renderer,uint32_t instances,uint32_t stride,std::array<uint8_t,64>& output){
+    if(!renderer || !instances || !DrawGeometryCompatible(stride))return false;
+    // The scoped thunk covers only 0x1F1FA8/0x1F19DA. Skinned batches call
+    // 0x1F020C/0x1F1A56 and use verified unwinding until a separate thunk exists.
+    if(stride==64){++CyberpunkVR_GeometryOriginStats[3];return LegacyDrawGeometry(renderer,instances,stride,output);}
+    const auto mode=CyberpunkVR_GeometryOriginMode.load(std::memory_order_relaxed);
+    const auto* origin=drawOrigins.Current();std::array<uint8_t,64> scoped{};
+    const auto read=[](void*,uint64_t address,void* out,size_t bytes){return Read(address,out,bytes);};
+    const bool valid=mode && CyberpunkVR_GeometryOriginCompatible==1 && origin && ResolveOrigin(*origin,renderer,instances,stride,read,nullptr,scoped);
+    if(mode==2 && CyberpunkVR_GeometryOriginVerified==1 && !CyberpunkVR_GeometryOriginStats[1] && valid){
+        ++CyberpunkVR_GeometryOriginStats[2];output=scoped;return true;
+    }
+    const bool legacy=LegacyDrawGeometry(renderer,instances,stride,output);
+    if(mode==1 && CyberpunkVR_GeometryOriginCompatible==1){
+        if(valid!=legacy || (valid && scoped!=output)){
+            ++CyberpunkVR_GeometryOriginStats[1];CyberpunkVR_GeometryOriginVerified=0;return false;
+        }
+        if(valid && ++CyberpunkVR_GeometryOriginStats[0]>=128 && !CyberpunkVR_GeometryOriginStats[1])CyberpunkVR_GeometryOriginVerified=1;
+    }else ++CyberpunkVR_GeometryOriginStats[3];
+    return legacy;
+}
+void FrameBoundary(bool liveInputs) {
+    static bool live{};
+    if(liveInputs){
+        uint64_t global{},renderer{};const auto game=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+        live=true;MappedInstances source{};
+        if(Read(game+0x3427C00,&global,8) && global && global<=UINT64_MAX-0x88 && Read(global+0x80,&renderer,8)){
+            source=Uploaded(renderer);
+        }
+        upload_shadow::Watch(source.cpu?0:source.gpu,source.resource,source.bytes);
+        return;
+    }
+    if(live){upload_shadow::Stop();live=false;}
     if(CyberpunkVR_GeometryPacketState.load(std::memory_order_relaxed)!=1 &&
        !CyberpunkVR_GeometryPacketRequest.load(std::memory_order_relaxed)) {
         if(!CyberpunkVR_GeometryPacketResolve.load(std::memory_order_relaxed) && (CyberpunkVR_GeometryPacketInputCount.load(std::memory_order_acquire) || upload_shadow::Active())) {
@@ -137,6 +224,7 @@ void FrameBoundary() {
     CyberpunkVR_GeometryPacketState.store(1,std::memory_order_release);
 }
 Ticket Begin(uint32_t node,int side,const void* renderer,const void* arguments,const void* span) {
+    if(preparation::Pairing())preparation::Consume(node,side,arguments,span);
     if(node!=0x23A938 || side<0 || side>1 || CyberpunkVR_GeometryPacketState.load(std::memory_order_relaxed)!=1)return {};
     std::lock_guard lock(mutex);
     if(CyberpunkVR_GeometryPacketState.load(std::memory_order_relaxed)!=1)return {};

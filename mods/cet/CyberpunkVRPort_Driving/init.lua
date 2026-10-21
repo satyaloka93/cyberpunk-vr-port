@@ -1,4 +1,4 @@
--- Read the user's gamepad range and remove model input slew only during a VR
+-- Read the player's gamepad range and remove model input slew only during a VR
 -- wheel grab. The model's steering limits, speed assists and tire physics stay
 -- native. Shared drive-model flats are restored when the grip/driver changes.
 local patch = nil

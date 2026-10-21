@@ -37,9 +37,14 @@ VSOut VSMain(uint vid : SV_VertexID) {
 }
 )";
 
+// g_uvRect: the source sub-rectangle (u0,v0,u1,v1) stretched over the target; (0,0,1,1) is the plain
+// copy. The desktop mirror's center crop uses it (Render/DesktopMirror.cpp).
 constexpr char kPsSource[] = R"(
 Texture2D<float4> g_color : register(t0);
 SamplerState g_linear : register(s0);
+cbuffer BlitParams : register(b0) {
+    float4 g_uvRect;
+};
 
 struct VSOut {
     float4 position : SV_Position;
@@ -47,7 +52,8 @@ struct VSOut {
 };
 
 float4 PSMain(VSOut input) : SV_Target {
-    float4 c = g_color.SampleLevel(g_linear, input.uv, 0.0);
+    float2 uv = lerp(g_uvRect.xy, g_uvRect.zw, input.uv);
+    float4 c = g_color.SampleLevel(g_linear, uv, 0.0);
     return float4(c.rgb, 1.0);
 }
 )";
@@ -128,6 +134,7 @@ cbuffer Params : register(b0) {
     float  panelBrightness;
     float  panelShadow;
     float  panelGlow;
+    float  panelEngineCurve;
 };
 
 // The engine's per-frame constants; frameConst[0].x is the time the flicker runs on. Taking it
@@ -172,6 +179,8 @@ float4 PSMain(VSOut input) : SV_Target {
     float  kBloomL  = cbOk ? hudConst[5].y  : bloomLod;
     float  kVideo   = cbOk ? hudConst[1].z  : 1.0;
     if(layerOnly > 0.5) {kShadowS*=panelShadow;kGlow*=panelGlow;kBloomG*=panelGlow;}
+    // The in-eye block's bend is zeroed under the asymmetric projection; the panel keeps the engine's.
+    if(layerOnly > 0.5 && panelEngineCurve > 0.5) kCurve = curvature;
 
     // Bisection switches -- see HudParams::debugMode.
     int   dbg    = (int)(debugMode + 0.5);
@@ -685,7 +694,8 @@ bool ColorBlit::RecordDot(ID3D12GraphicsCommandList* cmdList,
 
 bool ColorBlit::RecordBlit(ID3D12GraphicsCommandList* cmdList,
                            ID3D12Resource* srcColor,
-                           ID3D12Resource* dstColor) {
+                           ID3D12Resource* dstColor,
+                           float u0, float v0, float u1, float v1) {
     std::lock_guard<std::mutex> lock(m_mutex);
     if (!cmdList || !srcColor || !dstColor || !m_pso) return false;
 
@@ -725,6 +735,8 @@ bool ColorBlit::RecordBlit(ID3D12GraphicsCommandList* cmdList,
     ID3D12DescriptorHeap* heaps[] = { m_srvHeap.Get() };
     cmdList->SetDescriptorHeaps(1, heaps);
     cmdList->SetGraphicsRootDescriptorTable(0, srvGpu);
+    const float uvRect[4] = {u0, v0, u1, v1};
+    cmdList->SetGraphicsRoot32BitConstants(1, 4, uvRect, 0);
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
     cmdList->DrawInstanced(4, 1, 0, 0);
     return true;
@@ -900,7 +912,9 @@ bool ColorBlit::RecordOverlay(ID3D12GraphicsCommandList* cmdList,
     cmdList->SetDescriptorHeaps(1, heaps);
     cmdList->SetGraphicsRootDescriptorTable(0, srvGpu);
     const float white[4] = {1, 1, 1, 1};
-    cmdList->SetGraphicsRoot32BitConstants(1, 4, tint ? tint : white, 0);
+    // b0 is the tint for the overlay shaders but the uv rectangle for the blit one (mode 1).
+    const float fullRect[4] = {0, 0, 1, 1};
+    cmdList->SetGraphicsRoot32BitConstants(1, 4, pso == m_pso.Get() ? fullRect : (tint ? tint : white), 0);
     const float filter[4]={blurAxis==1 ? 1.0f/float(std::max<UINT64>(1,sd.Width>>sourceMip)) : 0,
                            blurAxis==2 ? 1.0f/float(std::max<UINT>(1,sd.Height>>sourceMip)) : 0,
                            blurAxis ? 1.0f : 0.0f,0};

@@ -1,4 +1,4 @@
-# Deploy a complete build_dist package, preserving user settings and verifying
+# Deploy a complete build_dist package, preserving player settings and verifying
 # every deployed byte. Never starts the game. PowerShell 5.1 compatible.
 param(
     [Parameter(Mandatory=$true)][string]$GameRoot,

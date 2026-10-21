@@ -61,7 +61,7 @@ static int   g_bdWhyStage = 0;   // 0 pose invalid, 1 bad quat, 2 dot, 3 dist, 4
 
 // THE SAME TEST, AGAINST THE LENS INSTEAD OF THE SCENE. A takeover has no scene pose -- nothing
 // publishes one -- so the braindance test above returns false at its first line and the fov was never
-// written: the user read it straight off the panel, "пишет fov 60 active". The device camera's pose is
+// written: the panel read "fov 60 active". The device camera's pose is
 // what the port already has for it, latched by the classifier from the camera the engine renders through,
 // so the identification is the same shape with a different reference.
 static bool DevViewMatches(const uint8_t* p, float* qOut) {
@@ -290,8 +290,8 @@ extern "C" float __fastcall OnFixLoDCallback(float* rbxPtr, float originalVal) {
     // (the 51-degree gameplay camera, the 75-degree shadow map) whose value the engine already floors.
     // Both eyes get the same threshold by construction, whatever fov each one arrives with.
     // 75 degrees is the exact break-even, so anything above it is what our widening added. The value
-    // substituted is VR Mod's own 3.04639287f, kept on the user's instruction ("ставь 3.046 для
-    // обоих") -- and it is bit-identical to substituting 75.0f, because the maxss floor is 1.0 and
+    // substituted is VR Mod's own 3.04639287f, kept on purpose for
+    // both -- and it is bit-identical to substituting 75.0f, because the maxss floor is 1.0 and
     // both inputs land on it: 3.046 -> 0.0012 -> 1.0, and 75.0 -> 1.0 exactly. What changed is WHO
     // gets it: every caller above the break-even, so both eyes, instead of the single one whose fov
     // happened to match our forced value.
@@ -402,9 +402,106 @@ bool InstallFixLoDHook() {
     for (int i = 5; i < replaceLen; ++i) found[i] = 0x90; // NOP
     VirtualProtect(found, replaceLen, oldProtect, &oldProtect);
     FlushInstructionCache(GetCurrentProcess(), found, replaceLen);
-    
+
     Log("FixLoD hook: Installed successfully at %p! Replaced 5 bytes with trampoline %p.\n", found, tramp);
     return true;
 }
 
 CVR_HOOK("LodFov", ::cvr::hooks::Stage::Boot, 60, InstallFixLoDHook);
+
+// ---- THE SAME THRESHOLD, BUILT AGAIN ------------------------------------------------------------
+//
+// The term above is not computed in one place. The same tail -- tan^2(fov/2) * 1.6984, floored at 1.0,
+// stored at +0x24 -- closes two more descriptor builders (IDA + x64dbg, 2026-10-18):
+//
+//   sub_14028DF10   the descriptor constructor every camera component goes through (rbx+0x24)
+//   sub_140781DFC   the plane-override rebuild. sub_1404E4AFC runs the hooked builder for each of its
+//                   four planes and then, for a plane that carries an override, sub_140781CE8 ->
+//                   sub_140781DFC builds that descriptor again (rdi+0x24) from the override's own fov,
+//                   without the clamp. Measured live: 100.3 degrees in, 2.44 out, on a descriptor the
+//                   hooked site had just set to 1.0 (the plane with far 4000 and the eye's NDC shift).
+//
+// Neither starts with the hooked site's bytes, so the clamp is applied to the term itself (the hooked
+// site's own tail has a `mov rax,rbx` inside it and does not match the pattern below): with the
+// switch on, the multiply becomes 1.0 and the floor after it keeps it there. That is the clamp's own
+// result at every fov -- at or below 75 degrees the engine floors to 1.0 anyway, above it the clamp
+// lands on the floor -- so every builder of this term agrees, live through the same xr_fix_lod.
+//
+//     mulss xmm0,xmm0 / mulss xmm0,[1.6984] / maxss xmm0,[1.0] / movss [reg+24h],xmm0
+//                       ^ these 8 bytes -> jmp to the trampoline below
+static bool InstallFixLoDThresholdSites() {
+    HMODULE exe = GetModuleHandleA("Cyberpunk2077.exe");
+    MODULEINFO mi{};
+    if (!exe || !GetModuleInformation(GetCurrentProcess(), exe, &mi, sizeof(mi))) return false;
+    uint8_t* const base = static_cast<uint8_t*>(mi.lpBaseOfDll);
+    uint8_t* const end = base + mi.SizeOfImage;
+
+    static const uint8_t pat[] = {0xF3,0x0F,0x59,0xC0, 0xF3,0x0F,0x59,0x05,0,0,0,0,
+                                  0xF3,0x0F,0x5F,0x05,0,0,0,0, 0xF3,0x0F,0x11,0,0x24};
+    static const char mask[] = "xxxxxxxx????xxxx????xxx?x";
+    constexpr size_t kLen = sizeof(pat);
+    constexpr int kMul = 4;   // the multiply by 1.6984, 8 bytes
+
+    int patched = 0, matched = 0;
+    for (uint8_t* cur = base; cur < end;) {
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (!VirtualQuery(cur, &mbi, sizeof(mbi))) break;
+        uint8_t* regionEnd = static_cast<uint8_t*>(mbi.BaseAddress) + mbi.RegionSize;
+        if (regionEnd > end) regionEnd = end;
+        const bool exec = mbi.State == MEM_COMMIT &&
+            (mbi.Protect & (PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE));
+        for (uint8_t* p = cur; exec && p + kLen <= regionEnd; ++p) {
+            size_t j = 0;
+            while (j < kLen && (mask[j] != 'x' || p[j] == pat[j])) ++j;
+            if (j != kLen) continue;
+            ++matched;
+            uint8_t* const mul = p + kMul;
+            const float* k   = reinterpret_cast<const float*>(mul + 8 + *reinterpret_cast<int32_t*>(mul + 4));
+            uint8_t* const mx = mul + 8;
+            const float* one = reinterpret_cast<const float*>(mx + 8 + *reinterpret_cast<int32_t*>(mx + 4));
+            if (fabsf(*k - 1.6984007f) > 1e-6f || *one != 1.0f) continue;
+
+            uint8_t* code = static_cast<uint8_t*>(AllocateTrampoline(mul, 64));
+            if (!code) { Log("FixLoD threshold: no trampoline space for %p\n", mul); break; }
+            int pos = 0;
+            auto jmpBack = [&]() {
+                code[pos++] = 0xE9;
+                *reinterpret_cast<int32_t*>(code + pos) = static_cast<int32_t>((mul + 8) - (code + pos + 4));
+                pos += 4;
+            };
+            code[pos++] = 0x9C;                                        // pushfq
+            code[pos++] = 0x50;                                        // push rax
+            WriteMovRaxImm64(code, pos, reinterpret_cast<uintptr_t>(&CyberpunkVR_FixLodEnable));
+            code[pos++] = 0x83; code[pos++] = 0x38; code[pos++] = 0x00; // cmp dword [rax], 0
+            code[pos++] = 0x74; code[pos++] = 0x10;                     // je engine
+            code[pos++] = 0xB8; code[pos++] = 0x00; code[pos++] = 0x00; // mov eax, 1.0f
+            code[pos++] = 0x80; code[pos++] = 0x3F;
+            code[pos++] = 0x66; code[pos++] = 0x0F; code[pos++] = 0x6E; code[pos++] = 0xC0; // movd xmm0, eax
+            code[pos++] = 0x58;                                        // pop rax
+            code[pos++] = 0x9D;                                        // popfq
+            jmpBack();
+            // engine: the multiply as it was, through its constant's absolute address
+            WriteMovRaxImm64(code, pos, reinterpret_cast<uintptr_t>(k));
+            code[pos++] = 0xF3; code[pos++] = 0x0F; code[pos++] = 0x59; code[pos++] = 0x00; // mulss xmm0, [rax]
+            code[pos++] = 0x58;                                        // pop rax
+            code[pos++] = 0x9D;                                        // popfq
+            jmpBack();
+
+            DWORD oldProtect;
+            VirtualProtect(mul, 8, PAGE_EXECUTE_READWRITE, &oldProtect);
+            mul[0] = 0xE9;
+            *reinterpret_cast<int32_t*>(mul + 1) = static_cast<int32_t>(code - (mul + 5));
+            mul[5] = mul[6] = mul[7] = 0x90;
+            VirtualProtect(mul, 8, oldProtect, &oldProtect);
+            FlushInstructionCache(GetCurrentProcess(), mul, 8);
+            ++patched;
+            Log("FixLoD threshold: builder tail at exe+0x%llX -> trampoline %p\n",
+                static_cast<unsigned long long>(mul - base), code);
+        }
+        cur = static_cast<uint8_t*>(mbi.BaseAddress) + mbi.RegionSize;
+    }
+    Log("FixLoD threshold: %d tail(s) matched, %d patched (2.31: 2 and 2)\n", matched, patched);
+    return patched > 0;
+}
+
+CVR_HOOK("LodFovThreshold", ::cvr::hooks::Stage::Boot, 61, InstallFixLoDThresholdSites);

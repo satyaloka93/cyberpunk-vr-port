@@ -7,9 +7,9 @@ struct HandViewFrame { AnchorVector position;XrQuaternionf rotation; };
 inline HandViewFrame BuildHandViewFrame(AnchorVector bodyBase,const AnchorRecipe& recipe,
         AnchorVector headResidualXr,XrQuaternionf headXr,float bodyYaw,float trackingYaw,
         XrQuaternionf pitch) {
-    const auto delta=ComposeAnchorTranslation(
+    const auto delta=ComposeViewTranslation(
         {headResidualXr.x*recipe.scale,-headResidualXr.z*recipe.scale,headResidualXr.y*recipe.scale},
-        recipe.trackingOffset,recipe.modelOffset,trackingYaw,bodyYaw);
+        recipe,trackingYaw,bodyYaw);
     const auto modelDelta=RotateAnchorYaw(delta,-bodyYaw);
     const XrQuaternionf invBody{0,0,-std::sin(bodyYaw*.5f),std::cos(bodyYaw*.5f)};
     const XrQuaternionf heading{0,0,std::sin(trackingYaw*.5f),std::cos(trackingYaw*.5f)};

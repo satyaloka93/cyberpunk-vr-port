@@ -249,7 +249,17 @@ void Invariants(){for(const auto& pose:poses)for(float scale:{.7f,1.f,1.3f}){Run
         Check(Error(r.last.yaw,899*deg)<3,std::string("multiple turn/size drift: ")+pose.name);}
 }
 #include "hybrid_cases.hpp"
+#include "dynamics_cases.hpp"
 int main(int argc,char** argv)try{Check(argc==2,"case required");std::string name=argv[1];
+    if(name=="prediction_noise_metrics"){PredictionNoiseMetrics();return 0;}
+    if(name=="prediction_held_samples"){PredictionHeldSamples();return 0;}
+    if(name=="dynamics_metrics"){DynamicsMetrics();return 0;}
+    if(name=="prediction_steady"){PredictionSteady();return 0;}
+    if(name=="prediction_stops"){PredictionStops();return 0;}
+    if(name=="prediction_lifecycle"){PredictionLifecycle();return 0;}
+    if(name=="prediction_noisy_rebase"){PredictionNoisyRebase();return 0;}
+    if(name=="prediction_cadence"){PredictionCadence();return 0;}
+    if(name=="prediction_acceleration"){PredictionAcceleration();return 0;}
     if(name=="hybrid_policy")HybridPolicy();else if(name=="hybrid_transitions")HybridTransitions();
     else if(name=="hybrid_boundary")HybridBoundary();else if(name=="hybrid_recovery")HybridRecovery();
     else if(name=="hybrid_posture")HybridPosture();

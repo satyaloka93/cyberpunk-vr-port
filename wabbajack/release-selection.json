@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "fork": {
+    "name": "CyberpunkVRPort PSVR2 fork 0.1.8-psvr2.1-rc1",
+    "fileName": "CyberpunkVRPort-0.1.8-psvr2.1-rc1.zip",
+    "url": "https://github.com/satyaloka93/cyberpunk-vr-port/releases/download/0.1.8-psvr2.1-rc1/CyberpunkVRPort-0.1.8-psvr2.1-rc1.zip",
+    "sha256": "493b1d3cc25120e892eccc9111c8f2d84200f97da1d1a30d3c433efdb017df21"
+  }
+}

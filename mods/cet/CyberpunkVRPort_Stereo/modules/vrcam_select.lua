@@ -71,6 +71,15 @@ end
 -- The overlay's Disable/Enable VRCAM button writes this. Component isEnabled is only reachable
 -- through the game's RTTI, i.e. from here, so native asks and this side does it.
 local function readEnableRequest()
+    -- The plugin keeps the last request it wrote (and what was on disk at start): no file open on the
+    -- game thread, which costs 0.3-1.2 ms in CET's sandbox and ran twice a second here.
+    if type(VRVrcamEnableRequest) == "function" then
+        local ok, request = pcall(VRVrcamEnableRequest)
+        if ok then
+            if request == 1 then return true elseif request == 0 then return false end
+            return nil
+        end
+    end
     local f = io.open("bridge/vrcam_enable.txt", "r")
     if not f then return nil end
     local body = f:read("*a")
@@ -288,7 +297,7 @@ function VrcamSelect.tick(dt)
         if VrcamSelect.ticksToRetry<=0 then
             -- Preview/restored players can exist before gameplay is ready.
             -- Keep its authored/restored RTT disabled too, without retaining
-            -- another player handle or changing the user's requested state.
+            -- another player handle or changing the player's requested state.
             releaseEntity(player)
             VrcamSelect.ticksToRetry=5
         else

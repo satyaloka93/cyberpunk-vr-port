@@ -4,6 +4,9 @@
 #include "Anim/WheelGrab.hpp"   // the wheel-grab blends, for the hand smoothing below
 #include "Runtimes/OpenXRManager.hpp"
 #include "Hooks/Psvr2Input.hpp"
+#include "Runtimes/Psvr2HapticChannel.hpp"
+#include "Render/FoveatedDlss.hpp"
+#include "Render/FixedVrs.hpp"
 #include "Hooks/RoomscaleMove.hpp"
 #include "Camera/CameraLink.hpp"
 #include "Runtimes/SimulatorRecenter.hpp"
@@ -74,25 +77,20 @@ extern "C" int GetInputActionsEnabled(); // 0 = pose-only legacy behaviour, 1 = 
 extern "C" int GetMonoXQueueWait();      // 0 = mono path skips cross-queue Wait (kills hang); 1 = legacy depth-safe behaviour
 extern "C" int GetMonoDepthCapture();    // 0 = mono path skips depth capture entirely (kills CP2077 mono hang); 1 = legacy depth-aware reprojection
 extern "C" float GetHmdTrackingSmooth();
-// What to do with the pose that comes back from a PREDICTED locate -- the path the camera is
-// composed from. Unsmoothed, the runtime's velocity integration arrives in the view as noise.
-// See LocateHeadPoseAt.
+// The camera uses the runtime's predicted pose without an additional low-pass filter. A filtered
+// pose can be labelled correctly and still require more reprojection than the image covers.
+// At 300 deg/s the former 30/s filter added roughly 10 degrees of uncovered rotation.
 //
-//   0 = raw. Jitters at rest: the aim time is ahead of now, so the runtime integrates velocity to
-//       get there, and a still headset has nothing to integrate but sensor noise.
+//   0 = raw (default). Preserve the runtime's prediction and avoid adding motion latency.
 //   1 = adaptive follow. Kills the rest jitter and buys judder in MOTION instead, because the
 //       follow factor -- and therefore the lag -- is a function of how fast the head is moving.
 //   2 = dead band. Removes the rest jitter without a motion-dependent lag, but quantises: measured
 //       92 % held / 45 steps in 8 s on the orientation, i.e. ~5.6 discrete 0.05 deg kicks per
 //       second, and the eye reads rare discrete steps far more readily than continuous noise of
 //       the same amplitude. Kept for comparison; it was worse to look at than 1.
-//   3 = FIXED TIME-CONSTANT LERP, the shape the hands already use (xr_hand_lerp_speed). The lag is
-//       a constant number of milliseconds regardless of head speed, and a constant lag is the one
-//       kind the compositor removes perfectly -- it reprojects the labelled pose to photon time,
-//       and the label IS what the pixels were built from (measured: readback 100 %, age 0). This
-//       is the criterion stated in this very file: "A steady lag reprojects away perfectly; a lag
-//       that breathes with your own movement cannot be reprojected away by anything."
-extern "C" __declspec(dllexport) int CyberpunkVR_PredictFilter = 3;
+//   3 = fixed time-constant lerp, retained for diagnostics. Reprojection can correct its orientation
+//       only where the rendered image has coverage; it cannot fill the newly exposed borders.
+extern "C" __declspec(dllexport) int CyberpunkVR_PredictFilter = 0;
 // Mode 3 follow rate, in 1/seconds: t = 1 - exp(-speed * dt). 30 gives a ~33 ms time constant,
 // which is a whole-step follow of 0.34 at 72 Hz. The hands run 25 (xr_hand_lerp_speed).
 extern "C" __declspec(dllexport) float CyberpunkVR_PoseLerpSpeed = 30.0f;
@@ -362,12 +360,12 @@ static void LogDxgiAdapterForDevice(ID3D12Device* device) {
 // aspect. Patching the per-eye frusta from the runtime instead would move the render without moving
 // the submit, which is exactly the black-border/stretch failure PR #24 is about.
 //
-// So this is precisely "xr_force_fov=104, chosen for you", and anything the user puts in vrport.ini
+// So this is precisely "xr_force_fov=104, chosen for you", and anything the player puts in vrport.ini
 // still wins -- see GetForcedFov in VrCore.cpp.
 //
 // AND ON VIRTUAL DESKTOP THIS TABLE CANNOT FIRE AT ALL, measured 2026-08-19: VDXR reports
 // systemName="Oculus Quest2" for a Pico 4. The runtime names the streaming CLIENT it emulates, not
-// the panel in front of the user, so there is nothing here to match on -- and adding
+// the panel in front of the player, so there is nothing here to match on -- and adding
 // "Oculus Quest2" -> 104 would be worse than useless: a real Quest 2 is about a 96 degree panel, so
 // the row would be right for this machine and wrong for every actual Quest 2 owner.
 //
@@ -759,6 +757,10 @@ bool OpenXRManager::Init() {
                 makeAction(m_psvr2TriangleTouchAction, XR_ACTION_TYPE_BOOLEAN_INPUT,
                     "secondary_button_touch", "Triangle Touch D-pad Shift", true);
             }
+            // HAPTICS: an OUTPUT action (Runtimes/Haptics.cpp). Bound inside each profile's one
+            // suggest call below, because xrSuggestInteractionProfileBindings REPLACES a profile's
+            // suggestions -- a second call for the haptic alone would drop every input binding.
+            makeAction(m_hapticAction,          XR_ACTION_TYPE_VIBRATION_OUTPUT, "haptic",         "Haptic Feedback",      true);
             if(steamFrameEnabled)m_steamFrameActions.Create(makeAction);
         }
         Log("OpenXRManager[Input]: gameplay action set %s (xr_input_actions=%d)\n",
@@ -862,6 +864,8 @@ bool OpenXRManager::Init() {
             { m_secondaryButtonAction, "/user/hand/left/input/y/click" },
             { m_secondaryButtonAction, "/user/hand/right/input/b/click" },
             { m_menuButtonAction,      "/user/hand/left/input/menu/click" },
+            { m_hapticAction,          "/user/hand/left/output/haptic" },
+            { m_hapticAction,          "/user/hand/right/output/haptic" },
         });
 
         // -- Valve Index: A/B on both hands, system as menu --
@@ -883,6 +887,8 @@ bool OpenXRManager::Init() {
             { m_secondaryButtonAction, "/user/hand/left/input/b/click" },
             { m_secondaryButtonAction, "/user/hand/right/input/b/click" },
             { m_menuButtonAction,      "/user/hand/left/input/system/click" },
+            { m_hapticAction,          "/user/hand/left/output/haptic" },
+            { m_hapticAction,          "/user/hand/right/output/haptic" },
         });
 
         // -- HTC Vive Wand: no A/B/X/Y, no thumbstick (touchpad as v2f), grip is bool --
@@ -898,6 +904,8 @@ bool OpenXRManager::Init() {
             { m_triggerAction,         "/user/hand/left/input/trigger/value" },
             { m_triggerAction,         "/user/hand/right/input/trigger/value" },
             { m_menuButtonAction,      "/user/hand/left/input/menu/click" },
+            { m_hapticAction,          "/user/hand/left/output/haptic" },
+            { m_hapticAction,          "/user/hand/right/output/haptic" },
         });
 
         // -- Windows MR motion controller: trackpad+thumbstick combo --
@@ -913,6 +921,8 @@ bool OpenXRManager::Init() {
             { m_triggerAction,         "/user/hand/left/input/trigger/value" },
             { m_triggerAction,         "/user/hand/right/input/trigger/value" },
             { m_menuButtonAction,      "/user/hand/left/input/menu/click" },
+            { m_hapticAction,          "/user/hand/left/output/haptic" },
+            { m_hapticAction,          "/user/hand/right/output/haptic" },
         });
 
         // -- KHR simple controller (fallback: only select + menu + grip pose) --
@@ -922,6 +932,8 @@ bool OpenXRManager::Init() {
             { m_primaryButtonAction,   "/user/hand/left/input/select/click" },
             { m_primaryButtonAction,   "/user/hand/right/input/select/click" },
             { m_menuButtonAction,      "/user/hand/left/input/menu/click" },
+            { m_hapticAction,          "/user/hand/left/output/haptic" },
+            { m_hapticAction,          "/user/hand/right/output/haptic" },
         });
 
 bindings_done:
@@ -930,6 +942,28 @@ bindings_done:
 
     m_initialized = true;
     return true;
+}
+
+int OpenXRManager::ApplyHaptic(int hand, float amplitude, float durationSec) {
+    // PSVR2 PCM must have one actuator owner. Keep upstream event envelopes,
+    // but send them to Toolkit, not a competing OpenXR vibration writer.
+    if (IsRuntimePsvr2()) {
+        if (!IsSessionRunning() || hand < 0 || hand > 1 || !std::isfinite(amplitude) ||
+            !std::isfinite(durationSec) || amplitude <= 0 || durationSec <= 0) return -1;
+        cvr::psvr2::Haptics().Pulse(hand, std::min(amplitude, 1.0f),
+            std::max(1, static_cast<int>(std::min(durationSec, .5f) * 1000)));
+        return 0;
+    }
+    if (m_hapticAction == XR_NULL_HANDLE || m_session == XR_NULL_HANDLE || !IsSessionRunning()) return -1;
+    if (hand < 0 || hand > 1 || !(amplitude > 0.0f)) return -1;
+    XrHapticVibration v{XR_TYPE_HAPTIC_VIBRATION};
+    v.amplitude = amplitude > 1.0f ? 1.0f : amplitude;
+    v.duration  = static_cast<XrDuration>((durationSec > 0.5f ? 0.5f : durationSec) * 1.0e9);
+    v.frequency = XR_FREQUENCY_UNSPECIFIED;   // see Runtimes/Haptics.cpp
+    XrHapticActionInfo info{XR_TYPE_HAPTIC_ACTION_INFO};
+    info.action = m_hapticAction;
+    info.subactionPath = m_handPaths[hand];
+    return static_cast<int>(xrApplyHapticFeedback(m_session, &info, reinterpret_cast<const XrHapticBaseHeader*>(&v)));
 }
 
 bool OpenXRManager::GetRecommendedRenderTargetSize(uint32_t* width, uint32_t* height) const {
@@ -1108,11 +1142,11 @@ void OpenXRManager::PollEvents() {
                 m_stopFrameThread.store(true, std::memory_order_relaxed);
             }
         } else if (event.type == XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING) {
-            // Native OpenXR recenter (user held the home / system button, or used the runtime menu) —
+            // Native OpenXR recenter (the player held the home / system button, or used the runtime menu) —
             // the runtime is about to remap "forward" of its tracking space at changed->changeTime.
             // Trigger our local recenter so the mod's stored base pose lines up with the runtime's
             // new tracking space; the next frame's HMD pose then reads (0,0,0,facing-forward) as the
-            // user expects.
+            // player expects.
             auto* changed = reinterpret_cast<XrEventDataReferenceSpaceChangePending*>(&event);
             Log("OpenXRManager: Tracking space change pending (native recenter), refSpace=%d -> local recenter.\n",
                 static_cast<int>(changed->referenceSpaceType));
@@ -1175,14 +1209,16 @@ bool OpenXRManager::GetHandPose(int handIndex, OpenXRHeadPose* out) const {
     return out->valid;
 }
 
-bool OpenXRManager::GetGestureHandFrame(OpenXRHeadPose* head,OpenXRHeadPose hands[2],uint64_t* sequence,uint64_t* stampUs) const {
+bool OpenXRManager::GetGestureHandFrame(OpenXRHeadPose* head,OpenXRHeadPose hands[2],uint64_t* sequence,uint64_t* stampUs,bool rawMelee) const {
     if(!head || !hands || !sequence || !stampUs || ExternalPoseResetPending())return false;
     const auto origin=GetTrackingOriginSerial();
     std::lock_guard lock(const_cast<std::mutex&>(m_handMutex));
     const auto now=XrDiagNowUs();
     if(!m_publishedHandHead.valid || m_publishedHandHead.originSerial!=origin || !m_publishedHandStampUs ||
        now<m_publishedHandStampUs || now-m_publishedHandStampUs>250000)return false;
-    *head=m_publishedHandHead;hands[0]=m_publishedGestureHands[0];hands[1]=m_publishedGestureHands[1];
+    *head=m_publishedHandHead;
+    hands[0]=rawMelee?m_publishedRawMeleeHands[0]:m_publishedGestureHands[0];
+    hands[1]=rawMelee?m_publishedRawMeleeHands[1]:m_publishedGestureHands[1];
     *sequence=m_publishedHandSequence;*stampUs=m_publishedHandStampUs;return true;
 }
 
@@ -1315,11 +1351,9 @@ bool OpenXRManager::GetControllerState(VRControllerState* out) const {
 // staleness is unsteady, and unsteady staleness is exactly what judder is. It cannot be filtered
 // out downstream and it hits both eyes equally, because both are written from one composition.
 //
-// RealVR never reads a cached pose here. update_cp2077_head_pose_and_fov_state takes a sequence
-// number and calls locate_or_fake_headset_poses(seq) synchronously at the camera hook, which
-// reaches fetch_backend_pose_frame -> `predicted = seq*period + base` -> xrLocateSpace at that
-// predicted time. The pose is therefore always the same age relative to the frame it drives.
-// This is that call: one xrLocateSpace, at the write, aimed at the display time predicted for the
+// Locate the pose synchronously at the camera write, using the frame's predicted display time.
+// This keeps the pose's age consistent relative to the frame it drives.
+// One xrLocateSpace, at the write, aimed at the display time predicted for the
 // frame being built.
 //
 // Cheap and legal off the render thread: xrLocateSpace is a query, it does not block on the
@@ -1633,6 +1667,19 @@ bool OpenXRManager::GetCurrentEyeFov(int eye, XrFovf* out) {
     return true;
 }
 
+bool OpenXRManager::GetAsymmetricEyeWindows(AsymEyeWindows* out, bool fitTarget) {
+    if (!out) return false;
+    std::lock_guard<std::mutex> viewLock(m_viewMutex);
+    const bool useSyncedViews = (GetSyncSequential() != 0) &&
+        m_syncedPoseValid.load(std::memory_order_relaxed);
+    if (!useSyncedViews && m_views.size() < 2) return false;
+    const XrFovf fov[2] = { useSyncedViews ? m_syncedEyeFovs[0] : m_views[0].fov,
+                            useSyncedViews ? m_syncedEyeFovs[1] : m_views[1].fov };
+    const XrQuaternionf ori[2] = { useSyncedViews ? m_syncedEyePoses[0].orientation : m_views[0].pose.orientation,
+                                   useSyncedViews ? m_syncedEyePoses[1].orientation : m_views[1].pose.orientation };
+    return cvr::projection::Windows(fov, ori, out->eye, fitTarget);
+}
+
 void OpenXRManager::StoreRenderEyePose(int eye, const OpenXRHeadPose& pose, uint32_t seq) {
     if (eye < 0 || eye > 1 || !pose.valid) return;
     // GetHeadPose() returns a base-RECENTERED pose (see the m_basePose math in the
@@ -1689,9 +1736,9 @@ bool OpenXRManager::GetCoherentViewAnchor(float out[3],const OpenXRHeadPose* ref
     const float x=reference ? reference->posX : m_handSampleHeadPos[0];
     const float y=reference ? reference->posY : m_handSampleHeadPos[1];
     const float z=reference ? reference->posZ : m_handSampleHeadPos[2];
-    const auto delta=cvr::camera::ComposeAnchorTranslation(
+    const auto delta=cvr::camera::ComposeViewTranslation(
         {(x-consumed.x)*sc,(-z-consumed.y)*sc,y*sc},
-        anchor.trackingOffset,anchor.modelOffset,anchor.trackingYaw,anchor.modelYaw);
+        anchor,anchor.trackingYaw,anchor.modelYaw);
     out[0]=delta.x; out[1]=delta.y; out[2]=delta.z;
     return true;
 }
@@ -1710,7 +1757,7 @@ extern "C" __declspec(dllexport) float CyberpunkVR_WheelHandLerpSpeed = 150.0f;
 // THE FILTER'S SPEED FOLLOWS WHAT IS IN THE HAND, and that is the honest axis for it: the filter trades
 // tracking noise against lag, and which of the two hurts depends on what the hand is doing. A blade is
 // swung and any lag reads as the weapon trailing the arm; a sniper is held still and aimed, where the
-// noise is what shows and the lag costs nothing. The user's numbers.
+// noise is what shows and the lag costs nothing. Numbers set by feel.
 //
 // 0 in any of these means "use the base" (xr_hand_lerp_speed), which is also what empty hands and an
 // unnamed weapon get. Class 5 is melee, 4 sniper, 3 shotgun, 2 rifle, 1 handgun/revolver -- published
@@ -1723,6 +1770,11 @@ extern "C" __declspec(dllexport) float CyberpunkVR_HandLerpMelee   = 40.0f;
 extern "C" __declspec(dllexport) extern int CyberpunkVR_WeaponClass;
 // The port's own "a weapon is out" flag (src/Core/VrCoreShared.hpp), so empty hands can keep the base.
 extern bool g_hasWeaponEquipped;
+
+// UNDER FRAME GENERATION every hand rate above (the base and the weapon classes) is taken times this --
+// the rate and half of it again, a lighter filter -- instead of switching the filter off there, as it
+// used to be. 0 switches it off under framegen again. xr_hand_lerp_framegen_scale, live.
+extern "C" __declspec(dllexport) float CyberpunkVR_HandLerpFramegenScale = 1.5f;
 
 static float EffectiveHandLerpSpeed() {
     const float base = CyberpunkVR_HandLerpSpeed;
@@ -1904,6 +1956,9 @@ void OpenXRManager::FlushHandsToShared(const OpenXRHeadPose* frameHead, XrTime f
         hmdOri[2] = reference.oriZ;
         hmdOri[3] = reference.oriW;
     }
+    // Ordinary melee measures physical grip speed before visual smoothing.
+    // Keep its coherent head basis, sample time and tracking validity.
+    const OpenXRHeadPose rawMeleeHands[2]={srcHands[0],srcHands[1]};
     // Body inference must not see the head-local hand filter: that filter lags
     // during head turns and can turn stationary world-space hands into a false
     // torso turn. bodyFrame above retains its own coherent raw reference.
@@ -1920,12 +1975,14 @@ void OpenXRManager::FlushHandsToShared(const OpenXRHeadPose* frameHead, XrTime f
                              ? static_cast<float>(static_cast<double>(nowUs - s_lastUs) * 1e-6)
                              : 0.0f;
         s_lastUs = nowUs;
-        const bool bypassHandLerp = cvr::framegen::Enabled();
-        const float speed = bypassHandLerp ? 0.0f : EffectiveHandLerpSpeed();
+        const bool framegen = cvr::framegen::Enabled();
+        const float framegenScale = CyberpunkVR_HandLerpFramegenScale;
+        const bool bypassHandLerp = framegen && !(framegenScale > 0.0f);
+        const float speed = bypassHandLerp ? 0.0f : EffectiveHandLerpSpeed() * (framegen ? framegenScale : 1.0f);
         for (int h = 0; h < 2; ++h) {
-            // Bypass every hand rate (base, weapon and wheel) during framegen.
-            // Keep the configured rates and discard history so switching FG off
-            // seeds from the current pose instead of reviving an old filter tail.
+            // Under framegen every hand rate (base and weapon) is scaled by CyberpunkVR_HandLerpFramegenScale.
+            // At 0 the filter is bypassed there and its history discarded, so switching FG off seeds
+            // from the current pose instead of reviving an old filter tail.
             if (bypassHandLerp || !srcHands[h].valid) { g_handLerp[h].init = false; continue; }
             // A HAND ON THE WHEEL IS NOT SMOOTHED. Read by NAME, not by index: this file numbers the
             // left hand 0 and the wheel module numbers the right hand 0.
@@ -2141,6 +2198,7 @@ void OpenXRManager::FlushHandsToShared(const OpenXRHeadPose* frameHead, XrTime f
     *seqSlot = seqStart + 1u;   // seqStart IS odd -> +1 = EVEN = complete, and never repeats
     m_publishedHandHead=reference;
     m_publishedGestureHands[0]=srcHands[0];m_publishedGestureHands[1]=srcHands[1];
+    m_publishedRawMeleeHands[0]=rawMeleeHands[0];m_publishedRawMeleeHands[1]=rawMeleeHands[1];
     m_publishedHands[0]=srcHands[0];m_publishedHands[1]=srcHands[1];
     m_publishedHands[1].posX=sShared[9];m_publishedHands[1].posY=sShared[10];m_publishedHands[1].posZ=sShared[11];
     m_publishedHands[1].oriX=sShared[12];m_publishedHands[1].oriY=sShared[13];
@@ -2166,6 +2224,8 @@ void OpenXRManager::FlushHandsToShared(const OpenXRHeadPose* frameHead, XrTime f
 
 
 void OpenXRManager::Shutdown() {
+    cvr::foveated::Shutdown();
+    cvr::vrs::Shutdown();
     RemoveSimulatorRecenterHook();
     std::lock_guard<std::mutex> initLock(m_initMutex);
     m_stopFrameThread.store(true, std::memory_order_relaxed);
@@ -2198,7 +2258,9 @@ void OpenXRManager::Shutdown() {
     // the action set outlives neither. What stood here destroyed the spaces and the SESSION first and
     // the swapchains afterwards -- i.e. it handed the runtime handles whose parent was already gone.
     // (dabinn, TofuExpress fbe336fa)
+    cvr::framegen::SetDepthCaptureEnabled(false);
     m_framegen.Reset();
+    m_stereoDepth.Poll();
     m_framegenOverlay.Shutdown(true);
     m_settingsPanel.Shutdown();
     cvr::framegen::StopHardwareTelemetry();
@@ -2206,10 +2268,12 @@ void OpenXRManager::Shutdown() {
     m_interactionQuad.Shutdown();
     m_basiliskQuad.Shutdown();
     m_surveillanceQuad.Shutdown();
+    m_hitMarkerQuad.Shutdown();
     cvr::hud::Shutdown();
     cvr::hud::Shutdown(cvr::hud::Channel::Interaction);
     cvr::hud::Shutdown(cvr::hud::Channel::Basilisk);
     cvr::hud::Shutdown(cvr::hud::Channel::Surveillance);
+    cvr::hud::Shutdown(cvr::hud::Channel::HitMarker);
     EndSession();
 
     for (auto& eye : m_eyeSwapchains) {
@@ -2262,11 +2326,13 @@ void OpenXRManager::Shutdown() {
     m_primaryButtonAction = XR_NULL_HANDLE;
     m_secondaryButtonAction = XR_NULL_HANDLE;
     m_menuButtonAction = XR_NULL_HANDLE;
+    m_psvr2TriangleTouchAction = XR_NULL_HANDLE;
     m_steamFrameActions = {};
 
     m_views.clear();
     m_viewConfigViews.clear();
     m_runtimeIsSteamVR.store(false, std::memory_order_relaxed);
+    m_runtimeIsPsvr2.store(false, std::memory_order_relaxed);
 
     if (m_fenceEvent) {
         CloseHandle(m_fenceEvent);
@@ -2324,6 +2390,7 @@ void OpenXRManager::Shutdown() {
         m_colorBlit->Shutdown();
         m_colorBlit.reset();
     }
+    m_sharpenPass.reset();
     if (m_monoCapturedFrame.texture) {
         m_monoCapturedFrame.texture->Release();
         m_monoCapturedFrame.texture = nullptr;

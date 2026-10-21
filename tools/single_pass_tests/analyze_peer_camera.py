@@ -1,4 +1,4 @@
-"""Compare early private camera predictions with later native MAIN inputs."""
+"""Compare early private camera predictions with native peer inputs (exploratory)."""
 import argparse
 import base64
 import json
@@ -15,7 +15,7 @@ matrix_ranges=[(0x50,0x150),(0x190,0x290),(0x2B0,0x370)]
 for prediction in rows:
     if not prediction.get('predictionValid'):continue
     a=base64.b64decode(prediction['predictionBase64'])
-    candidates=[r for r in rows if r['kind']==1 and r['side']==0 and r['frame']==prediction['frame']
+    candidates=[r for r in rows if r['kind']==1 and r['side']==prediction.get('predictionPeerSide',0) and r['frame']==prediction['frame']
                 and r.get('inputValid') and r['name']=='RenderElements' and r['width']==prediction['width'] and r['height']==prediction['height']]
     matches=[]
     for native in candidates:

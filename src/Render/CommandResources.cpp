@@ -99,6 +99,14 @@ ResourceSubmission PrepareCommandResources(UINT count, ID3D12CommandList* const*
     return result;
 }
 
+bool HasCommandResource(ID3D12GraphicsCommandList* list,IUnknown* object) {
+    if(!list || !object || !haveRecordings.load(std::memory_order_acquire))return false;
+    std::lock_guard lock(mutex);const auto found=recordings.find(list);if(found==recordings.end())return false;
+    const auto recording=found->second.lock();
+    return recording && std::any_of(recording->batch->resources.begin(),recording->batch->resources.end(),
+        [object](const auto& value){return value.Get()==object;});
+}
+
 void SubmitCommandResources(ID3D12CommandQueue* queue, ResourceSubmission submission) {
     if (submission.batches.empty()) return;
     std::lock_guard lock(mutex);

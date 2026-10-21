@@ -28,6 +28,7 @@ extern std::atomic<int>   g_wheelHornMask;     // a hand is on the hub: vrshared
 // Functional script bridge: bit 2 = wheel feature available in driver seat;
 // bits 0/1 = fresh right/left grip ownership. Gamepad settings are read, not changed.
 int WheelControlState();
+void WheelSetMountedCar(bool car);
 bool WheelSetGamepadProfile(float inner,float outer);
 float WheelGamepadSteer(float normalized);
 float WheelSteerInput(); // latest coherent raw tracking, sampled by XInput

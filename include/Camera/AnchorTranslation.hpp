@@ -32,7 +32,23 @@ inline AnchorVector ComposeAnchorTranslation(AnchorVector headResidual,
 struct AnchorRecipe {
     AnchorVector trackingOffset{}, modelOffset{};
     float scale{1.0f}, trackingYaw{}, modelYaw{};
+    float centreYaw{};
+    // On foot the HMD owns the optical centre. Calibration establishes the
+    // tracking origin; body yaw changes the avatar's placement about that point.
+    bool bodyOrbit{};
 };
+
+inline AnchorVector ComposeViewTranslation(AnchorVector residual,const AnchorRecipe& recipe,
+                                           float trackingYaw,float bodyYaw) {
+    return ComposeAnchorTranslation(residual,recipe.trackingOffset,recipe.modelOffset,
+                                    trackingYaw,recipe.bodyOrbit ? recipe.centreYaw:bodyYaw);
+}
+
+inline AnchorVector BodyOrbitModel(const AnchorRecipe& recipe,float bodyYaw,float /*trackingYaw*/) {
+    if(!recipe.bodyOrbit)return {};
+    const auto centre=RotateAnchorYaw(recipe.modelOffset,recipe.centreYaw-bodyYaw);
+    return {centre.x-recipe.modelOffset.x,centre.y-recipe.modelOffset.y,0};
+}
 
 inline AnchorRecipe MakeAnchorRecipe(AnchorVector manualOffset, AnchorVector vehicleOffset,
                                      AnchorVector bakedOffset, bool inVehicle,
@@ -41,6 +57,7 @@ inline AnchorRecipe MakeAnchorRecipe(AnchorVector manualOffset, AnchorVector veh
     result.scale=scale;
     result.trackingYaw=trackingYaw;
     result.modelYaw=modelYaw;
+    result.centreYaw=modelYaw;
     result.modelOffset=bakedOffset;
     if (inVehicle) {
         // Seat adjustments retain the vehicle view basis. On foot, the same

@@ -88,6 +88,7 @@ void VRIK_BuildViewHandTarget(const float* viewModelPos,const float* viewModelRo
 float VRIK_Dot3(const float* a, const float* b);
 float VRIK_Norm3(float* v);
 int VRIK_FKCount();
+bool VRIK_ReferenceFingerRotation(int bone,float* rotation);
 void VRIK_ApplyHandStop(int side, float* target, float* handRot);
 void VRIK_BodyAxesFromCamYaw(const float* camModelRot, float* bodyRight, float* bodyUp, float* bodyFwd);
 void VRIK_ComputeFK(uint8_t* boneBuf, int count);
@@ -110,7 +111,7 @@ extern bool g_VRIKBodyEyeBound;
 extern bool g_VRIKVehicleUpperActive;
 bool VRIK_PlaceSwimmingBody(uint8_t* boneBuf,const float* cameraTarget,const float* headRotation,int headIdx);
 void VRIK_PlaceLadderUpper(uint8_t* boneBuf,const float* cameraTarget,const float* headRotation,int headIdx);
-// No tuning arguments in gameplay: use the baked user-approved rung pose.
+// No tuning arguments in gameplay: use the baked, approved rung pose.
 // Explicit arguments remain for offline authoring/equivalence checks.
 void VRIK_ApplyLadderFingers(uint8_t* boneBuf,int side,int kind,const float* curls=nullptr,const float (*adjustments)[6]=nullptr);
 extern float g_VRIKGirdleReach[2][4];
@@ -122,10 +123,11 @@ void VRIK_ResetShoulderReference(uint8_t* boneBuf,int upperIdx);
 bool VRIK_BodyAxesFromRig(float* bodyRight,float* bodyUp,float* bodyFwd,bool upperTorso=false);
 void VRIK_WorldToModelRotation(float fallbackYaw,const float* entityRotation,float* result);
 void VRIK_AnchorShoulder(uint8_t* boneBuf,int upperIdx,const float* anchor,bool isLeft,
-                         const float* bodyRight,const float* bodyUp,float halfWidth,float* outJoint);
+                         const float* bodyRight,const float* bodyUp,float halfWidth,float* outJoint,bool neckAnchor=true);
 void VRIK_UpdateForearmDeformation(uint8_t* boneBuf,int foreIdx,int handIdx,bool left);
 void VRIK_PlaceBodyUnderHMD(uint8_t* boneBuf, const float* camModelPos, const float* camModelRot,
-                          int headIdx, const float* bodyFwd,const float* pairedHeadDeltaModel=nullptr);
+                          int headIdx, const float* bodyFwd,const float* pairedHeadDeltaModel=nullptr,
+                          const float* bodyOrbitModel=nullptr);
 bool VRIK_PlaceVehicleCombatUpper(uint8_t* boneBuf,const float* cameraTarget,
                                  const float* headRotation,int headIdx);
 void VRIK_QuatFromTo(const float* a, const float* b, float* o);

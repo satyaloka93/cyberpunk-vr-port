@@ -61,8 +61,15 @@ void ImageIdentity(){
         Check(images.Read(500).pose==frame,"color retained an old pose while depth/MV advanced");
     }
 }
+void Reserve(){
+    DescriptorCache<4> cache;cache.Store(1,{1,10,10});cache.Reserve(20000);Check(cache.Limit()==20000,"reserve not applied");
+    for(uintptr_t i=2;i<=20000;++i)Check(cache.Store(i,{i,10,10}),"insert within reserved slots failed");
+    Check(cache.Size()==20000,"evicted below the reserved capacity");
+    Check(cache.Read(1)&&cache.Read(20000),"reserved entries lost");
+    cache.Reserve(8);Check(cache.Limit()==20000,"reserve lowered the capacity");
+}
 int main(int argc,char** argv){Check(argc==2,"case required");std::string name=argv[1];
  if(name=="startup_churn")Startup();else if(name=="active")Active();else if(name=="replacement")Replacement();
  else if(name=="resize")Resize();else if(name=="concurrent")Concurrent();else if(name=="all_pinned")AllPinned();
- else if(name=="image_identity")ImageIdentity();else return 2;
+ else if(name=="image_identity")ImageIdentity();else if(name=="reserve")Reserve();else return 2;
  std::cout<<"PASS "<<name<<'\n';}

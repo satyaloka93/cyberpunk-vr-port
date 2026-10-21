@@ -41,7 +41,7 @@
 //  [33..48]   calibration valid/values/diag req   openxr -> plugin
 //  [49]       right grip analog          dxgi -> Holster Lua (RAW idx!)
 //  [50..56]   weapon/shot bridge         dxgi
-//  [57]       shot frame flag            weapon_aim_hook -> dxgi
+//  [57]       -- free (was the shot-frame flag of the removed shot-finding hooks)
 //  [58]       weapon-aim enable          openxr -> dxgi
 //  [59]       weapon-aim mode            openxr -> dxgi
 //  [60..66]   weapon/shot bridge         dxgi

@@ -36,7 +36,7 @@ local PRESS_CACHE, pressPose, poseFor, GRENADE_POSE, PINCH_POSE, PIN_POSE, PIN_P
 local THUMB_TIP, INDEX_TIP, pinchPoint, HOLD1_P, HOLD1_Q, HOLD_P, HOLD_Q, pinS, TRIGGER_SLOT, triggerAmount
 local trgS, setTriggerBlock, leverS, holdPBuf, holdQBuf, leverPose, ARM_MODE, armMode, SND, muteStow, sndAt
 local playSnd, leverTick, handBone, poseS, poseApply, poseClear, poseTick, pinPoseTick, claimHand
-local magnetSet, magnetClear, rawHand, gripDown, updateGrenadeGrab
+local magnetSet, magnetClear, rawHand, gripDown, updateGrenadeGrab, unequipWeapon
 
 -- FORWARD-DECLARED, AT THE TOP, and it has to be at the top rather than merely "before holdNow".
 --
@@ -426,6 +426,12 @@ updatePin = function(now, dt)
                 end
             end
             playSnd("pin")
+            -- FELT AS WELL AS HEARD: a snap in the hand that pulled it, a weaker one through the grenade
+            -- in the other (2 and 3 in src/Runtimes/Haptics.cpp; mask 1 left, 2 right).
+            if type(VRHapticEvent) == "function" then
+                pcall(VRHapticEvent, 2, free == 1 and 2 or 1)
+                pcall(VRHapticEvent, 3, held == 1 and 2 or 1)
+            end
             E.log("grenade: pin pulled (%.0f mm past the stop at %.1f m/s)", past * 1000, pinS.speed)
             trace("pin: OUT %.0f mm past the stop at %.1f m/s", past * 1000, pinS.speed)
         end
@@ -515,7 +521,7 @@ throwSample = function(side, dt)
     E.S.grab.throwPeak = best
 end
 
--- THE RELEASE VELOCITY, ported from this port's own basketball -- the throw the user asked for by
+-- THE RELEASE VELOCITY, ported from this port's own basketball -- the throw asked for by
 -- name -- which took it in turn from HIGGS (Skyrim VR, adamhynek), src/hand.cpp GetMaxVelocity.
 --
 -- The PEAK of the window, averaged with its two neighbours. Not the instant of release: a hand lets
@@ -836,10 +842,11 @@ throwTick = function(pl)
                 trace("flight: detonate %s at %.1f %.1f %.1f -> %s",
                     tostring(d.slot), d.x, d.y, d.z, tostring(ok))
                 if d.slot ~= nil and E.S.grab.armSlots ~= nil then E.S.grab.armSlots[d.slot] = nil end
-                if (E.CFG.grenade_throw_consume_at or "throw") == "detonate" then
+                -- A flight with no slot is M.testThrow's: nothing was armed, so nothing is spent.
+                if d.slot ~= nil and (E.CFG.grenade_throw_consume_at or "throw") == "detonate" then
                     consume(pl, throwS.recBySlot and throwS.recBySlot[d.slot])
                 end
-                if throwS.recBySlot ~= nil then throwS.recBySlot[d.slot] = nil end
+                if throwS.recBySlot ~= nil and d.slot ~= nil then throwS.recBySlot[d.slot] = nil end
                 if not ok and d.slot ~= nil then
                     -- Nothing went off: do not leave a live grenade attached to the player.
                     pcall(function() pl:VRPortDropItem(d.slot) end)
@@ -1821,6 +1828,24 @@ gripDown = function(side)
     return v > 0.5
 end
 
+-- PUT THE WEAPON AWAY, the way the holster does it: the equipment system's own UnequipWeapon, so the
+-- game's state machine holsters it and empties the hand slot itself. `VRHolsterMelee` is that same
+-- request plus a stamp that stops the motion melee reading the reach as a swing (a swing in progress is
+-- what made a melee unequip get dropped); the plain request is the fallback without the holster module.
+unequipWeapon = function(pl)
+    local done = false
+    if type(pl.VRHolsterMelee) == "function" then
+        done = pcall(function() pl:VRHolsterMelee() end)
+    end
+    if done then return end
+    pcall(function()
+        local req = EquipmentSystemWeaponManipulationRequest.new()
+        req.owner = pl
+        req.requestType = EquipmentManipulationAction.UnequipWeapon
+        Game.GetScriptableSystemsContainer():Get("EquipmentSystem"):QueueRequest(req)
+    end)
+end
+
 -- Put the grenade in a hand, or take it out again.
 --
 -- WHERE IT SITS IS NOT TUNED, it is where the game itself puts one. Measured off the game's own throw
@@ -1910,6 +1935,22 @@ updateGrenadeGrab = function(now, dt)
         return
     end
 
+    -- A GRAB WAITING FOR THE WEAPON TO GO (see below). It completes the moment no weapon is left in a
+    -- hand slot, as an ordinary grab from that holder; letting go, or a weapon that is still there after
+    -- two seconds, drops it.
+    local pend = E.S.grab.pending
+    if pend ~= nil then
+        if not gripDown(pend.side) or (now - pend.at) > 2.0 then
+            trace("pending grab dropped: grip=%s waited=%.2f", tostring(gripDown(pend.side)), now - pend.at)
+            E.S.grab.pending = nil
+        elseif E.weaponInHands(pl) == false then
+            E.S.grab.pending = nil
+            grenadeAttach(pl, pend.side, pend.host, now)
+        end
+        E.S.grab.was[0], E.S.grab.was[1] = gripDown(0), gripDown(1)
+        return
+    end
+
     -- FREE: a grip that CLOSES while that hand is at the grenade holder takes it.
     for side = 0, 1 do
         local down = gripDown(side)
@@ -1920,7 +1961,20 @@ updateGrenadeGrab = function(now, dt)
             -- The proximity test the mark already ran IS the "at the belt" condition -- see the note
             -- on E.CFG.grenade_grab. Nothing else can start a grab.
             if host ~= nil and string.sub(host, 1, 13) == "ucbeltgrenade" then
-                grenadeAttach(pl, side, host, now)
+                -- NEVER INTO A HAND A WEAPON IS IN. The holders do not light while a weapon is held
+                -- (init.lua, updateHighlight), so this is the second line, for a grip that lands in the
+                -- moment between a draw and the next highlight tick. Attaching anyway is the bug this
+                -- guards: the grenade took the weapon's slot with high priority, the equipment system
+                -- still believed the gun was in the hand, and after the throw the hand stayed in the
+                -- pistol grip with the holster unable to draw. So the weapon is put away properly first
+                -- and the grenade is taken once the slot is empty.
+                if E.weaponInHands ~= nil and E.weaponInHands(pl) == true then
+                    trace("grab with a weapon in hand: unequip first (side=%d)", side)
+                    unequipWeapon(pl)
+                    E.S.grab.pending = { side = side, host = host, at = now }
+                else
+                    grenadeAttach(pl, side, host, now)
+                end
             end
         end
     end
@@ -1944,6 +1998,32 @@ function M.unpin()
 end
 
 function M.pinned() return E.S.grab.pinned == true end
+
+-- A THROW WITHOUT A HAND, to see where a thrown grenade comes down (2026-10-18, "дай команду для запуска
+-- гранаты"), from the CET console:
+--     GetMod("CyberpunkVRPort_TacticalBelt").grenade.testThrow(6, 2)
+-- The equipped grenade's prop leaves 0.4 m ahead at hand height along the view, `speed` m/s forward and
+-- `up` m/s up, and flies exactly as a thrown one does (throwTick ticks it). No real grenade is armed for
+-- it, so it sets nothing off: it lies where it stopped until the fuse and is gone.
+function M.testThrow(speed, up)
+    if FLIGHT == nil then return false end
+    local pl = Game.GetPlayer()
+    if pl == nil then return false end
+    local ok, launched = pcall(function()
+        local p = pl:GetWorldPosition()
+        local f = Game.GetCameraSystem():GetActiveCameraForward()
+        local h = math.sqrt(f.x * f.x + f.y * f.y)
+        if h < 1e-3 then return false end
+        local fx, fy = f.x / h, f.y / h
+        local _, ent = E.propItem({ follow = "grenade" })
+        local path = (E.CFG.grenade_prop_dir or "base\\vrport\\") .. (ent or "vrp_gren_frag") .. ".ent"
+        local v = speed or 6.0
+        return FLIGHT.launch(path, nil, p.x + fx * 0.4, p.y + fy * 0.4, p.z + 1.4, 0.0, 0.0, 0.0, 1.0,
+                             fx * v, fy * v, up or 2.0)
+    end)
+    trace("testThrow: %s", tostring(ok and launched))
+    return ok and launched == true
+end
 
 M.disarm = throwDisarm
 M.tick = updateGrenadeGrab

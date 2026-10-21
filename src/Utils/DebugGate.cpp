@@ -116,8 +116,8 @@ struct DebugFlag {
 // NOT IN THIS TABLE, ON PURPOSE: CyberpunkVR_IndirectCensus and CyberpunkVR_ExpoProbe.
 //
 // Both now carry their own live keys (xr_indirect_census, xr_expo_probe), and this gate runs AFTER
-// the first PollLiveControls -- so leaving them here made the gate write 0 over a key the user had
-// just set, and the next ini write-back then persisted that 0 into the file. A whole session was
+// the first PollLiveControls -- so leaving them here made the gate write 0 over a key that had
+// just been set, and the next ini write-back then persisted that 0 into the file. A whole session was
 // played with the ExecuteIndirect census believed armed and in fact silenced, which is the exact
 // shape of failure this project keeps paying for: an instrument that reports nothing because it
 // never ran, read as an instrument that found nothing.

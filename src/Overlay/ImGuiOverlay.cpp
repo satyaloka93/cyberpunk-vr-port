@@ -1,4 +1,5 @@
 #include "Utils/DebugGate.hpp"
+#include "Utils/RunAudit.hpp"
 #include "Overlay/ImGuiOverlay.hpp"
 #include "Overlay/DrawWork.hpp"
 #include "Overlay/LiveControlsUi.hpp"
@@ -6,6 +7,7 @@
 #include "Overlay/VrDraw.hpp"
 #include "Overlay/VrImGuiInput.hpp"
 #include "Runtimes/OpenXRManager.hpp"
+#include "Render/DesktopMirror.hpp"
 
 #include <algorithm>
 #include <cfloat>
@@ -166,7 +168,7 @@ float g_aimRayLenM = 8.0f;
 bool g_showCompactAdsTelemetry = false;
 float g_compactAdsTelemetryX = 0.57f;
 float g_compactAdsTelemetryY = 0.30f;
-bool g_drawBarrelCross = true;   // g_lastLocateQuat is declared above, at global scope
+bool g_drawBarrelCross = false;  // g_lastLocateQuat is declared above, at global scope
 
 // Moved to src/Overlay/OverlayProjection.cpp: projecting a world or head-space point onto the overlay, and the Im3d bridge.
 
@@ -254,12 +256,9 @@ void ShutdownOverlay() {
 // because it is how the guard was proven necessary. 3 = pacing plus the guard (default).
 // ================================================================================================
 extern "C" __declspec(dllexport) int32_t CyberpunkVR_OverlayPacing = 3;
-// Keep the fork's previous-submission pacing even when holstering/mounting removes
-// the barrel dot. Skipping this submission also skips next frame's queue fence,
-// making GPU pacing depend on whether ImGui happens to have visible vertices.
-// PID36688: waits stopped 21ms before mounted=1, XR delivery fell to ~38/s while
-// Present stayed ~75/s, and waits stayed absent after dismount. Retain the empty
-// fast path only as an explicit diagnostic opt-in, not the default scheduling policy.
+// Live A/B switch; zero retains fence pacing even for empty submissions.
+// Preserve queue pacing when holstering/mounting removes the last overlay draw.
+// F10 exposes the upstream skip behavior for a session-only A/B comparison.
 extern "C" __declspec(dllexport) int32_t CyberpunkVR_OverlaySkipEmpty = 0;
 // Diagnostics: how long the two waits actually cost, and how often the guard was open.
 extern "C" __declspec(dllexport) double   CyberpunkVR_DebugOverlayWaitMs = 0.0;
@@ -274,6 +273,7 @@ extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugOverlayWaitTotalUs = 
 // A BOUNDED wait on an already-signalled value. Bounded rather than INFINITE on purpose: this runs on
 // the Present thread, and a lost fence must degrade into a dropped overlay frame, not a hung game.
 bool WaitForOverlayFence(UINT64 target, DWORD timeoutMs, const char* reason) {
+    cvr::audit::Span auditFence(cvr::audit::OverlayFence);
     if (!g_fence || !g_fenceEvent || target == 0) return true;
     if (g_fence->GetCompletedValue() >= target) return true;
     const bool diagnostics = cvr::RuntimeDiagnosticsEnabled();
@@ -446,6 +446,8 @@ bool EnsureImGui(IDXGISwapChain* swapChain) {
         g_imguiPsoFormat = desc.BufferDesc.Format;
         g_imguiInitialized = true;
         if (g_verboseLog) Log("ImGui overlay initialized. Toggle with F10 or Insert.\n");
+        Log("[pacing] 0.1.8 stable empty-overlay pacing=%d (skipEmpty=%d)\n",
+            CyberpunkVR_OverlaySkipEmpty == 0, CyberpunkVR_OverlaySkipEmpty);
     }
 
     return EnsureSwapchainResources(swapChain);
@@ -487,24 +489,32 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     }
 
     // 1. Scale mouse coordinates FIRST so ImGui and game receive the scaled input
+    //
+    // Through the desktop mirror's centre crop (Render/DesktopMirror.hpp), from the PHYSICAL client:
+    // this module's own GetClientRect is IAT-hooked to report the virtual size, which made this block
+    // a silent no-op -- every client was "already" the render size.
     if (msg == WM_MOUSEMOVE || msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP || msg == WM_RBUTTONDOWN || msg == WM_RBUTTONUP || msg == WM_MBUTTONDOWN || msg == WM_MBUTTONUP) {
         UINT virtualWidth = GetForcedDisplayModeWidth();
         UINT virtualHeight = GetForcedDisplayModeHeight();
         if (virtualWidth > 0 && virtualHeight > 0) {
             RECT rect;
-            if (GetClientRect(hwnd, &rect)) {
+            POINT origin{};
+            if (GetDesktopPhysicalClientRect(hwnd, rect, origin)) {
                 int winWidth = rect.right - rect.left;
                 int winHeight = rect.bottom - rect.top;
-                
+
                 int x = (short)LOWORD(lParam);
                 int y = (short)HIWORD(lParam);
                 int oldX = x;
                 int oldY = y;
-                
-                if (winWidth > 0 && winHeight > 0 && (winWidth != static_cast<int>(virtualWidth) || winHeight != static_cast<int>(virtualHeight))) {
-                    x = (x * static_cast<int>(virtualWidth)) / winWidth;
-                    y = (y * static_cast<int>(virtualHeight)) / winHeight;
-                    
+
+                DesktopCoverTransform cover{};
+                if (winWidth > 0 && winHeight > 0 && ComputeDesktopCoverTransform(
+                        virtualWidth, virtualHeight, static_cast<UINT>(winWidth),
+                        static_cast<UINT>(winHeight), cover)) {
+                    x = static_cast<int>(std::lround(cover.sourceX + x * cover.sourceWidth / winWidth));
+                    y = static_cast<int>(std::lround(cover.sourceY + y * cover.sourceHeight / winHeight));
+
                     lParam = MAKELPARAM(static_cast<WORD>(x), static_cast<WORD>(y));
                 }
 
@@ -534,11 +544,23 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         if(msg==WM_MOUSEMOVE || msg==WM_LBUTTONDOWN || msg==WM_LBUTTONDBLCLK || msg==WM_LBUTTONUP || msg==WM_MOUSEWHEEL || msg==WM_MOUSEHWHEEL){
             const float width=g_desktopWidth.load(),height=g_desktopHeight.load();
             const auto rect=cvr::vrui::DesktopPlacement(width,height);
-            RECT client{};GetClientRect(hwnd,&client);
+            // The physical client (GetClientRect is hooked to the virtual size here), and the panel as
+            // it is placed inside the desktop crop -- see OverlayRenderDesktop.
+            RECT client{};POINT clientOrigin{};
+            if(!GetDesktopPhysicalClientRect(hwnd,client,clientOrigin))GetClientRect(hwnd,&client);
             POINT position{LONG(clientMouseX),LONG(clientMouseY)};
             if(msg==WM_MOUSEWHEEL || msg==WM_MOUSEHWHEEL)ScreenToClient(hwnd,&position);
-            const float x=(position.x*width/std::max(1L,client.right-client.left)-rect.x)/rect.scale;
-            const float y=(position.y*height/std::max(1L,client.bottom-client.top)-rect.y)/rect.scale;
+            const LONG clientW=std::max(1L,client.right-client.left);
+            const LONG clientH=std::max(1L,client.bottom-client.top);
+            DesktopCoverTransform cover{};
+            const bool cropped=ComputeDesktopCoverTransform(
+                static_cast<UINT>(width),static_cast<UINT>(height),
+                static_cast<UINT>(clientW),static_cast<UINT>(clientH),cover);
+            const auto placement=cropped
+                ? cvr::vrui::DesktopPlacement(float(cover.sourceWidth),float(cover.sourceHeight))
+                : rect;
+            const float x=(position.x*float(cropped ? cover.sourceWidth : width)/clientW-placement.x)/placement.scale;
+            const float y=(position.y*float(cropped ? cover.sourceHeight : height)/clientH-placement.y)/placement.scale;
             const auto now=GetTickCount64();
             std::lock_guard pointerLock(g_desktopPointerMutex);
             if(msg==WM_LBUTTONDOWN || msg==WM_LBUTTONDBLCLK || msg==WM_LBUTTONUP)
@@ -598,6 +620,7 @@ void OverlaySetWindow(HWND hwnd) {
 }
 
 void OverlayRender(IDXGISwapChain* swapChain) {
+    cvr::audit::Span auditOverlay(cvr::audit::Overlay);
     g_drawDataSubmitted = false;
     if (!EnsureImGui(swapChain)) return;
 
@@ -647,12 +670,14 @@ void OverlayRender(IDXGISwapChain* swapChain) {
     if(!g_menuVisible){DrawHandLocatorOverlay();DrawBarrelCrosshair();DrawCompactAdsCameraTelemetry();}
 
     const bool placementSave = cvr::vrui::ConsumePlacementSave();
+    bool foveatedEditing=false;
     if (g_menuVisible || placementSave) {
         LiveControlsUiState state{};
         GetLiveControlsUiState(&state);
-        const bool changed = g_menuVisible && DrawVrShell(state);
+        const bool changed = g_menuVisible && DrawVrShell(state,foveatedEditing);
+        cvr::foveated::SetUiEditing(foveatedEditing);
         if (changed || placementSave) SetLiveControlsUiState(&state, 1);
-    }
+    } else cvr::foveated::SetUiEditing(false);
 
     // Captured BEFORE Render(), so the second-eye pass never calls an ImGui function after the
     // frame is closed: this is the list it must skip, and it is the only thing it needs from the
@@ -740,7 +765,18 @@ void OverlayRenderDesktop(IDXGISwapChain* swapChain) {
     barrier.Transition={frame.renderTarget,D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,D3D12_RESOURCE_STATE_PRESENT,D3D12_RESOURCE_STATE_RENDER_TARGET};
     g_cmdList->ResourceBarrier(1,&barrier);g_cmdList->OMSetRenderTargets(1,&frame.rtv,FALSE,nullptr);
     ID3D12DescriptorHeap* heaps[]={g_srvHeap};g_cmdList->SetDescriptorHeaps(1,heaps);
-    {cvr::vrui::DesktopDraw desktop(*draw,w,h);ImGui_ImplDX12_RenderDrawData(draw,g_cmdList);}
+    // Placed inside the part of the backbuffer the desktop crop keeps (DesktopMirrorRender runs after
+    // this), so the whole panel stays on screen and the pointer mapping in OverlayWndProc matches it.
+    cvr::vrui::DesktopRect placement=cvr::vrui::DesktopPlacement(w,h);
+    RECT client{};POINT origin{};DesktopCoverTransform cover{};
+    if(GetDesktopPhysicalClientRect(g_hwnd,client,origin) &&
+        ComputeDesktopCoverTransform(static_cast<UINT>(w),static_cast<UINT>(h),
+            static_cast<UINT>(std::max(0L,client.right-client.left)),
+            static_cast<UINT>(std::max(0L,client.bottom-client.top)),cover)){
+        placement=cvr::vrui::DesktopPlacement(float(cover.sourceWidth),float(cover.sourceHeight));
+        placement.x+=float(cover.sourceX);placement.y+=float(cover.sourceY);
+    }
+    {cvr::vrui::DesktopDraw desktop(*draw,w,h,placement);ImGui_ImplDX12_RenderDrawData(draw,g_cmdList);}
     std::swap(barrier.Transition.StateBefore,barrier.Transition.StateAfter);g_cmdList->ResourceBarrier(1,&barrier);
     if(FAILED(g_cmdList->Close()))return;
     ID3D12CommandList* lists[]={g_cmdList};g_queue->ExecuteCommandLists(1,lists);

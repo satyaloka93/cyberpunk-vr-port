@@ -4,12 +4,13 @@ enable_testing()
 add_executable(driving_tests main.cpp)
 add_executable(driving_offsets offsets.cpp)
 target_include_directories(driving_offsets PRIVATE ../../include)
+target_compile_features(driving_offsets PRIVATE cxx_std_20)
 target_compile_features(driving_tests PRIVATE cxx_std_20)
 target_include_directories(driving_tests PRIVATE ../../include ../../build/_deps/openxr-src/include)
 if(MSVC)
     target_compile_options(driving_tests PRIVATE /W4 /permissive-)
 endif()
-foreach(case grab_offset one_hand two_hands handoff lock_reversal tracking_loss rate_matrix deadzone gamepad_range
+foreach(case grab_offset one_hand two_hands handoff lock_reversal tracking_loss rate_matrix deadzone extended_travel gamepad_range
              tracked_head_motion tracked_roundtrip tracked_lifetime prediction_constant prediction_stop_reverse
              prediction_boundaries prediction_freshness prediction_tracking prediction_jitter prediction_model)
     add_test(NAME driving_${case} COMMAND driving_tests ${case})

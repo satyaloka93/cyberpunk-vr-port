@@ -2,6 +2,7 @@
 #include "Render/NativeStereoProbe.hpp"
 #include <span>
 #include <cstring>
+#include <vector>
 
 namespace cvr::stereo::instance_data {
 constexpr size_t MaxBytes=16*1024;
@@ -24,5 +25,20 @@ inline bool Equal(const native_probe::DrawRecord& a,std::span<const uint8_t> x,
     return a.instances && a.instances==b.instances && (stride==48 || stride==64) && stride==b.vertices[7].StrideInBytes &&
         x.size()==uint64_t(a.instances)*stride && x.size()<=MaxBytes && x.size()==y.size() &&
         std::memcmp(x.data(),y.data(),x.size())==0;
+}
+// DEFAULT heaps cannot be mapped. The supplied reader must only return bytes
+// observed in CPU uploads for this exact resource identity and complete range.
+template<class Read> bool CopyObservedDefault(native_probe::DrawRecord& row,std::vector<uint8_t>* batch,Read read) {
+    row.instanceDataBytes=0;row.instanceData={};if(batch)batch->clear();
+    uint64_t offset{};size_t bytes{};
+    if(row.instanceHeapType!=D3D12_HEAP_TYPE_DEFAULT || (!batch && row.instances!=1) ||
+       !Range(row,offset,bytes,true))return false;
+    if(batch)batch->resize(bytes);
+    auto* output=batch?batch->data():row.instanceData.data();
+    if(!read(row.instanceGpuBase,row.instanceResource,offset,output,bytes)) {
+        row.instanceData={};if(batch)batch->clear();return false;
+    }
+    if(row.instances==1){if(batch)std::memcpy(row.instanceData.data(),output,bytes);row.instanceDataBytes=UINT(bytes);}
+    return true;
 }
 }

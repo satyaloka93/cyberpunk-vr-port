@@ -1,4 +1,5 @@
 #include "Render/WorldMarkerProjection.hpp"
+#include "Render/WorldMarkerOwnership.hpp"
 #include "Render/WorldMarkerScale.hpp"
 #include "Render/WorldMarkerShader.hpp"
 #include <d3dcompiler.h>
@@ -279,6 +280,14 @@ int main(int argc,char** argv) try {
         size.Commit(x,y);Check(!size.Target(size.appliedX,size.appliedY,x,y),"nonuniform scale compounded");
         Check(!size.Target(std::numeric_limits<float>::quiet_NaN(),1,x,y),"invalid widget scale accepted");
         size={};Check(size.Target(.5f,.5f,x,y) && x==.35f && y==.35f,"new widget inherited previous root ownership");
+    } else if(name=="effect_owner") {
+        MarkerOwner owner;
+        Check(MergeEffectOwner(owner,{17,.5f}) && MergeEffectOwner(owner,{17,.5f}),"one marker's flattened effect loses ownership");
+        Check(owner.root==17 && owner.depth==.5f,"effect changes marker depth");
+        Check(!MergeEffectOwner(owner,{18,.5f}),"unrelated markers at the same depth merged");
+        Check(!MergeEffectOwner(owner,{0,0}),"ordinary HUD content inherited marker projection");
+        Check(!MergeEffectOwner(owner,{17,std::numeric_limits<float>::quiet_NaN()}),"invalid effect depth accepted");
+        MarkerOwner outer;Check(MergeEffectOwner(outer,owner) && outer.root==17,"nested effect loses original widget owner");
     } else if(name=="depth") {
         const float eye[]={-1830,-2354,31},q[]={0,0,0,1};
         for(float depth:{.05f,2.f,10.f,1000.f}) {
@@ -295,6 +304,18 @@ int main(int argc,char** argv) try {
         p[0]=.719f;Check(!IsInkCamera(p.data(),sizeof(p)),"world perspective camera accepted");
         p=InkCamera();p[3]=0;Check(!IsInkCamera(p.data(),sizeof(p)),"world/shadow matrix accepted");
         p=InkCamera();p[0]=std::numeric_limits<float>::quiet_NaN();Check(!IsInkCamera(p.data(),sizeof(p)),"invalid camera accepted");
+        // The engine's block carries the canvas matrix at floats 0, 32, 48, 64 and 112; identity elsewhere.
+        p=InkCamera();
+        for(size_t m:{16,80,96,128})p[m]=p[m+5]=p[m+10]=p[m+15]=1;
+        for(size_t m:{32,48,64,112})for(size_t i=0;i<16;++i)p[m+i]=p[i];
+        auto out=p;
+        Check(ShiftInkCamera(out.data(),p.data(),sizeof(p),.9f,.25f,-.1f)==4,"canvas matrix copies missed");
+        for(size_t m:{0,32,48,64,112}) {
+            Check(out[m]==p[0]*.9f && out[m+5]==p[5] && std::abs(out[m+3]-(-.9f+.25f))<1e-6f &&
+                  std::abs(out[m+7]-.9f)<1e-6f,"copy not moved like the first matrix");
+        }
+        for(size_t m:{16,80,96,128})for(size_t i=0;i<16;++i)Check(out[m+i]==p[m+i],"non-canvas matrix changed");
+        Check(out[188]==p[188] && out[189]==p[189],"canvas size changed");
     } else if(name=="sprite" || name=="procedural") GpuProjection(name=="procedural");
     else if(name=="text") TextProjection();
     else if(name=="text_batched") BatchedTextProjection();

@@ -111,6 +111,38 @@ local function rayFirstHard(x1, y1, z1, x2, y2, z2)
     return nil
 end
 
+-- WHETHER THE FLOOR OF LAST RESORT IS REALLY THERE, asked once, on the frame a falling grenade crosses
+-- the player's feet. It was taken on trust, and "с возвышенности она падает на невидимый пол (продолжение
+-- возвышенности)" (2026-10-18) is what trust did: a grenade thrown off a ledge crosses that level past
+-- the edge, missing everything, and lay down on the air at the height of the ledge.
+--
+-- So a ray goes straight down from just above that level, under the grenade and under the player, and
+-- the two grounds are compared. These rays do not always see the floor that is drawn: in the metro
+-- concourse (2026-10-18) the ground they find under the player is 0.48 m below the feet everywhere on
+-- the walkway -- that is what the floor of last resort is for -- and 32 m below past the railing. Ground
+-- under the grenade level with the ground under the feet and the floor stays; any lower -- a kerb is
+-- 15 cm -- is a drop and the grenade falls on to it. Nothing under either, and the floor stays: a
+-- place where the query system says nothing, or a player on a lift or a car, whose own floor these
+-- rays do not see.
+local function floorHolds(x, y, fz)
+    local drop = E.CFG.grenade_flight_floor_drop or 0.05
+    local depth = E.CFG.grenade_flight_floor_probe or 50.0
+    local function groundBelow(gx, gy)
+        local hp = rayFirstHard(gx, gy, fz + 0.1, gx, gy, fz - depth)
+        return hp and hp[3] or nil
+    end
+    local below = groundBelow(x, y)
+    if below == nil or below >= fz then return true end
+    local p = nil
+    pcall(function() p = Game.GetPlayer():GetWorldPosition() end)
+    if p == nil then return true end
+    local feet = groundBelow(p.x, p.y)
+    local holds = feet == nil or below >= math.min(fz, feet) - drop
+    if E.trace then E.trace("flight: falling past the feet at %.2f, ground %.2f below it, under the feet %s -> floor %s",
+        fz, fz - below, feet and string.format("%.2f", fz - feet) or "none", tostring(holds)) end
+    return holds
+end
+
 local function qmul(ax, ay, az, aw, bx, by, bz, bw)
     return aw * bx + ax * bw + ay * bz - az * by,
            aw * by - ax * bz + ay * bw + az * bx,
@@ -244,15 +276,16 @@ local function step(S, h)
 
         -- A FLOOR OF LAST RESORT, at the player's own feet. Ported from the magazine drop, where it
         -- earns its place the same way: static-only rays miss things, and a grenade that misses
-        -- everything falls forever. It is only ever used while DESCENDING and only below that level,
-        -- so a throw off a balcony still uses the real geometry all the way down.
+        -- everything falls forever. It is only ever used while DESCENDING through that level, and only
+        -- where nothing lower is there to land on (floorHolds), so a throw off a balcony uses the real
+        -- geometry all the way down.
         if hp == nil and S.v[3] < 0.0 and (E.CFG.grenade_flight_floor ~= false) then
             local fz = nil
             pcall(function()
                 local p = Game.GetPlayer():GetWorldPosition()
                 if p ~= nil then fz = p.z + (E.CFG.grenade_flight_floor_lift or 0.02) end
             end)
-            if fz ~= nil and (nz - r) <= fz and S.p[3] >= fz then
+            if fz ~= nil and (nz - r) <= fz and S.p[3] >= fz and floorHolds(nx, ny, fz) then
                 hp, hn, mat = { nx, ny, fz }, { 0.0, 0.0, 1.0 }, "floor"
             end
         end

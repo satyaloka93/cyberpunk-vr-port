@@ -289,12 +289,56 @@ local function notificationsContainer()
         local cont = findNamed(vw, "NotificationsContainer", 0)
         if cont ~= nil then
           memo.notif = cont
+          memo.notifWindow = vw
           return
         end
       end
     end
   end)
   return memo.notif
+end
+
+-- THE RADIO PORT AND THE VEHICLE LIST SIT LOWER IN VR (2026-10-17, user: "слишком высоко").
+--
+-- Both popups' Root is centred on the window, but the content fills only the upper part of the 1500-high
+-- frame. So the panel's middle sat above the middle of the picture. With the asymmetric projection the
+-- picture is the lens's own window, which reaches further down than up, and the panel looked high.
+-- The Root, the whole popup with its vignette, moves down by a share of the window height, so every
+-- render size puts it in the same place. Measured on the radio at 2648x2864: 6 % put the panel's
+-- middle just under the middle of the picture; the user asked for a bit more on the radio and more on
+-- the vehicle list. The list is shorter and sits higher in its frame: at 12 % its middle was still
+-- above the picture's middle, at 15 % it is level with the radio.
+local POPUP_DROP = { radio = 0.08, vehicle = 0.15 }
+
+local function dropPopup(root, what)
+  local share = POPUP_DROP[what]
+  if root == nil or share == nil then return end
+  local h = 0.0
+  pcall(function() h = memo.notifWindow:GetSize().Y end)
+  if not (h > 0.0) then return end
+  local want = share * h
+  pcall(function()
+    local t = root:GetTranslation()
+    if math.abs(t.Y - want) > 0.5 or math.abs(t.X) > 0.5 then
+      root:SetTranslation(Vector2.new({ X = 0.0, Y = want }))
+    end
+  end)
+end
+
+-- On the popup's own initialisation, so it opens already in place. OnInitialize is declared only on the
+-- base class, so the hook sits there and picks the two popups out. Their show and hide animations move
+-- the Root's children, never the Root. The ten-a-second check below covers anything else that resets it.
+local function dropPopupController(self)
+  local what = nil
+  pcall(function()
+    if self:IsA("VehicleRadioPopupGameController") then what = "radio"
+    elseif self:IsA("VehiclesManagerPopupGameController") then what = "vehicle" end
+  end)
+  if what == nil then return end
+  notificationsContainer()
+  local root = nil
+  pcall(function() root = self:GetRootWidget() end)
+  dropPopup(root, what)
 end
 
 local function popupWidgetOpen()
@@ -312,23 +356,29 @@ local function popupWidgetOpen()
       local vis = false
       if slot ~= nil then pcall(function() vis = slot:IsVisible() end) end
       if vis then
-        if subtreeHas(slot, "RadioportTitle", 0) then hit = true; what = "radio"; return end
-        if subtreeHas(slot, "vehicleIconContainer", 0) then hit = true; what = "vehicle"; return end
+        if subtreeHas(slot, "RadioportTitle", 0) then hit = true; what = "radio" end
+        if not hit and subtreeHas(slot, "vehicleIconContainer", 0) then hit = true; what = "vehicle" end
+        if hit then dropPopup(childAt(slot, 0), what); return end
       end
     end
   end)
   return hit, what
 end
 
+-- PLAIN FUNCTIONS FOR THE PER-FRAME pcalls in this file: `pcall(function() ... end)` allocates a closure
+-- on every call, and the mods' per-frame garbage is what CET's collector pays for (the GC step in
+-- CyberpunkVRPort_Stereo). pcall takes these and their arguments instead.
+local function contactsActive()
+  if memo.bbDefs == nil then memo.bbDefs = Game.GetAllBlackboardDefs() end
+  local defs = memo.bbDefs
+  if memo.comDevice == nil then memo.comDevice = Game.GetBlackboardSystem():Get(defs.UI_ComDevice) end
+  if memo.comDevice ~= nil then return memo.comDevice:GetBool(defs.UI_ComDevice.ContactsActive) end
+  return false
+end
+
 local function phoneOpen()
-  local v = false
-  pcall(function()
-    if memo.bbDefs == nil then memo.bbDefs = Game.GetAllBlackboardDefs() end
-    local defs = memo.bbDefs
-    if memo.comDevice == nil then memo.comDevice = Game.GetBlackboardSystem():Get(defs.UI_ComDevice) end
-    if memo.comDevice ~= nil then v = memo.comDevice:GetBool(defs.UI_ComDevice.ContactsActive) end
-  end)
-  return v == true
+  local ok, v = pcall(contactsActive)
+  return ok and v == true
 end
 
 local function publishUiPopup(dt)
@@ -429,17 +479,22 @@ local function releaseLensFov()
   devCache.fov0 = nil
 end
 
+local function controlledObject(sys) return sys:GetControlledObject() end
+
 local function publishRemoteCamera()
   if type(VRRemoteCamera) ~= "function" then return end
   local sys = memoSystem("takeover", "TakeOverControlSystem")
   local obj = nil
-  if sys ~= nil then pcall(function() obj = sys:GetControlledObject() end) end
+  if sys ~= nil then
+    local okO, o = pcall(controlledObject, sys)
+    if okO then obj = o end
+  end
 
   if obj == nil then
     if devCtx ~= "default" then devcamApply("default") end
     releaseLensFov()
     devCache.obj, devCache.cam, devCache.sent = nil, nil, nil
-    pcall(function() VRRemoteCamera(0, 0.0, 0.0, 0.0) end)
+    pcall(VRRemoteCamera, 0, 0.0, 0.0, 0.0)
     if S.lastEntityId ~= nil and type(VRTakeoverEntity) == "function" then
       pcall(function() VRTakeoverEntity("0") end)
       S.lastEntityId = nil
@@ -529,14 +584,47 @@ end
 -- a component against, and inside a braindance it is nothing like the one the port forces for the
 -- headset (measured: 55.879 against 103.982). That mismatch is the bug the player sees as one eye still
 -- lying on Judy's bed while the other is in the recording.
+local function inBraindance()
+  local sys = memoSystem("braindance", "BraindanceSystem")
+  if sys ~= nil then return sys:GetIsInBraindance() end
+  return false
+end
+
+local function sceneOwnsCamera()
+  -- The scene interface: resolved once and re-resolved only if it comes back nil. This gate runs
+  -- every frame, and the handle does not change while a session lasts.
+  if memo.sceneIface == nil then memo.sceneIface = Game.GetSceneSystem():GetScriptInterface() end
+  local si = memo.sceneIface
+  if si ~= nil then return si:GetSceneSystemCameraControlEnabled() end
+  return false
+end
+
+local function sceneTier(pl0)
+  local bb = pl0 and pl0:GetPlayerStateMachineBlackboard()
+  if memo.bbDefs == nil then memo.bbDefs = Game.GetAllBlackboardDefs() end
+  if bb ~= nil then return bb:GetInt(memo.bbDefs.PlayerStateMachine.SceneTier) end
+  return -1
+end
+
+local function activeCameraFov() return Game.GetCameraSystem():GetActiveCameraFOV() or 0.0 end
+
+local function playerCameraFov(pl0)
+  local c = pl0 and pl0:GetFPPCameraComponent()
+  if c ~= nil then return c:GetFOV() end
+  return 0.0
+end
+
+local function takeoverActive()
+  local tos = memoSystem("takeover", "TakeOverControlSystem")
+  return tos ~= nil and tos:GetControlledObject() ~= nil
+end
+
 local function publishBraindance()
   if type(VRBraindance) ~= "function" then return end
   local pl0 = Game.GetPlayer()
   local on = false
-  pcall(function()
-    local sys = memoSystem("braindance", "BraindanceSystem")
-    if sys ~= nil then on = sys:GetIsInBraindance() end
-  end)
+  local okB, bd = pcall(inBraindance)
+  if okB then on = bd end
 
   -- ORDINARY SCENES TOO, and this is the whole point of the change: a braindance is not the only place
   -- where the scene takes the camera. In a plain dialogue the game renders through a camera nothing of
@@ -557,20 +645,12 @@ local function publishBraindance()
   -- the headset fov forced into the view that matches it -- is machinery that already works; only the
   -- condition that opens it was too narrow.
   local sceneOwns = false
-  pcall(function()
-    -- The scene interface: resolved once and re-resolved only if it comes back nil. This gate runs
-    -- every frame, and the handle does not change while a session lasts.
-    if memo.sceneIface == nil then memo.sceneIface = Game.GetSceneSystem():GetScriptInterface() end
-    local si = memo.sceneIface
-    if si ~= nil then sceneOwns = si:GetSceneSystemCameraControlEnabled() end
-  end)
+  local okS, owns = pcall(sceneOwnsCamera)
+  if okS then sceneOwns = owns end
   S.owns = sceneOwns
   local tier = -1
-  pcall(function()
-    local bb = pl0 and pl0:GetPlayerStateMachineBlackboard()
-    if memo.bbDefs == nil then memo.bbDefs = Game.GetAllBlackboardDefs() end
-    if bb ~= nil then tier = bb:GetInt(memo.bbDefs.PlayerStateMachine.SceneTier) end
-  end)
+  local okT, t = pcall(sceneTier, pl0)
+  if okT then tier = t end
   S.tier = tier
 
   -- ...AND ONLY A SCENE THAT ACTUALLY NEEDS IT. Tier alone was not enough and it showed: sitting in the
@@ -586,11 +666,10 @@ local function publishBraindance()
   -- mismatch every frame would be self-cancelling -- the write makes the two fovs equal, the gate would
   -- close, the fov would fall back, and it would oscillate.
   local activeFov, compFov = 0.0, 0.0
-  pcall(function() activeFov = Game.GetCameraSystem():GetActiveCameraFOV() or 0.0 end)
-  pcall(function()
-    local c = pl0 and pl0:GetFPPCameraComponent()
-    if c ~= nil then compFov = c:GetFOV() end
-  end)
+  local okA, af = pcall(activeCameraFov)
+  if okA then activeFov = af end
+  local okC, cf = pcall(playerCameraFov, pl0)
+  if okC then compFov = cf end
   S.bdFov, S.fppFov = activeFov, compFov
   local mismatch = (activeFov > 1.0) and (compFov > 1.0) and (math.abs(activeFov - compFov) > 2.0)
 
@@ -606,10 +685,8 @@ local function publishBraindance()
   -- one that has the right anchor. The scene path exists for a camera nothing can name; a turret has a
   -- name and a position, and the port already follows it.
   local takeover = false
-  pcall(function()
-    local tos = memoSystem("takeover", "TakeOverControlSystem")
-    if tos ~= nil and tos:GetControlledObject() ~= nil then takeover = true end
-  end)
+  local okK, tk = pcall(takeoverActive)
+  if okK and tk then takeover = true end
   S.takeover = takeover
 
   -- A TAKEOVER DOES NOT OPEN THE BRAINDANCE BRANCH. It was tried, in two shapes -- the scene system's own
@@ -628,13 +705,13 @@ local function publishBraindance()
   -- headset fov into the view it identifies by the LENS pose, and this number is the seed that path needs.
   -- Without it the turret rendered at its own 60 -- read straight off the panel as "fov 60 active".
   if takeover and type(VRBdSceneFov) == "function" and activeFov > 1.0 then
-    pcall(function() VRBdSceneFov(activeFov) end)
+    pcall(VRBdSceneFov, activeFov)
   end
 
   if not on then
-    pcall(function() VRBraindance(0, 0.0) end)
+    pcall(VRBraindance, 0, 0.0)
     if type(VRSceneCamera) == "function" then
-      pcall(function() VRSceneCamera(0, 0, 0, 0, 0, 0, 0, 1) end)
+      pcall(VRSceneCamera, 0, 0, 0, 0, 0, 0, 0, 1)
     end
     S.bd = false
     return
@@ -739,6 +816,7 @@ end
 
 registerForEvent("onInit", function()
   ObserveAfter("PlayerPuppet", "OnGameAttached", function() cleanedPlayer = nil end)
+  ObserveAfter("BaseModalListPopupGameController", "OnInitialize", dropPopupController)
   devcamLoad()
   devcamPush()
   print(string.format("[ForceFPP] ready; lens offset right=%.2f forward=%.2f up=%.2f",

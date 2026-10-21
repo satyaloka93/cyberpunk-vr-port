@@ -33,6 +33,7 @@
 #include "Core/VrCoreShared.hpp"
 #include "Hooks/Hook.hpp"
 #include "Hooks/RoomscaleMove.hpp"
+#include "Hooks/BodyHeading.hpp"
 #include "Hooks/Trampoline.hpp"
 #include "Runtimes/OpenXRManager.hpp"
 #include "Utils/AobScanner.hpp"
@@ -51,6 +52,8 @@ extern "C" __declspec(dllexport) extern int   CyberpunkVR_SceneStickYawTier;
 extern "C" __declspec(dllexport) extern float CyberpunkVR_DebugSceneStickYawDeg;
 extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugVehicleWorldRecompose = 0;
 extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugSceneWorldRecompose = 0;
+// The optics mod's eye-to-sight approach, world metres (OrientationProvider.cpp, SetVRSightApproach).
+extern "C" float CyberpunkVR_SightApproach[3];
 
 // THE SCENE YAW, INTEGRATED HERE BECAUSE THIS IS WHERE IT IS SPENT.
 //
@@ -381,7 +384,8 @@ extern "C" void __fastcall OnPatchCameraCallback(float* cameraState, void* owner
     // Native MAIN publication and shared composition use the same lock. Never
     // read the already VR-written component back as the vehicle heading.
     std::unique_lock compositionLock(s_cameraComposeMutex);
-    const float bodyYawOffset=BodyYawFollowOffset();
+    float bodyTrackingYaw{};
+    const bool haveBodyTrackingYaw=ReadBodyTrackingYaw(&bodyTrackingYaw);
     const auto currentPlayer = cvr::roomscale::PlayerIdentity();
     s_vehicleStereoHeading.SetSource(currentPlayer, g_camObjMain.load(std::memory_order_acquire));
     if (camKind == 1 && IsPlausibleUnitQuaternion(quat)) {
@@ -458,7 +462,7 @@ extern "C" void __fastcall OnPatchCameraCallback(float* cameraState, void* owner
                 nativeHeading=s_vehicleStereoHeading.ForFrame(epoch,
                     haveCameraOwner && cameraOwnerBefore.owner==currentPlayer ? cameraOwnerBefore.rotation : nullptr,
                     2.0f*atan2f(g_headingSy,g_headingCy)+sceneYaw,
-                    -bodyYawOffset+sceneYaw);
+                    sceneYaw);
             }
             if (takeoverHeading)
                 deviceHeading=s_takeoverStereoHeading.ForFrame(epoch,
@@ -505,10 +509,8 @@ extern "C" void __fastcall OnPatchCameraCallback(float* cameraState, void* owner
                 // composition.
                 //
                 // So locate afresh, aimed at the display time predicted for the frame being
-                // built. That is what RealVR does at the equivalent point:
-                // locate_or_fake_headset_poses(seq) -> predicted = seq*period + base ->
-                // xrLocateSpace(predicted). The prediction is the same rolling fit the submit
-                // path already uses, measured at ~24.3 ms per frame.
+                // built: predicted = seq*period + base -> xrLocateSpace(predicted).
+                // The prediction uses the submit path's rolling fit.
                 OpenXRHeadPose p{};
                 bool got = false;
                 if (CyberpunkVR_OneSamplePerFrame) {
@@ -551,7 +553,11 @@ extern "C" void __fastcall OnPatchCameraCallback(float* cameraState, void* owner
                     // Basis note (same as LocateCamera): this camera space is X right, Y forward,
                     // Z up, so the quaternion's "up" column is the game's forward.
                     float hSy = g_headingSy, hCy = g_headingCy;
-                    if (CyberpunkVR_HeadingFromPreWrite && nativeMainBase) {
+                    if (haveBodyTrackingYaw) {
+                        const float yaw=bodyTrackingYaw+SceneStickYawRad();
+                        g_viewYawUsedRad=yaw;g_viewYawUsedValid=1;
+                        hSy=std::sin(yaw*.5f);hCy=std::cos(yaw*.5f);
+                    } else if (CyberpunkVR_HeadingFromPreWrite && nativeMainBase) {
                         // Seats, Combat and scripted scenes use MAIN, regardless
                         // of which eye claims the pose epoch. VRCAM's native
                         // attachment is not a second source of view heading.
@@ -610,62 +616,11 @@ extern "C" void __fastcall OnPatchCameraCallback(float* cameraState, void* owner
                         s_prevYaw = yaw;
                         s_prevYawValid = true;
 
-                        // THE VIEW'S YAW IS THE ENGINE'S, NOT THE BODY'S -- and that one line is what
-                        // lets the character turn WITHOUT the camera turning.
-                        //
-                        // The quaternion above is the component's, and the component inherits its yaw
-                        // from the entity through the parent slot (traced live: sub_1401D92A0 hands
-                        // over parent+0xE0/+0xF0, and the camera's own local rotation is never
-                        // written). So the moment the body follows the headset, that yaw carries our
-                        // follow offset and the view swings with it. Nothing about the view requires
-                        // that: WE compose the camera, so its yaw can come from whatever we choose.
-                        //
-                        // It comes from the value the engine itself computed for this frame --
-                        // published by the store site sub_140336390 before our offset is added
-                        // (src/Hooks/BodyYawCensus.cpp). That is the yaw the MOUSE and the stick
-                        // produce, so input still turns the view exactly as before, while the body's
-                        // extra rotation is invisible to it.
-                        //
-                        // Two things fall out for free. The base-yaw counter-rotation is no longer
-                        // needed (the view never sees the offset, so there is nothing to cancel, and
-                        // the HMD-local hands stay untouched), and this value is 0.22-0.79 ms old
-                        // instead of a frame old -- which is the 5-10 deg the [yawphase] census
-                        // measured between the packet heading and the yaw actually in use.
-                        // ON FOOT ONLY, and that is measured rather than cautious. The census reads
-                        // the PLAYER'S state transform; mounted, that transform stops describing where
-                        // the view looks -- [vehyaw] caught it flat at 0.0 deg while the car swung
-                        // through 260, against a camera heading that tracked the car to 1.3 deg. Left
-                        // in, it pins the driving view ~90 deg off the road, in a direction the player
-                        // cannot predict and cannot recenter away (recentring zeroes the HMD against
-                        // its base; this sits on the other side of that product).
-                        if (CyberpunkVR_ViewYawFromEngine && CyberpunkVR_EngineBodyYawValid
-                            && !g_isInVehicle) {
-                            float wz = CyberpunkVR_EngineBodyYawZ;
-                            float ww = CyberpunkVR_EngineBodyYawW;
-                            if (ww < 0.0f) { wz = -wz; ww = -ww; }   // shortest arc
-                            if (wz != 0.0f || ww != 0.0f) {
-                                yaw = 2.0f * atan2f(wz, ww);
-                                CVR_DIAGNOSTIC(++CyberpunkVR_DebugViewYawFromEngine);
-                            }
+                        // Native fallback outside the independent on-foot tracking frame.
+                        if (CyberpunkVR_ViewYawFromEngine && CyberpunkVR_EngineBodyYawValid && !g_isInVehicle) {
+                            const float z=CyberpunkVR_EngineBodyYawZ,w=CyberpunkVR_EngineBodyYawW;
+                            if(z!=0 || w!=0)yaw=2.0f*std::atan2(z,w);
                         }
-                        // PHYSICAL BODY ROTATION: TAKE OUR OWN TURN BACK OUT OF THE VIEW.
-                        //
-                        // The body follower turns the character through the engine's own heading (see
-                        // src/Hooks/BodyYawFollow.cpp), and that heading is what this composition is
-                        // built from -- so without this line every degree the body gains would swing
-                        // the view with it. Subtracting the accumulated realign leaves the view
-                        // exactly where it would have been had the body never turned, in the SAME
-                        // frame the heading changed.
-                        //
-                        // This is where the cancellation belongs. Doing it by rotating the recenter
-                        // base is algebraically identical but lands a frame late -- the heading moves
-                        // in the game tick, the base only on the next XR cycle -- and that one frame
-                        // of uncancelled step is the camera drift the old on-foot realign had.
-                        // Leaving the base alone also means recentring is untouched by the feature.
-                        yaw -= bodyYawOffset;
-                        // ...AND THE SCENE'S OWN YAW, WHERE THE GAME PROVIDES NONE. See the note on
-                        // CyberpunkVR_SceneStickYawDps: in these scenes the stick moves a head
-                        // animation and the camera is never turned, so this is the only source.
                         yaw += SceneStickYawRad();
                         // PUBLISHED AT THE INSTANT IT IS USED, so the play-space anchor can be rotated by
                         // the very same number instead of by the body's own forward. Those were two clocks
@@ -682,7 +637,7 @@ extern "C" void __fastcall OnPatchCameraCallback(float* cameraState, void* owner
                     }
                     // Same axis mapping LocateCamera uses: XR (x, y, z) -> game (x, -z, y). And the
                     // same yaw * pitch * HMD product it composes -- the pitch half is identity
-                    // unless the user turned "Disable Mouse Y" off.
+                    // unless the player turned "Disable Mouse Y" off.
                     float headX, headY, headZ, headW;
                     MulQuat(0.0f, 0.0f, hSy, hCy,
                             g_headingPitchS, 0.0f, 0.0f, g_headingPitchC,
@@ -1153,7 +1108,7 @@ extern "C" void __fastcall OnPatchCameraCallback(float* cameraState, void* owner
             static bool  s_mountLearned = false;
             const float kFp = 1.0f / 131072.0f;
             const float H = CyberpunkVR_BodyYawFinalRad;
-            const float A = bodyYawOffset;
+            const float A = BodyHeadingOffset();
             const float rx = static_cast<float>(p[0]) * kFp - CyberpunkVR_PlayerEntityPos[0];
             const float ry = static_cast<float>(p[1]) * kFp - CyberpunkVR_PlayerEntityPos[1];
             if (A == 0.0f) {
@@ -1272,9 +1227,9 @@ extern "C" void __fastcall OnPatchCameraCallback(float* cameraState, void* owner
                     ? translationConsumed : cvr::roomscale::CameraConsumed(translationPose.originSerial);
                 const float trackingYaw=writtenTrackingYawValid ? writtenTrackingYaw :
                     (g_viewYawUsedValid ? g_viewYawUsedRad : anchor.trackingYaw);
-                const auto delta=cvr::camera::ComposeAnchorTranslation(
+                const auto delta=cvr::camera::ComposeViewTranslation(
                     {(translationPose.posX-consumed.x)*sc,(-translationPose.posZ-consumed.y)*sc,translationPose.posY*sc},
-                    anchor.trackingOffset,anchor.modelOffset,trackingYaw,cvr::camera::BodyAnchorYaw(anchor.modelYaw));
+                    anchor,trackingYaw,cvr::camera::BodyAnchorYaw(anchor.modelYaw));
                 d[0] = static_cast<int32_t>(delta.x * 131072.0f);
                 d[1] = static_cast<int32_t>(delta.y * 131072.0f);
                 d[2] = static_cast<int32_t>(delta.z * 131072.0f);
@@ -1323,6 +1278,20 @@ extern "C" void __fastcall OnPatchCameraCallback(float* cameraState, void* owner
         // ...and not during a takeover either, for the same reason: the push has already put this eye half
         // an IPD off MAIN's centre, so a second half here doubles it.
         const int32_t centreBeforeIpd[3] = {p[0], p[1], p[2]};
+
+        // The eye brought to the sight (SetVRSightApproach), on both eyes and only where the head
+        // translation is ours to write. After centreBeforeIpd: the body and the arms hang off the head
+        // centre, and the weapon must stay where the hand holds it while the eye moves in.
+        if (ok && (wantMainHere || wantVrcamHere)) {
+            const float ax = CyberpunkVR_SightApproach[0], ay = CyberpunkVR_SightApproach[1],
+                        az = CyberpunkVR_SightApproach[2];
+            if (ax != 0.0f || ay != 0.0f || az != 0.0f) {
+                p[0] += static_cast<int32_t>(ax * 131072.0f);
+                p[1] += static_cast<int32_t>(ay * 131072.0f);
+                p[2] += static_cast<int32_t>(az * 131072.0f);
+                dirty = true;
+            }
+        }
         if (ok && CyberpunkVR_IpdInWorldPos && IsPlausibleUnitQuaternion(quat) &&
             !(camKind == 2 && (bdPushOwns || LocateOwnsTakeover()))) {
             const float half = GetDesiredHalfIpd();

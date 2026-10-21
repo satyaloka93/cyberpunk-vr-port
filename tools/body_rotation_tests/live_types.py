@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'swimming_tests'))
 from live_symbols import Symbol
 
 
-def describe(dll):
+def describe(dll, extra_types=()):
     d = c.WinDLL('dbghelp', use_last_error=True)
     k = c.WinDLL('kernel32')
     handle = c.c_void_p(0x424f4459)
@@ -20,6 +20,7 @@ def describe(dll):
                                   c.c_ulonglong, w.DWORD, c.c_void_p, w.DWORD]
     d.SymLoadModuleExW.restype = c.c_ulonglong
     d.SymGetTypeFromName.argtypes = [c.c_void_p, c.c_ulonglong, c.c_char_p, c.POINTER(Symbol)]
+    d.SymFromName.argtypes = [c.c_void_p,c.c_char_p,c.POINTER(Symbol)]
     d.SymGetTypeInfo.argtypes = [c.c_void_p, c.c_ulonglong, w.ULONG, c.c_int, c.c_void_p]
     d.SymCleanup.argtypes = [c.c_void_p]
     k.LocalFree.argtypes = [c.c_void_p]
@@ -47,14 +48,20 @@ def describe(dll):
             finally:
                 k.LocalFree(pointer)
 
-        required_types=('OpenXRManager', 'cvr::body::TrackingFrame', 'cvr::body::TrackedBodyYaw', 'LiveControls')
+        required_types=('OpenXRManager', 'cvr::body::TrackingFrame', 'cvr::body::TrackedBodyYaw', 'LiveControls')+tuple(extra_types)
         for type_name in required_types+('cvr::body::HybridBodyYaw','OpenXRHeadPose','cvr::body::BendSample'):
             symbol = Symbol()
             symbol.size, symbol.maxLength = 88, 1023
-            if not d.SymGetTypeFromName(handle, base, type_name.encode(), c.byref(symbol)):
+            is_symbol=type_name.startswith('symbol:')
+            found=(d.SymFromName(handle,type_name[7:].encode(),c.byref(symbol)) if is_symbol else
+                   d.SymGetTypeFromName(handle, base, type_name.encode(), c.byref(symbol)))
+            if not found:
                 if type_name not in required_types:
                     continue
                 raise RuntimeError('Missing PDB type: ' + type_name)
+            if is_symbol:
+                while info(symbol.type,0) in (14,15):  # pointer/array -> element type
+                    symbol.type=info(symbol.type,3)
             count = info(symbol.type, 13)  # TI_GET_CHILDRENCOUNT
             children = (w.ULONG * (count + 2))()
             children[0] = count
@@ -75,6 +82,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dll', type=Path, required=True)
     parser.add_argument('--out', type=Path, required=True)
+    parser.add_argument('--extra-type', action='append', default=[])
     args = parser.parse_args()
-    args.out.write_text(json.dumps(describe(args.dll.resolve()), indent=2), encoding='utf-8')
+    args.out.write_text(json.dumps(describe(args.dll.resolve(),args.extra_type), indent=2), encoding='utf-8')
     print(args.out)

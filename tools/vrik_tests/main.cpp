@@ -1,6 +1,11 @@
 #include "Anim/VrikHook.hpp"
 #include "Anim/CharacterRig.hpp"
+#include "Anim/Cyberware.hpp"
+#include "Anim/CyberwareMuscles.hpp"
 #include "Anim/ReloadPose.hpp"
+#include "Anim/HandGestures.hpp"
+#include "Anim/HandGesturePose.hpp"
+#include "Anim/HandGestureCalibration.hpp"
 #include "Anim/LadderFingerTuning.hpp"
 #include "Runtimes/LadderClimbing.hpp"
 #include "Anim/SkeletonPolicy.hpp"
@@ -22,9 +27,13 @@
 #include <string>
 #include <vector>
 #include <thread>
+#include <cstdlib>
 
 extern "C" int CyberpunkVR_RestFingerCaptureReqR;
 extern "C" int CyberpunkVR_RestFingerApplyR;
+extern "C" int CyberpunkVR_VrikElbowPolicy;
+extern "C" int CyberpunkVR_GestureMode[2];
+extern char g_VRSmokeFingerName[32][48],g_VRSmokeFingerNameL[32][48];
 
 namespace {
 struct Bone { float p[4],q[4],s[4]; };
@@ -44,7 +53,7 @@ template<class T> std::vector<T> Read(const char* name) {
 void Setup(const char* prefix="") {
     fixturePrefix=prefix;names.clear();
     const auto parents=Read<int16_t>("player_parents.bin");
-    Check(parents.size()==(fixturePrefix.empty() || fixturePrefix=="ladder" ? 619:620),"captured rig size changed");
+    Check(parents.size()==(fixturePrefix=="gorilla" ? 768:fixturePrefix=="mantis" ? 766:fixturePrefix=="launcher" ? 720:(fixturePrefix.empty() || fixturePrefix=="ladder" ? 619:620)),"captured rig size changed");
     for(size_t i=0;i<parents.size();++i)g_VRBoneParent[i]=parents[i];
     g_VRBoneCount=g_VRFKCount=static_cast<int>(parents.size());
     g_pSharedHands=shared.data();
@@ -75,11 +84,42 @@ void QuatNear(const float* a,const float* b,const char* what) {
     float dot=0;for(int k=0;k<4;++k)dot+=a[k]*b[k];
     Near(std::abs(dot),1.0f,2e-5f,what);
 }
-void SolveBody(std::vector<Bone>& pose,const float* rotation=nullptr,const float* headDelta=nullptr) {
+void SolveBody(std::vector<Bone>& pose,const float* rotation=nullptr,const float* headDelta=nullptr,const float* orbit=nullptr) {
     VRIK_DampenTorsoWeaponPose(reinterpret_cast<uint8_t*>(pose.data()));
     VRIK_ComputeFK(reinterpret_cast<uint8_t*>(pose.data()),static_cast<int>(pose.size()));
     const float camera[3]={0,0,1.6f},id[4]={0,0,0,1},forward[3]={0,1,0};
-    VRIK_PlaceBodyUnderHMD(reinterpret_cast<uint8_t*>(pose.data()),camera,rotation ? rotation : id,22,forward,headDelta);
+    VRIK_PlaceBodyUnderHMD(reinterpret_cast<uint8_t*>(pose.data()),camera,rotation ? rotation : id,22,forward,headDelta,orbit);
+}
+void BodyCentreOrbit() {
+    using namespace cvr::camera;
+    const auto native=Read<Bone>("player_local.bin");
+    auto neutral=native;SolveBody(neutral);
+    std::vector<std::array<float,3>> positions(native.size());
+    for(size_t i=0;i<native.size();++i)std::copy_n(g_fkPos[i],3,positions[i].begin());
+    AnchorVector mount{};Check(ReadNeckCameraMount(&mount),"missing neutral mount");
+    auto recipe=MakeAnchorRecipe({}, {}, mount,false,1,0,0);recipe.bodyOrbit=true;
+    for(float angle:{-3.14159265f,-1.57079633f,-.2f,0.f,.7f,1.57079633f,3.14159265f}) {
+        const auto offset=BodyOrbitModel(recipe,angle,0);const float orbit[3]={offset.x,offset.y,0};
+        auto pose=native;SolveBody(pose,nullptr,nullptr,orbit);
+        for(size_t i=0;i<native.size();++i) {
+            if(!g_VRUpperOwned[i])Check(std::memcmp(&pose[i],&native[i],sizeof(Bone))==0,"orbit rewrote native leg animation");
+            bool descendant=false;
+            for(int p=int(i);p>=0;p=g_VRBoneParent[p])if(p==g_VRHipsIdx){descendant=true;break;}
+            if(descendant)for(int k=0;k<3;++k)Near(g_fkPos[i][k],positions[i][k]+orbit[k],2e-5f,"orbit distorted a skeleton segment");
+        }
+        // Deliberate view turning and recenter may change tracking yaw too;
+        // neither rotates the calibrated origin about the capsule.
+        const auto view=ComposeViewTranslation({},recipe,angle*.4f,angle);
+        Near(view.x,mount.x,1e-6f,"body yaw moved optical centre X");
+        Near(view.y,mount.y,1e-6f,"body yaw moved optical centre Y");
+        const auto world=RotateAnchorYaw({mount.x+offset.x,mount.y+offset.y,mount.z},angle);
+        Near(world.x,view.x,1e-6f,"body orbit lost calibrated head X");
+        Near(world.y,view.y,1e-6f,"body orbit lost calibrated head Y");
+        const auto first=pose;
+        for(int repeat=0;repeat<100;++repeat)SolveBody(pose,nullptr,nullptr,orbit);
+        for(size_t i=0;i<pose.size();++i)for(int k=0;k<3;++k)Near(pose[i].p[k],first[i].p[k],1e-5f,"orbit accumulated across repeated poses");
+    }
+    std::cout<<"PASS fixed optical centre and rigid avatar orbit, native local legs preserved\n";
 }
 void RigPolicy() {
     Check(g_VRSpineCount==4,"service nodes were selected as spine");
@@ -428,6 +468,520 @@ void GirdleReach() {
             }
         }
     }
+}
+
+void OverheadReach() {
+    Setup("weapon_stance");
+    const auto native=Read<Bone>("unarmed-2.bin"),reference=Read<Bone>("reference_full.bin");
+    const float right[3]={1,0,0},up[3]={0,0,1},forward[3]={0,1,0},q[4]={0,0,0,1};
+    float worst=0;
+    for(bool left:{false,true})for(float elevation:{0.f,30.f,50.f,70.f,85.f,90.f,-70.f}) {
+        auto pose=native;SolveBody(pose);auto* buf=reinterpret_cast<uint8_t*>(pose.data());
+        const int upper=left?17:18,fore=left?20:21,hand=left?23:24,clav=left?14:15;
+        VRIK_PinGirdleTranslations(buf);VRIK_ComputeFK(buf,620);
+        float anchor[3],joint[3],pivot[3];std::copy_n(g_fkPos[16],3,anchor);
+        VRIK_AnchorShoulder(buf,upper,anchor,left,right,up,.14f,joint);
+        std::copy_n(g_fkPos[clav],3,pivot);
+        const float length=std::sqrt(VRIK_Dot3(reference[fore].p,reference[fore].p))+std::sqrt(VRIK_Dot3(reference[hand].p,reference[hand].p));
+        const float angle=elevation*.01745329252f;
+        // A lifted shoulder adds reach above the head while arm length stays fixed.
+        const float distance=length*1.14f+.065f*std::max(0.f,std::sin(angle));
+        const float target[3]={joint[0],joint[1]+std::cos(angle)*distance,joint[2]+std::sin(angle)*distance};
+        for(int pass=0;pass<12;++pass) {
+            VRIK_SolveArm(buf,upper,fore,hand,target,q,right,up,forward,0,1,left,false);
+            VRIK_ComputeFK(buf,620);
+            float error[3];for(int k=0;k<3;++k)error[k]=g_fkPos[hand][k]-target[k];
+            worst=std::max(worst,std::sqrt(VRIK_Dot3(error,error)));
+            for(int k=0;k<3;++k)Near(g_fkPos[clav][k],pivot[k],1e-5f,"overhead reach moved clavicle pivot");
+            for(int bone:{fore,hand}) {
+                const float scale=std::sqrt(VRIK_Dot3(pose[bone].p,pose[bone].p)/VRIK_Dot3(reference[bone].p,reference[bone].p));
+                Check(scale<=1.1501f,"overhead reach stretched the arm beyond existing limits");
+            }
+        }
+    }
+    std::cout<<"overhead_worst_wrist_error_mm="<<worst*1000<<'\n';
+    Check(worst<.002f,"raised wrist stops before the controller");
+}
+
+void CyberwarePose(const char* rig="gorilla") {
+    Setup(rig);const auto native=Read<Bone>("player_local.bin");auto pose=native;
+    auto* buffer=reinterpret_cast<uint8_t*>(pose.data());
+    Check(VRIK_UsesNativeCyberware(),"cyberware rig not detected");
+    Check(!VRIK_IsNativeCyberwareConsumer(VRIK_PlayerBaseGraph),"VRIK skipped the primary pose producer");
+    for(bool left:{false,true}) {
+        const int upper=left?17:18,fore=left?20:21,hand=left?23:24;
+        const float right[3]={1,0,0},up[3]={0,0,1},forward[3]={0,1,0};
+        auto first=native;SolveBody(first);
+        float target[3],rotation[4];std::copy_n(g_fkPos[hand],3,target);std::copy_n(g_fkRot[hand],4,rotation);
+        VRIK_SolveArm(reinterpret_cast<uint8_t*>(first.data()),upper,fore,hand,target,rotation,right,up,forward,0,1,left,false);
+        VRIK_ComputeFK(reinterpret_cast<uint8_t*>(first.data()),g_VRBoneCount);
+        float axis[3],before[4];std::copy_n(g_fkRot[fore],4,before);
+        for(int k=0;k<3;++k)axis[k]=g_fkPos[hand][k]-g_fkPos[fore][k];VRIK_Norm3(axis);
+        const float roll[4]={axis[0]*.70710678f,axis[1]*.70710678f,axis[2]*.70710678f,.70710678f};
+        float turned[4];VRIK_QuatMul(roll,rotation,turned);
+        auto second=native;SolveBody(second);
+        VRIK_SolveArm(reinterpret_cast<uint8_t*>(second.data()),upper,fore,hand,target,turned,right,up,forward,0,1,left,false);
+        VRIK_ComputeFK(reinterpret_cast<uint8_t*>(second.data()),g_VRBoneCount);
+        QuatNear(g_fkRot[hand],turned,"cyberware roll changed the tracked wrist");
+        float dot=0;for(int k=0;k<4;++k)dot+=before[k]*g_fkRot[fore][k];
+        const float degrees=2*std::acos(std::clamp(std::abs(dot),0.0f,1.0f))*57.2957795f;
+        std::cout<<rig<<(left?" left":" right")<<" forearm_roll_degrees="<<degrees<<'\n';
+        // Combat now deliberately has a different elbow plane from relaxed
+        // ordinary hands; compare the share of wrist roll, not full orientation.
+        Check(degrees>20.f && degrees<26.f,"cyberware stopped sharing approximately one quarter of wrist roll");
+    }
+    SolveBody(pose);
+    const float right[3]={1,0,0},up[3]={0,0,1},forward[3]={0,1,0},q[4]={0,.70710678f,0,.70710678f};
+    for(bool left:{false,true}) {
+        const int upper=left?17:18,fore=left?20:21,hand=left?23:24;
+        const float target[3]={left?-.24f:.24f,.48f,1.65f};
+        VRIK_SolveArm(buffer,upper,fore,hand,target,q,right,up,forward,0,1,left,false);
+    }
+    VRIK_ComputeFK(buffer,g_VRBoneCount);VRIK_CaptureModelCache();
+    const char* marker=fixturePrefix=="mantis" ? "l_wrist01_GRP":fixturePrefix=="launcher" ? "LeftHand_setup":"l_plate_up_a";
+    const int bone=int(std::find(names.begin(),names.end(),marker)-names.begin());
+    Check(bone<g_VRBoneCount,"missing native deformation marker");
+    // Native graph results arrive AFTER the primary IK producer. They must
+    // survive the dispatch intact, including a fresh grip and deployment pose.
+    for(uint64_t graph:{0xa3e7441ba96a1b41ull,0x16320cecc15a325cull,0xebb9897efd33f895ull,0x1234ull}) {
+        pose[bone].p[1]+=.013f;pose[bone].q[0]=.2f;
+        pose[45].q[1]=.3f; // authored left thumb grip (wire/cyberware)
+        const auto expected=pose;
+        if(!VRIK_IsNativeCyberwareConsumer(graph))VRIK_ReplaySolveCache(buffer);
+        Check(!std::memcmp(pose.data(),expected.data(),pose.size()*sizeof(Bone)),"VRIK replay overwrote a downstream cyberware graph");
+    }
+    Setup("weapon_stance");
+    Check(!VRIK_UsesNativeCyberware(),"cyberware policy survived a rig replacement");
+    Check(!VRIK_IsNativeCyberwareConsumer(0x16320cecc15a325cull),"ordinary weapons lost their existing replay path");
+    std::cout<<"native_cyberware_consumers_preserved=true normal_rig_reset=true\n";
+}
+
+void MantisWrist() {
+    Setup("mantis");g_VRBind=4;
+    const auto native=Read<Bone>("player_local.bin");
+    const float right[3]={1,0,0},up[3]={0,0,1},forward[3]={0,1,0};
+    auto find=[](const std::string& name){return int(std::find(names.begin(),names.end(),name)-names.begin());};
+    auto reference=Read<Bone>("reference_full.bin");
+    VRIK_ComputeFK(reinterpret_cast<uint8_t*>(reference.data()),int(reference.size()));
+    float localDorsal[2][3]{},neutralHand[2][4]{};
+    for(int side=0;side<2;++side) {
+        const std::string h=side?"Right":"Left";const int hand=find(h+"Hand");
+        float a[3],b[3],normal[3],inverse[4];
+        for(int k=0;k<3;++k){a[k]=g_fkPos[find(h+"HandIndex1")][k]-g_fkPos[hand][k];b[k]=g_fkPos[find(h+"HandPinky1")][k]-g_fkPos[hand][k];}
+        VRIK_Cross3(a,b,normal);if(side)for(float& v:normal)v=-v;VRIK_Norm3(normal);
+        VRIK_QuatConj(g_fkRot[hand],inverse);VRIK_QuatRotateVec(inverse,normal,localDorsal[side]);
+        float aim[3],turn[4];for(int k=0;k<3;++k)aim[k]=g_fkPos[hand][k]-g_fkPos[find(h+"ForeArm")][k];
+        VRIK_Norm3(aim);VRIK_QuatFromTo(aim,forward,turn);VRIK_QuatMul(turn,g_fkRot[hand],neutralHand[side]);
+    }
+    for(int axis=0;axis<3;++axis)for(float angle:{-1.2f,0.f,1.2f}) {
+        auto pose=native;SolveBody(pose);auto* buffer=reinterpret_cast<uint8_t*>(pose.data());
+        for(int side=0;side<2;++side) {
+            const bool left=side==0;const int upper=left?17:18,fore=left?20:21,hand=left?23:24;
+            const float target[3]={left?-.24f:.24f,.45f,1.55f};
+            // Reflect the target pose itself; the captured native attack had
+            // different left/right wrist orientations and was not a mirror.
+            const float mirrored=side && axis!=0?-angle:angle;
+            float roll[4]={0,0,0,std::cos(mirrored*.5f)},q[4];roll[axis]=std::sin(mirrored*.5f);
+            VRIK_QuatMul(roll,neutralHand[side],q);
+            VRIK_SolveArm(buffer,upper,fore,hand,target,q,right,up,forward,0,1,left,false);
+        }
+        VRIK_ApplyCyberwarePose(buffer);
+        if(const char* capture=std::getenv("VRP_MANTIS_CAPTURE_DIR")) {
+            const auto dir=std::filesystem::path(capture);std::filesystem::create_directories(dir);
+            const auto path=dir/("mantis-"+std::to_string(axis)+"-"+std::to_string(int(std::round(angle*100)))+".bin");
+            std::ofstream file(path,std::ios::binary);
+            for(int i=0;i<g_VRBoneCount;++i){file.write(reinterpret_cast<const char*>(g_fkPos[i]),12);file.write(reinterpret_cast<const char*>(g_fkRot[i]),16);}
+        }
+        float anatomy[2][3]{};
+        for(int side=0;side<2;++side) {
+            const std::string p=side?"r_":"l_",h=side?"Right":"Left",e=side?"right_":"left_";
+            const int skin=find(p+"handIndex01_JNT"),insert=find(h+"InHandIndex");
+            // These are the actual equal bind matrices in the flesh/mechanism
+            // meshes. They must remain welded under wrist flexion AND roll.
+            for(int k=0;k<3;++k)Near(g_fkPos[skin][k],g_fkPos[insert][k],2e-5f,"Mantis skin hand detached from its index insert");
+            QuatNear(g_fkRot[skin],g_fkRot[insert],"Mantis skin ignores controller wrist rotation");
+            const int wrist=find(p+"innerWrist01_JNT"),socket=g_VRBoneParent[wrist];float joint[3];
+            VRIK_QuatRotateVec(g_fkRot[socket],reference[wrist].p,joint);
+            for(int k=0;k<3;++k)Near(joint[k]+g_fkPos[socket][k],g_fkPos[wrist][k],.00005f,"Mantis blade-base socket separates from the palm pivot");
+            float targetDirection[3],forearmDirection[3];
+            for(int k=0;k<3;++k) {
+                targetDirection[k]=g_fkPos[find(p+"blade05_JNT")][k]-g_fkPos[find(p+"blade01_JNT")][k];
+                forearmDirection[k]=g_fkPos[find(h+"Hand")][k]-g_fkPos[find(h+"ForeArm")][k];
+            }
+            VRIK_Norm3(targetDirection);VRIK_Norm3(forearmDirection);
+            Check(VRIK_Dot3(targetDirection,forearmDirection)>.7f,"deployed blade does not point forward along its arm");
+            float dorsal[3],lateral[3],tip[3],edge[3];
+            VRIK_QuatRotateVec(g_fkRot[find(h+"Hand")],localDorsal[side],dorsal);
+            const float parallel=VRIK_Dot3(dorsal,forearmDirection);
+            for(int k=0;k<3;++k)dorsal[k]-=parallel*forearmDirection[k];
+            VRIK_Norm3(dorsal);VRIK_Cross3(forearmDirection,dorsal,lateral);
+            for(int k=0;k<3;++k) {
+                tip[k]=g_fkPos[find(p+"blade05_JNT")][k]-g_fkPos[find(h+"Hand")][k];
+                edge[k]=g_fkPos[find(p+"blade05_JNT")][k]-g_fkPos[find(p+"blade02_JNT")][k];
+            }
+            anatomy[side][0]=VRIK_Dot3(tip,lateral);
+            anatomy[side][1]=VRIK_Dot3(tip,forearmDirection);
+            anatomy[side][2]=VRIK_Dot3(tip,dorsal);
+            // The mating pivot moves around Hand during wrist flexion. Bound
+            // the resulting placement against the arm, rather than requiring
+            // the old disconnected profile's constant Hand-relative offset.
+            Check(anatomy[side][2]>.10f,"Mantis blade is not above the knuckle side of the arm");
+            Check(std::abs(anatomy[side][0])<.065f,"Mantis blade is mounted beside the forearm");
+            Check(anatomy[side][1]>.30f,"Mantis blade is not extended ahead of the hand");
+            Near(std::sqrt(VRIK_Dot3(edge,edge)),.57144f,.002f,"wrist joint repair changed native cutting-edge length");
+            VRIK_Norm3(edge);Check(VRIK_Dot3(edge,forearmDirection)>.99f,"Mantis cutting edge is not parallel to the forearm");
+            // Native hand articulation can shift the two actual wrist pivots
+            // by millimetres. Compare the mirrored mechanism about its mating
+            // socket, while the checks above still bound it against the arm.
+            for(int k=0;k<3;++k)tip[k]=g_fkPos[find(p+"blade05_JNT")][k]-g_fkPos[wrist][k];
+            anatomy[side][0]=VRIK_Dot3(tip,lateral);
+            anatomy[side][1]=VRIK_Dot3(tip,forearmDirection);
+            anatomy[side][2]=VRIK_Dot3(tip,dorsal);
+        }
+        Near(anatomy[0][0],-anatomy[1][0],.001f,"Mantis left/right lateral mount differs");
+        for(int k=1;k<3;++k)Near(anatomy[0][k],anatomy[1][k],.001f,"Mantis left/right deployment differs");
+        const auto first=pose;
+        for(int repeat=0;repeat<20;++repeat)VRIK_ApplyCyberwarePose(buffer);
+        for(size_t i=0;i<pose.size();++i)for(int k=0;k<3;++k)
+            Near(pose[i].p[k],first[i].p[k],2e-5f,"Mantis correction accumulates across pose passes");
+    }
+    Setup("weapon_stance");Check(!VRIK_UsesNativeCyberware(),"Mantis policy survives rig replacement");
+    std::cout<<"mantis_wrist_axes=3 poses=9 shared_skinning_anchor_welded=true\n";
+}
+
+void CyberwareWire() {
+    using namespace cvr::cyberware;
+    Wire line;const Vec3 anchor{0,0,1.5f},forward{0,1,0};
+    for(int i=0;i<60;++i)line.Step(anchor,forward,true,1.f/120,Wire::Reach);
+    Check(line.deployed==1.f,"monowire did not fully deploy");
+    Near(Length(line.point[0]-anchor),0,1e-6f,"wire emitter detached");
+    const float segment=Wire::Reach/(Wire::Count-1);
+    float worst=0;
+    for(int frame=0;frame<180;++frame) {
+        const Vec3 moving{.18f*std::sin(frame*.07f),0,1.5f};
+        line.Step(moving,forward,true,1.f/120,Wire::Reach);
+        for(int i=1;i<Wire::Count;++i) {
+            Check(Finite(line.point[i]),"wire simulation diverged");
+            worst=std::max(worst,std::abs(Length(line.point[i]-line.point[i-1])-segment));
+        }
+    }
+    Check(worst<.015f,"wire segment constraints stretch excessively");
+    Check(line.point.back().z<1.4f,"wire has no gravity/inertial sag");
+    Wire still;
+    for(int i=0;i<600;++i)still.Step(anchor,forward,true,1.f/120,Wire::Reach);
+    const auto mid=still.point[Wire::Count/2],tip=still.point.back();
+    std::cout<<"wire_rest_mid="<<mid.x<<','<<mid.y<<','<<mid.z<<" tip="<<tip.x<<','<<tip.y<<','<<tip.z<<'\n';
+    Check(mid.y>1.8f && mid.z>1.35f,"wire hangs from its middle instead of extending ahead");
+    Check(tip.y>2.7f && tip.z<mid.z-.20f,"wire tip does not drop after its supported section");
+    for(const Vec3 sweep:{Vec3{1,0,0},Vec3{-1,0,0},Vec3{0,0,1},Vec3{0,0,-1}}) {
+        Wire whip;const Vec3 high{0,0,5};
+        for(int i=0;i<300;++i)whip.Step(high,forward,true,1.f/120,Wire::Reach);
+        Vec3 moving=high;
+        for(int i=1;i<=60;++i){moving=high+sweep*(3.6f*i/120);whip.Step(moving,forward,true,1.f/120,Wire::Reach);}
+        const Vec3 end=whip.point.back(),middle=whip.point[Wire::Count/2];
+        const float trailing=-Dot(middle-(moving+end)*.5f,sweep);
+        const float tangent=Dot(Unit(end-whip.point[Wire::Count-2]),forward);
+        std::cout<<"wire_sweep="<<sweep.x<<','<<sweep.z<<" tip_forward="<<end.y-moving.y<<" trailing_arc="<<trailing<<" tip_tangent="<<tangent<<'\n';
+        Check(end.y-moving.y>4.6f,"wire tip stays folded down during a swing");
+        Check(trailing>.015f && trailing<.65f,"wire does not form a small trailing arc in this sweep direction");
+        Check(tangent>.93f,"wire end does not straighten during a swing");
+    }
+    for(int i=0;i<30;++i)line.Step(anchor,forward,false,1.f/120,Wire::Reach);
+    Check(line.deployed==0,"wire does not retract on grip release");
+    for(const auto p:line.point)Near(Length(p-anchor),0,1e-6f,"retracted wire remains outside emitter");
+    line.Step({100,100,100},forward,true,.3f,Wire::Reach);
+    for(const auto p:line.point)Check(Finite(p)&&Length(p-Vec3{100,100,100})<5.1f,"teleport leaves a trailing hit segment");
+    line.Step({NAN,0,0},forward,true,.01f,Wire::Reach);Check(!line.valid,"invalid tracking did not reset wire");
+    line.Reset();
+    for(int frame=0;frame<500;++frame) {
+        for(int i=1;i<Wire::Count;++i)line.planes[i]={{line.point[i].x,line.point[i].y,0},{0,0,1},true};
+        line.Step({0,0,.35f},forward,true,1.f/120,Wire::Reach);
+        for(int i=1;i<Wire::Count;++i)Check(Finite(line.point[i])&&line.point[i].z>=.0059f,"wire penetrated its floor contact plane");
+    }
+    const auto restingTip=line.point.back();
+    float tipTravel=0;
+    for(int frame=0;frame<180;++frame) {
+        const float t=frame/120.f;
+        const Vec3 moving{.65f*std::sin(t*9.f),0,1.5f+.45f*std::sin(t*4.f)};
+        for(int i=1;i<Wire::Count;++i)line.planes[i]={{line.point[i].x,line.point[i].y,0},{0,0,1},true};
+        line.Step(moving,Unit({std::sin(t*9),1,.6f}),true,1.f/120,Wire::Reach);
+        tipTravel=std::max(tipTravel,Length(line.point.back()-restingTip));
+    }
+    Check(tipTravel>.45f,"only the start of the wire follows a hand flick");
+    Wire left,rightLine;
+    for(int frame=0;frame<300;++frame) {
+        const float x=.2f+.3f*std::sin(frame*.04f);
+        left.Step({-x,0,1.5f},{-.3f,1,.2f},true,1.f/90,Wire::Reach);
+        rightLine.Step({x,0,1.5f},{.3f,1,.2f},true,1.f/90,Wire::Reach);
+        for(int i=0;i<Wire::Count;++i) {
+            Near(left.point[i].x,-rightLine.point[i].x,.0001f,"left/right wire dynamics are asymmetric");
+            Near(left.point[i].y,rightLine.point[i].y,.0001f,"left/right wire lengths disagree");
+            Near(left.point[i].z,rightLine.point[i].z,.0001f,"left/right wire sag disagrees");
+        }
+    }
+    std::cout<<"wire_flick_tip_travel="<<tipTravel<<"m mirrored_motion=true\n";
+    std::cout<<"wire_length="<<Wire::Reach<<"m nodes="<<Wire::Count<<" max_segment_error="<<worst<<"m\n";
+    const char* trackNames[]={"other0","rightWireSlideFactor","other2","leftWireSlideFactor","other4"};
+    float defaults[]={7,.3f,8,.8f,9},values[]={7,.3f,8,.8f,9};
+    const int family=g_VRCyberwareFamily;g_VRCyberwareFamily=3;g_VRBind=4;
+    VRIK_ConfigureCyberwareTracks(trackNames,5,defaults);
+    VRIK_ApplyWireTracks(defaults,5);
+    Check(defaults[1]==.3f && defaults[3]==.8f,"wire wrote read-only reference tracks");
+    VRIK_ApplyWireTracks(values,2);
+    Check(values[1]==0 && values[3]==.8f && values[0]==7,"wire track write exceeded this pose's bounds");
+    VRIK_ApplyWireTracks(values,5);
+    Check(values[3]==0 && values[2]==8 && values[4]==9,"wire overwrote unrelated animation tracks");
+    VRIK_ConfigureCyberwareTracks(nullptr,0,nullptr);g_VRCyberwareFamily=family;
+}
+
+void CombatElbow() {
+    const float right[3]={1,0,0},up[3]={0,0,1},forward[3]={0,1,0};
+    CyberpunkVR_VrikElbowPolicy=1;g_VRBind=4;
+    for(const char* rig:{"gorilla","mantis"})for(bool left:{false,true}) {
+        Setup(rig);const auto reference=Read<Bone>("reference_full.bin");
+        auto pose=Read<Bone>("player_local.bin");auto* buffer=reinterpret_cast<uint8_t*>(pose.data());
+        const int upper=left?17:18,fore=left?20:21,hand=left?23:24;
+        auto ref=reference;VRIK_ComputeFK(reinterpret_cast<uint8_t*>(ref.data()),int(ref.size()));
+        float axis[3],refHand[4];for(int k=0;k<3;++k)axis[k]=g_fkPos[hand][k]-g_fkPos[fore][k];VRIK_Norm3(axis);
+        std::copy_n(g_fkRot[hand],4,refHand);
+        const float aim[3]={left?1.f:-1.f,0,0};float turn[4],rotation[4];VRIK_QuatFromTo(axis,aim,turn);VRIK_QuatMul(turn,refHand,rotation);
+        SolveBody(pose);float shoulder[3];std::copy_n(g_fkPos[upper],3,shoulder);
+        const float target[3]={shoulder[0]+(left?.02f:-.02f),shoulder[1]+.32f,shoulder[2]-.02f};
+        VRIK_SolveArm(buffer,upper,fore,hand,target,rotation,right,up,forward,0,1,left,false);
+        VRIK_ComputeFK(buffer,g_VRBoneCount);
+        const float out=(g_fkPos[fore][0]-shoulder[0])*(left?-1.f:1.f);
+        const float drop=shoulder[2]-g_fkPos[fore][2];
+        Check(out>.12f,"hook elbow remains pinned against the torso");
+        Check(drop<.12f,"hook elbow is forced into the relaxed hanging pose");
+        for(int k=0;k<3;++k)Near(g_fkPos[hand][k],target[k],.002f,"combat elbow moved wrist off controller");
+        std::cout<<rig<<(left?" left":" right")<<" hook_elbow_out="<<out<<"m drop="<<drop<<"m\n";
+    }
+    CyberpunkVR_VrikElbowPolicy=0;
+}
+
+void ElbowBlendProfiles() {
+    const float right[3]={1,0,0},up[3]={0,0,1},forward[3]={0,1,0};
+    CyberpunkVR_VrikElbowPolicy=1;
+    for(bool left:{false,true})for(float height:{-.02f,.12f}) {
+        Setup("gorilla");const auto reference=Read<Bone>("reference_full.bin");
+        auto ref=reference;VRIK_ComputeFK(reinterpret_cast<uint8_t*>(ref.data()),int(ref.size()));
+        const int upper=left?17:18,fore=left?20:21,hand=left?23:24;
+        float axis[3],turn[4],rotation[4];for(int k=0;k<3;++k)axis[k]=g_fkPos[hand][k]-g_fkPos[fore][k];VRIK_Norm3(axis);
+        const float aim[3]={left?1.f:-1.f,0,0};VRIK_QuatFromTo(axis,aim,turn);VRIK_QuatMul(turn,g_fkRot[hand],rotation);
+        auto native=Read<Bone>("player_local.bin");auto base=native;SolveBody(base);
+        float shoulder[3];std::copy_n(g_fkPos[upper],3,shoulder);
+        const float target[3]={shoulder[0]+(left?.02f:-.02f),shoulder[1]+.32f,shoulder[2]+height};
+        float normals[7][3]{},lengths[7][2]{};
+        // Revisit wire/ordinary after a full-combat profile to cover rearming's smoothing state.
+        const int families[]={0,1,3,0,2,3,0};
+        for(int profile=0;profile<7;++profile) {
+            auto pose=native;g_VRCyberwareFamily=1;SolveBody(pose);
+            g_VRCyberwareFamily=families[profile];g_VRBind=profile==0?0:4;
+            auto* buffer=reinterpret_cast<uint8_t*>(pose.data());
+            VRIK_SolveArm(buffer,upper,fore,hand,target,rotation,right,up,forward,0,1,left,false);
+            VRIK_ComputeFK(buffer,g_VRBoneCount);
+            float line[3],fromWrist[3],upperSegment[3];
+            for(int k=0;k<3;++k) {
+                Near(g_fkPos[hand][k],target[k],.002f,"elbow blend moves wrist off its controller");
+                line[k]=g_fkPos[upper][k]-target[k];fromWrist[k]=g_fkPos[fore][k]-target[k];
+                upperSegment[k]=g_fkPos[fore][k]-g_fkPos[upper][k];
+            }
+            lengths[profile][0]=std::sqrt(VRIK_Dot3(upperSegment,upperSegment));
+            lengths[profile][1]=std::sqrt(VRIK_Dot3(fromWrist,fromWrist));
+            VRIK_Norm3(line);const float along=VRIK_Dot3(fromWrist,line);
+            for(int k=0;k<3;++k)normals[profile][k]=fromWrist[k]-line[k]*along;
+            VRIK_Norm3(normals[profile]);
+        }
+        const auto angle=[&](int profile){return std::acos(std::clamp(VRIK_Dot3(normals[0],normals[profile]),-1.f,1.f));};
+        const float full=angle(1);Check(full>.3f,"blend test needs distinct relaxed and combat endpoints");
+        for(int profile=1;profile<7;++profile) {
+            const float expected=families[profile]==0?.25f:families[profile]==3?.5f:1.f;
+            Near(angle(profile)/full,expected,.01f,"elbow swivel does not match the requested percentage");
+            for(int k=0;k<2;++k)Near(lengths[profile][k],lengths[0][k],.00005f,"elbow percentage changes arm length");
+        }
+        std::cout<<(left?"left":"right")<<" height="<<height<<" wire_fraction="<<angle(2)/full<<" ordinary_fraction="<<angle(3)/full<<'\n';
+    }
+    CyberpunkVR_VrikElbowPolicy=0;g_VRBind=4;Setup();
+}
+
+void CyberwareMuscles() {
+    using namespace cvr::cyberware;
+    float mantisMove=0,gorillaScale=1;
+    for(const auto& curve:MuscleCurves) {
+        for(int endpoint:{0,MuscleSampleCount-1}) {
+            const auto& value=curve.samples[endpoint];
+            for(int k=0;k<3;++k){Near(value.position[k],0,1e-7f,"muscle pulse fails to return to its pose");Near(value.scale[k],1,1e-7f,"muscle pulse fails to restore thickness");}
+            Near(std::abs(value.rotation[3]),1,1e-7f,"muscle pulse leaves a rotation offset");
+        }
+        for(const auto& value:curve.samples) {
+            float norm=0;for(float v:value.rotation){Check(std::isfinite(v),"invalid muscle rotation");norm+=v*v;}
+            Near(norm,1,1e-5f,"muscle curve rotation is not normalized");
+            if(curve.family==2)mantisMove=std::max(mantisMove,std::sqrt(VRIK_Dot3(value.position,value.position)));
+            if(curve.family==1)gorillaScale=std::max(gorillaScale,value.scale[1]);
+            for(float v:value.scale)Check(std::isfinite(v)&&v>.8f&&v<2.1f,"native muscle scale out of captured bounds");
+        }
+    }
+    Check(mantisMove>.005f&&mantisMove<.04f,"Mantis native muscle motion missing");
+    Check(gorillaScale>1.5f,"Gorilla native contraction missing");
+    std::cout<<"native_mantis_motion="<<mantisMove<<"m gorilla_thickness="<<gorillaScale<<"\n";
+}
+
+void LauncherAxis() {
+    Setup("launcher");auto pose=Read<Bone>("player_local.bin");g_VRBind=4;
+    testCyberwareWorldFrame=true;VRIK_ApplyCyberwarePose(reinterpret_cast<uint8_t*>(pose.data()));testCyberwareWorldFrame=false;
+    cvr::cyberware::Frame frame;Check(cvr::cyberware::ReadFrame(frame)&&frame.count[0]==2,"launcher muzzle not published");
+    auto find=[](const std::string& n){return int(std::find(names.begin(),names.end(),n)-names.begin());};
+    float actual[3],expected[3],forearm[3];const float local[3]={0,0,1};
+    const auto delta=frame.points[0][1]-frame.points[0][0];actual[0]=delta.x;actual[1]=delta.y;actual[2]=delta.z;VRIK_Norm3(actual);
+    VRIK_QuatRotateVec(g_fkRot[find("launcher_fragment_fire")],local,expected);
+    for(int k=0;k<3;++k)forearm[k]=g_fkPos[find("LeftHand")][k]-g_fkPos[find("LeftForeArm")][k];VRIK_Norm3(forearm);
+    Near(VRIK_Dot3(actual,expected),1,1e-5f,"launcher aims across the barrel marker axis");
+    Check(VRIK_Dot3(actual,forearm)>.98f,"native deployed launcher points sideways");
+    const auto before=delta;
+    const int ammo=find("launcher_ammo_base");const float turn[4]={.70710678f,0,0,.70710678f};
+    float rotated[4];VRIK_QuatMul(pose[ammo].q,turn,rotated);std::copy_n(rotated,4,pose[ammo].q);
+    testCyberwareWorldFrame=true;VRIK_ApplyCyberwarePose(reinterpret_cast<uint8_t*>(pose.data()));testCyberwareWorldFrame=false;
+    Check(cvr::cyberware::ReadFrame(frame),"launcher frame missing after cartridge movement");
+    Near(cvr::cyberware::Length((frame.points[0][1]-frame.points[0][0])-before),0,.00001f,"cartridge animation steers the shot");
+    std::cout<<"launcher_barrel_axis_stable_during_cartridge_animation=true forward_dot="<<VRIK_Dot3(actual,forearm)<<"\n";
+}
+
+void LauncherWrist() {
+    Setup("launcher");g_VRBind=4;
+    const auto native=Read<Bone>("player_local.bin");
+    auto base=native;VRIK_ApplyCyberwarePose(reinterpret_cast<uint8_t*>(base.data()));
+    const auto find=[](const char* n){return int(std::find(names.begin(),names.end(),n)-names.begin());};
+    const int hand=find("LeftHand"),skin=find("LeftHand_setup"),barrel=find("launcher_fragment_fire");
+    float baseHand[4],baseSkin[4],baseBarrel[4],offset[3];
+    std::copy_n(g_fkRot[hand],4,baseHand);std::copy_n(g_fkRot[skin],4,baseSkin);std::copy_n(g_fkRot[barrel],4,baseBarrel);
+    for(int k=0;k<3;++k)offset[k]=g_fkPos[skin][k]-g_fkPos[hand][k];
+    for(int axis=0;axis<3;++axis)for(float angle:{-.8f,.8f}) {
+        auto pose=native;auto* buffer=reinterpret_cast<uint8_t*>(pose.data());
+        VRIK_ComputeFK(buffer,g_VRBoneCount);
+        float turn[4]={0,0,0,std::cos(angle/2)},target[4],expected[4],expectedOffset[3];turn[axis]=std::sin(angle/2);
+        VRIK_QuatMul(turn,baseHand,target);VRIK_QuatMul(turn,baseSkin,expected);VRIK_QuatRotateVec(turn,offset,expectedOffset);
+        VRIK_WriteLocalRot(buffer,hand,g_fkRot[g_VRBoneParent[hand]],target);
+        VRIK_ApplyCyberwarePose(buffer);
+        QuatNear(g_fkRot[skin],expected,"launcher visible wrist ignores controller rotation");
+        QuatNear(g_fkRot[barrel],baseBarrel,"wrist flex steers forearm barrel");
+        for(int k=0;k<3;++k)Near(g_fkPos[skin][k]-g_fkPos[hand][k],expectedOffset[k],1e-5f,"launcher wrist bind socket separated");
+        for(size_t i=0;i<pose.size();++i)if(names[i].find("Hand")!=std::string::npos && names[i].find("_setup")!=std::string::npos && int(i)!=skin)
+            Check(std::memcmp(&pose[i],&native[i],sizeof(Bone))==0,"launcher wrist changed native finger articulation");
+        const auto once=pose;VRIK_ApplyCyberwarePose(buffer);
+        for(size_t i=0;i<pose.size();++i)for(int k=0;k<4;++k)Near(pose[i].q[k],once[i].q[k],1e-6f,"launcher wrist accumulates across consumers");
+    }
+    std::cout<<"launcher_visible_wrist_axes=3 native_fingers_and_barrel_preserved=true\n";
+}
+
+void HandGestures() {
+    using cvr::gestures::Evaluate;
+    auto point=Evaluate(1,0,false,false,0);Check(point.closed[2]==1 && point.closed[1]==0 && point.straight[1]==1,"point gesture");
+    auto index=Evaluate(0,1,false,false,0);Check(index.closed[1]==1 && index.closed[0]==0 && index.closed[2]==0,"trigger-only index");
+    auto fist=Evaluate(1,1,false,false,0);for(float x:fist.closed)Check(x==1,"fist digit open");
+    auto thumb=Evaluate(1,1,true,false,0);Check(thumb.straight[0]==1 && thumb.closed[0]==0 && thumb.closed[1]==1,"thumbs up priority");
+    for(float phase:{0.f,.25f,.5f,.75f,1.f}) {
+        auto wire=Evaluate(1,1,true,true,phase);
+        for(float v:wire.closed)Near(v,phase<.35f?0.f:phase>.65f?1.f:.5f,.00001f,"wire catch not synchronized to payout");
+    }
+    for(const char* rig:{"","gorilla","mantis"}) {
+        Setup(rig);auto rest=Read<Bone>("reference_full.bin"),pose=rest;g_VRBind=4;g_hasWeaponEquipped=false;
+        g_VRSmokeFingerCount=g_VRSmokeFingerCountL=19;
+        for(int side=0;side<2;++side)for(int k=0;k<19;++k) {
+            const std::string name=std::string(side?"Right":"Left")+cvr::gestures::NativeFist[k].suffix;
+            const auto it=std::find(names.begin(),names.end(),name);Check(it!=names.end(),"gesture finger missing");
+            const int bone=int(it-names.begin());(side?g_VRSmokeFingerIdx:g_VRSmokeFingerIdxL)[k]=bone;
+            std::strncpy((side?g_VRSmokeFingerName:g_VRSmokeFingerNameL)[k],name.c_str(),47);
+            if(!side)std::copy_n(rest[bone].q,4,g_VRRestFingerRot[k]);
+        }
+        g_VRRestFingerCount=19;g_VRRestFingerHave=1;
+        for(int side=0;side<2;++side) {
+            pose=rest;const std::string hand=side?"Right":"Left";
+            auto finger=[&](const char* suffix){return int(std::find(names.begin(),names.end(),hand+suffix)-names.begin());};
+            VRIK_ComputeFK(reinterpret_cast<uint8_t*>(pose.data()),g_VRBoneCount);
+            float expected[3];for(int k=0;k<3;++k)expected[k]=g_fkPos[finger("HandIndex3")][k]-g_fkPos[finger("InHandIndex")][k];VRIK_Norm3(expected);
+            Check(cvr::gestures::ThumbReference(side,pose[finger("InHandThumb")].q),"thumb reference missing");
+            VRIK_ComputeFK(reinterpret_cast<uint8_t*>(pose.data()),g_VRBoneCount);
+            float actual[3];for(int k=0;k<3;++k)actual[k]=g_fkPos[finger("HandThumb2")][k]-g_fkPos[finger("InHandThumb")][k];VRIK_Norm3(actual);
+            Check(VRIK_Dot3(actual,expected)>.995f,"thumb points sideways instead of up along the palm");
+        }
+        pose=rest;
+        CyberpunkVR_RestFingerCaptureReqR=1;cvr::anim::VrikRestFingerPoseRight(reinterpret_cast<uint8_t*>(pose.data()));
+        cvr::gestures::PublishInput(1,1,1,1,true,true);cvr::gestures::PublishEquipment(3);
+        cvr::gestures::Apply(reinterpret_cast<uint8_t*>(pose.data()));
+        Check(!std::memcmp(pose.data(),rest.data(),pose.size()*sizeof(Bone)),"held weapon fingers changed");
+        cvr::gestures::PublishEquipment(0);
+        for(int i=0;i<20;++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));++g_VrikFrameEpoch;
+            cvr::gestures::PublishInput(1,1,0,0,false,true);pose=rest;
+            cvr::gestures::Apply(reinterpret_cast<uint8_t*>(pose.data()));
+        }
+        for(int side=0;side<2;++side)for(int k=0;k<19;++k) {
+            const auto& finger=cvr::gestures::NativeFist[k];const int bone=(side?g_VRSmokeFingerIdx:g_VRSmokeFingerIdxL)[k];
+            if(finger.group==1)QuatNear(pose[bone].q,rest[bone].q,"pointing index bent");
+            Check(!std::memcmp(pose[bone].p,rest[bone].p,16),"gesture changed finger length");
+        }
+        if(std::string(rig)=="mantis" || std::string(rig)=="gorilla") {
+            testCyberwareWorldFrame=true;VRIK_ApplyCyberwarePose(reinterpret_cast<uint8_t*>(pose.data()));testCyberwareWorldFrame=false;
+            for(const char* prefix:{"l_","r_"}) {
+                const std::string canonical=prefix[0]=='l'?"LeftHandMiddle1":"RightHandMiddle1";
+                const auto source=std::find(names.begin(),names.end(),canonical)-names.begin();
+                const auto target=std::string(rig)=="gorilla" ? canonical+"_setup" : std::string(prefix)+"handMiddle02_JNT";
+                const auto skin=std::find(names.begin(),names.end(),target)-names.begin();
+                QuatNear(g_fkRot[source],g_fkRot[skin],"Cyberware visible finger chain ignored the controlled finger");
+            }
+        }
+        // R3 must never command the left thumb, even with both grips held.
+        ++g_VrikFrameEpoch;cvr::gestures::PublishInput(1,1,0,0,true,true);pose=rest;
+        cvr::gestures::Apply(reinterpret_cast<uint8_t*>(pose.data()));
+        Check(CyberpunkVR_GestureMode[0]==2 && CyberpunkVR_GestureMode[1]==5,"right thumbs-up leaked into the left hand");
+        ++g_VrikFrameEpoch;cvr::gestures::PublishInput(1,0,0,0,true,true);pose=rest;
+        cvr::gestures::Apply(reinterpret_cast<uint8_t*>(pose.data()));
+        Check(CyberpunkVR_GestureMode[0]==2 && CyberpunkVR_GestureMode[1]==1,"R3 without right grip triggered a gesture");
+        // The authored trigger-only pose must reach both canonical and visible
+        // cyberware fingers without changing the other finger groups' lengths.
+        for(int sample=0;sample<25;++sample) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));++g_VrikFrameEpoch;
+            cvr::gestures::PublishInput(0,0,1,1,false,true);cvr::gestures::PublishEquipment(0);pose=rest;
+            cvr::gestures::Apply(reinterpret_cast<uint8_t*>(pose.data()));
+        }
+        const cvr::gestures::CalibrationWeights indexPose={0,0,0,1};
+        for(int hand=0;hand<2;++hand)for(int k=0;k<19;++k) {
+            const auto& finger=cvr::gestures::NativeFist[k];const int bone=(hand?g_VRSmokeFingerIdx:g_VRSmokeFingerIdxL)[k];
+            float expected[4];std::copy_n(rest[bone].q,4,expected);
+            if(finger.group==1) {
+                float inverse[4],delta[4];VRIK_QuatConj(finger.reference[hand],inverse);
+                VRIK_QuatMul(finger.closed[hand],inverse,delta);VRIK_QuatMul(delta,rest[bone].q,expected);VRIK_QuatNorm(expected);
+            }
+            for(const auto& authored:cvr::gestures::CalibratedGestures)if(authored.pose==3 &&
+                (authored.hands&(1u<<hand)) && std::strcmp(authored.suffix,finger.suffix)==0) {
+                float corrected[4];VRIK_QuatMul(expected,authored.delta,corrected);VRIK_QuatNorm(corrected);std::copy_n(corrected,4,expected);
+            }
+            QuatNear(pose[bone].q,expected,"runtime gesture does not include the baked export");
+            Check(!std::memcmp(pose[bone].p,rest[bone].p,16),"calibration changed finger length");
+        }
+        if(std::string(rig)=="mantis" || std::string(rig)=="gorilla") {
+            const auto once=pose;testCyberwareWorldFrame=true;VRIK_ApplyCyberwarePose(reinterpret_cast<uint8_t*>(pose.data()));testCyberwareWorldFrame=false;
+            for(int hand=0;hand<2;++hand) {
+                const std::string source=std::string(hand?"Right":"Left")+"HandIndex1";
+                const std::string skin=std::string(rig)=="gorilla" ? source+"_setup":std::string(hand?"r_":"l_")+"handIndex02_JNT";
+                const auto a=std::find(names.begin(),names.end(),source)-names.begin(),b=std::find(names.begin(),names.end(),skin)-names.begin();
+                QuatNear(pose[a].q,once[a].q,"baked corrections accumulate across consumer passes");
+                QuatNear(g_fkRot[a],g_fkRot[b],"baked corrections did not reach the visible cyberware fingers");
+            }
+        }
+    }
+    for(float grip:{0.f,.25f,1.f})for(float trigger:{0.f,.5f,1.f}) {
+        const auto w=cvr::gestures::CalibrationTargets(grip,trigger,false,false);
+        float sum=0;for(float v:w){Check(v>=0 && v<=1,"invalid calibration blend weight");sum+=v;}
+        Check(sum<=1.000001f,"gesture calibrations overlap instead of blending");
+        Check(cvr::gestures::CalibrationTargets(grip,trigger,true,true)==cvr::gestures::CalibrationWeights{},"wire inherited a normal gesture correction");
+    }
+    const float neutral[4]={0,0,0,1};float left[4],right[4];std::copy_n(neutral,4,left);std::copy_n(neutral,4,right);
+    cvr::gestures::ApplyCalibration(0,"InHandThumb",{0,0,1,0},left);
+    cvr::gestures::ApplyCalibration(1,"InHandThumb",{0,0,1,0},right);
+    QuatNear(left,neutral,"left hand has a thumbs-up calibration");
+    Near(2*std::acos(right[3])*57.2957795f,49.8069992f,.0001f,"right thumb differs from user export");
+    std::cout<<"hand_gestures_baked_both_hands_right_only_thumb_wire_and_weapon_protection=true\n";
 }
 
 void ForearmRoll() {
@@ -1262,7 +1816,7 @@ void LadderBakedRung() {
     for(int side=0;side<2;++side) {
         const auto native=Read<Bone>(side ? "side-grip-right.bin":"side-grip-left.bin");
         auto expected=native,actual=native;
-        // The previous authoring path consumes the archived user settings;
+        // The previous authoring path consumes the archived player settings;
         // gameplay consumes no settings and must produce the same skeleton.
         VRIK_ApplyLadderFingers(reinterpret_cast<uint8_t*>(expected.data()),side,2,curls,adjustments[side]);
         auto* buffer=reinterpret_cast<uint8_t*>(actual.data());
@@ -1334,7 +1888,7 @@ void LadderReach() {
                 VRIK_SyncShadowUpper(buf,true);
                 std::copy_n(g_VRIKGirdleReach[side],4,result.begin());
                 for(int k=0;k<3;++k)Near(g_fkPos[clav][k],pivot[k],.00001f,"ladder reach moved clavicle root");
-                Check(result[1]<(ladder ? 20.01f:12.01f) && result[2]<.10f && result[3]<.075f,"girdle adjustment exceeded anatomical limits");
+                Check(result[1]<(ladder ? 20.01f:35.01f) && result[2]<.10f && result[3]<.075f,"girdle adjustment exceeded anatomical limits");
                 for(int bone:{0,1,2,5,6,8,9,11,12})Check(!std::memcmp(&pose[bone],&native[bone],sizeof(Bone)),"ladder shoulder reach moved native support");
                 if(pass==0)std::copy_n(g_fkPos[upper],3,first.begin());
                 else for(int k=0;k<3;++k)Near(g_fkPos[upper][k],first[k],.00001f,"ladder protraction accumulated");
@@ -1348,7 +1902,7 @@ void LadderReach() {
         };
         const auto foot=run(false,1.16f),ladder=run(true,1.16f);
         const float gain=ladder[2]-foot[2];minimumGain=std::min(minimumGain,gain);
-        Check(gain>.01f && ladder[3]>foot[3]+.01f,"ladder did not gain useful shoulder and scapula motion");
+        if(vertical==0)Check(gain>.01f && ladder[3]>foot[3]+.01f,"ladder did not gain useful forward shoulder and scapula motion");
         Check(run(true,.95f)[0]>run(false,.95f)[0]+.1f,"ladder assistance did not start earlier");
         Check(run(true,.55f)[2]<.00001f,"relaxed arm retained extra protraction");
         Near(run(false,1.16f)[2],foot[2],.00001f,"ladder profile leaked into ordinary reach");
@@ -1471,11 +2025,24 @@ int main(int argc,char** argv) {
         else if(name=="head_bound_bend")HeadBoundBend(true);
         else if(name=="head_bound_bend_unbound")HeadBoundBend(false);
         else if(name=="girdle_reach")GirdleReach();
+        else if(name=="overhead_reach")OverheadReach();
+        else if(name=="cyberware_pose")CyberwarePose();
+        else if(name=="mantis_pose")CyberwarePose("mantis");
+        else if(name=="mantis_wrist")MantisWrist();
+        else if(name=="cyberware_wire")CyberwareWire();
+        else if(name=="combat_elbow")CombatElbow();
+        else if(name=="elbow_blend")ElbowBlendProfiles();
+        else if(name=="cyberware_muscles")CyberwareMuscles();
+        else if(name=="launcher_axis")LauncherAxis();
+        else if(name=="launcher_wrist")LauncherWrist();
+        else if(name=="hand_gestures")HandGestures();
+        else if(name=="launcher_pose")CyberwarePose("launcher");
         else if(name=="forearm_roll")ForearmRoll();
         else if(name=="forearm_solve")ForearmSolve();
         else if(name=="native_lower")NativeLowerPreserved();
         else if(name=="head_basis")HeadBasis();
         else if(name=="neck_mount")NeckMount();
+        else if(name=="body_centre_orbit")BodyCentreOrbit();
         else if(name=="female_neck_mount")FemaleNeckMount();
         else if(name=="combat_hmd_body")CombatHmdBody();
         else if(name=="pelvis_pose")PelvisPose();

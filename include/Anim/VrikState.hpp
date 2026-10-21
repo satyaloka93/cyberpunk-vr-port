@@ -287,6 +287,23 @@ extern volatile float     g_VREntityQI, g_VREntityQJ, g_VREntityQK, g_VREntityQR
 // toggling the sprint back off. The state machine itself is unambiguous.
 extern volatile int       g_VRSprintActive;
 extern volatile int       g_VRLocomotionState;
+// THE TAKEDOWN, BODY-CARRYING AND BODY-DISPOSAL STATES, published together by SetVRPairedAnimationState
+// from the VRIK CET mod beside the locomotion value (-1 = nobody has told us). gamePSMTakedown:
+// 1 EnteringGrapple, 2 Grapple, 3 Leap, 4 Takedown. gamePSMBodyCarrying: 1 PickUp, 2 Carry, 3 Dispose,
+// 4 Drop, 5 Aim, 6 Throw. BodyDisposalDetailed (gamePSMDetailedBodyDisposal): 1 Dispose, 2 Lethal,
+// 3 NonLethal -- putting a body into a container is a workspot during which BodyCarrying is already 0.
+// What each hands to the animation is decided in Anim/ScenePolicy.hpp.
+extern volatile int       g_VRTakedownState;
+extern volatile int       g_VRBodyCarryingState;
+extern volatile int       g_VRBodyDisposalState;
+// AnimFeature_Carry.useBothHands as the carry state machine last wrote it (1 both arms, 0 the left arm
+// alone, -1 = nobody has told us), from SetVRBodyCarryBothHands in the BodyCarry redscript.
+extern volatile int       g_VRBodyCarryBothHands;
+// A FINISHER's paired animation: the player is in a workspot tagged FinisherWorkspot (PlayerPuppet
+// m_isInFinisher, from SetVRFinisherActive in the Finisher redscript; 1 inside, 0 outside, -1 = nobody
+// has told us), and since when (GetTickCount64 ms).
+extern volatile int       g_VRFinisherActive;
+extern volatile uint64_t  g_VRFinisherSinceMs;
 extern volatile float     g_VRWeaponPsmState;
 extern volatile float     g_VRAimInRemaining;
 extern volatile int       g_VRWeaponRaiseTransition;

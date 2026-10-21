@@ -39,3 +39,12 @@ for ret in (0x29840c6, 0x2984f56):
     call=read_rva(ret-5,5)
     assert call[0]==0xe8 and ret+struct.unpack_from("<i",call,1)[0]==0x20479ec
 print("PASS native dispatch slots and solver-only velocity return address")
+
+body_source=(root / 'src/Hooks/BodyHeading.cpp').read_text()
+body_sites=re.findall(r'Matches\((0x[0-9A-Fa-f]+),"([0-9A-Fa-f]+)"\)',body_source)
+assert len(body_sites)==2
+for rva,code in body_sites:
+    original=bytes.fromhex(code)
+    assert read_rva(int(rva,16),len(original))==original, 'native body source/commit observer signature'
+assert struct.unpack('<Q',read_rva(0x2b5d3d0,8))[0]==imagebase+0xd455b0
+print('PASS body motion provider slot+20 and persistent adapter commit ABI')

@@ -464,7 +464,8 @@ void d12_submit_mirror_copy(ID3D12CommandQueue* queue) {
         return;
     }
     ID3D12CommandList* ls[1] = { g_d12_copy_list };
-    g_orig_ExecuteCommandLists(queue, 1, ls);             // bypass our own ECL hook
+    const auto execute=command_queue_original_execute(queue);if(!execute)return;
+    execute(queue, 1, ls); // Bypass our own hook using this queue's original.
     const uint64_t v = g_d12_fence_next.fetch_add(1, std::memory_order_relaxed);
     if (SUCCEEDED(queue->Signal(g_d12_fence, v))) {
         g_d12_copy_slot_fence[idx] = v;

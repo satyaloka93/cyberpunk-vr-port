@@ -220,8 +220,8 @@ extern "C" __declspec(dllexport) extern int      CyberpunkVR_VrikArmAnchorFromBo
 extern "C" __declspec(dllexport) extern int      CyberpunkVR_VrikElbowPolicy;
 extern "C" __declspec(dllexport) extern int      CyberpunkVR_BodyYawFollow;
 extern "C" __declspec(dllexport) extern float    CyberpunkVR_BodyYawRealignRad;
-// Live mirrors above are diagnostics. Consumers refresh scene eligibility and
-// read the protected follower state through these functions.
+// Body offset is observed from committed native movement, never a camera
+// cancellation term. Camera/roomscale consumers use BodyTrackingYaw instead.
 bool BodyYawFollowActive();
 float BodyYawFollowOffset();
 extern "C" void BodyYawFollowRelease();

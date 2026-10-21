@@ -23,5 +23,17 @@ int main() try {
     b=a;b.instanceHeapType=D3D12_HEAP_TYPE_DEFAULT;Require(!instance_data::Range(b,at,bytes));
     b=a;b.vertices[7].StrideInBytes=32;Require(!instance_data::Range(b,at,bytes));
     b=a;b.instanceResource=0;Require(!instance_data::Range(b,at,bytes));
+    auto observed=a;observed.instanceHeapType=D3D12_HEAP_TYPE_DEFAULT;observed.instances=1;
+    auto reader=[](uint64_t gpu,uint64_t resource,uint64_t offset,void* output,size_t bytes) {
+        Require(gpu==0x1000 && resource==1 && offset==352);std::memset(output,0x6b,bytes);return true;
+    };
+    Require(instance_data::CopyObservedDefault(observed,nullptr,reader));
+    Require(observed.instanceDataBytes==48 && observed.instanceData[47]==0x6b && observed.instanceData[48]==0);
+    observed.instances=3;Require(!instance_data::CopyObservedDefault(observed,nullptr,reader));Require(observed.instanceDataBytes==0);
+    std::vector<uint8_t> batch;Require(instance_data::CopyObservedDefault(observed,&batch,reader) && batch.size()==144 && batch.back()==0x6b);
+    auto missing=[](uint64_t,uint64_t,uint64_t,void* output,size_t bytes){std::memset(output,1,bytes);return false;};
+    Require(!instance_data::CopyObservedDefault(observed,&batch,missing)&&batch.empty());
+    observed.instances=1;Require(!instance_data::CopyObservedDefault(observed,nullptr,missing));
+    Require(observed.instanceDataBytes==0 && observed.instanceData[0]==0);
     std::puts("PASS full instance arrays, changed last instance, truncated/unreadable data, range limits and different upload offsets");return 0;
 }catch(const std::exception& e){std::fprintf(stderr,"%s\n",e.what());return 1;}

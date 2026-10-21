@@ -22,7 +22,7 @@ struct HybridInput {
 struct HybridCommand { float targetYaw{},coneDegrees{};bool tracked=false; };
 
 // Owns the head-cone phase and its transitions. The native follower applies the
-// resulting target directly, retaining its same-frame camera cancellation.
+// resulting target as body motion; the independent camera reference is untouched.
 class HybridBodyYaw {
     cvr::roomscale::BodyFollowZone headZone;
     uint64_t origin{},stamp{};

@@ -57,6 +57,21 @@ int main(){
     const uint64_t program=0x123000;std::memcpy(state.data()+0x10,&program,8);uint32_t programBytes=17;std::memcpy(state.data()+0x18,&programBytes,4);
     m.regions[program]={1,0,0,0,0x80,0,0,0,7,0,0,0,1,0,0,0,2};blob.clear();
     details=ResolveDetails(many,pool,{},Memory::Read,&m,blob);Require(details.valid==127 && details.programBytes==17 && blob[details.programOffset+16]==2,"native command program copied");
+    auto compareGeometry=[&](Packet p,MappedInstances mapped){
+        std::vector<uint8_t> allBytes,geometryBytes;const auto before=m.calls;
+        const auto all=ResolveDetails(p,pool,mapped,Memory::Read,&m,allBytes);const auto fullCalls=m.calls-before;
+        const auto middle=m.calls;const auto geometry=ResolveDetails(p,pool,mapped,Memory::Read,&m,geometryBytes,true);
+        Require(EqualGeometry(all,allBytes,geometry,geometryBytes),"geometry projection changed membership input");
+        Require(m.calls-middle<fullCalls && !geometry.programBytes && !geometry.commandProgramField && !(geometry.valid&6),"geometry path still resolves unused shader/program data");
+        if(geometry.valid&16){auto bad=geometryBytes;bad[geometry.instanceOffset]^=1;
+            Require(!EqualGeometry(all,allBytes,geometry,bad),"changed instance accepted by projection comparison");
+            auto range=geometry;range.instanceOffset=UINT32_MAX;Require(!EqualGeometry(all,allBytes,range,geometryBytes),"invalid projection range accepted");}
+    };
+    compareGeometry(many,{});compareGeometry(skinMany,{});uploaded.bytes=1024;compareGeometry(gpuPacket,uploaded);
+    m.regions[addresses[4]]=std::vector<uint8_t>(48,0x36);compareGeometry(packet,{});compareGeometry(skin,{});
+    m.regions.erase(addresses[4]);compareGeometry(packet,{});
+    m.regions[addresses[0]][0]=2;compareGeometry(packet,{});m.regions[addresses[0]][0]=0;
+    m.regions[addresses[4]]=std::vector<uint8_t>(96,0x36);
     m.regions[program][12]=2;blob.clear();details=ResolveDetails(many,pool,{},Memory::Read,&m,blob);Require(!(details.valid&64),"truncated command operands rejected");
     m.regions[addresses[4]]=std::vector<uint8_t>(48,5);
     m.regions.erase(addresses[1]);resolved=ResolveInputs(packet,pool,Memory::Read,&m);Require(resolved.valid==61,"missing shader data rejected");

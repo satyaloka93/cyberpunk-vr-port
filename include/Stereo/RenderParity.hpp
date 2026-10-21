@@ -4,6 +4,7 @@
 #include <cstdint>
 
 namespace cvr::stereo {
+bool RenderGraphCacheObservationInstalled();
 // Recovered from dabinn TE6 highlight (see docs/te6-testing2-render-review-20260926.md).
 inline uint64_t VrcamGraphHash(uint64_t hash,uint64_t viewName) {
     uint64_t value=0x9EDCB08A284EFDDFull;

@@ -1,4 +1,5 @@
 #include "Render/HudPanel.hpp"
+#include "Render/OpticsProbe.hpp"
 #include "Render/ColorBlit.hpp"
 #include "Render/GpuStageProfile.hpp"
 #include "Core/LiveControls.hpp"
@@ -11,6 +12,7 @@
 extern void Log(const char*, ...);
 extern "C" ID3D12Resource* CyberpunkVR_GetFrameConstantBuffer();
 extern "C" ID3D12Resource* CyberpunkVR_GetHudConstantBuffer();
+extern "C" float CyberpunkVR_HudEngineCurvature[2];
 extern "C" ID3D12Resource* CyberpunkVR_GetHudExposureBuffer();
 namespace cvr::hud {
 using Microsoft::WRL::ComPtr;
@@ -111,11 +113,21 @@ bool ConsumerReady(Channel channel) {
 void SetConsumerReady(bool ready,Channel channel) { pipelines[Index(channel)].consumerStamp.store(ready ? GetTickCount64() : 0,std::memory_order_release); }
 
 void Capture(ID3D12Device* device, ID3D12CommandQueue* queue,Channel channel) {
+    if(channel==Channel::Main)cvr::optics::probe::Capture(device,queue);
     auto& [snapshotMutex,renderMutex,snapshot,latest,consumerStamp,slots,fence,deviceOwner,submitted]=pipelines[Index(channel)];
     if (!device || !queue) return;
     std::shared_ptr<Snapshot> source;
     { std::lock_guard lock(snapshotMutex); source=snapshot; }
     std::lock_guard lock(renderMutex);
+    if (source && source->sprites.empty() && source->emptyContent && GetTickCount64()-source->stamp <= 300) {
+        // Nothing visible in the channel: publish an empty frame instead of building a canvas of
+        // zeros, so the consumer stays ready and the native slots stay masked.
+        auto frame=std::make_shared<Frame>();
+        frame->empty=true; frame->stamp=source->stamp; frame->generation=source->generation;
+        frame->masked=source->masked; frame->lootVisible=source->lootVisible;
+        latest=std::move(frame);
+        return;
+    }
     if (!source || source->sprites.empty() || GetTickCount64()-source->stamp > 300) { latest.reset(); return; }
     if (!fence) {
         if (FAILED(device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&fence)))) return;
@@ -175,6 +187,10 @@ void Capture(ID3D12Device* device, ID3D12CommandQueue* queue,Channel channel) {
         // native buffer cannot prevent the HUD from appearing after a cold start.
         slot.defaultData[0]=float(GetTickCount64()%100000)*0.001f;
         ColorBlit::HudParams style{};style.layerOnly=1;
+        if(CyberpunkVR_HudEngineCurvature[1]!=0.0f) {
+            style.curvature[0]=CyberpunkVR_HudEngineCurvature[0];style.curvature[1]=CyberpunkVR_HudEngineCurvature[1];
+            style.panelEngineCurve=1.0f;
+        }
         style.panelBrightness=g_liveControls.xrHudBrightness;
         style.panelShadow=g_liveControls.xrHudShadow;
         style.panelGlow=g_liveControls.xrHudGlow;

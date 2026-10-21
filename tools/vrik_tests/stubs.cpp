@@ -17,6 +17,11 @@ volatile int g_VRRightUpperArmIdx=18,g_VRRightForeArmIdx=21,g_VRRightBoneIdx=24;
 volatile int g_VRLeftUpperArmIdx=17,g_VRLeftForeArmIdx=20,g_VRLeftBoneIdx=23;
 int g_VRSpineIdx[8]{4,7,10,13,91,92,93,94};
 volatile int g_VRSpineCount=8,g_VRPoseCapGen=0;
+volatile int g_VRDiagCapture=0;
+volatile int g_VRBind=4;
+std::atomic<uint32_t> g_VrikFrameEpoch{};
+bool testCyberwareWorldFrame=false;
+bool VRIK_ReadCurrentBodyFrame(float* p,float* q,float* yaw){if(!testCyberwareWorldFrame)return false;std::fill_n(p,3,0.f);std::fill_n(q,4,0.f);q[3]=1;*yaw=0;return true;}
 int g_VRForeTwistR[3]{-1,-1,-1},g_VRForeTwistL[3]{-1,-1,-1};
 volatile float g_VRHeadDrop=.08f,g_VRSquatThreshold=.20f;
 volatile float g_VRBodyBone[11][3]{};
@@ -28,6 +33,7 @@ std::string VRDiagPath(const char* name) { return name; }
 void Log(const char*,...) {}
 // Fixture camera frames have no outstanding body-yaw follow offset.
 float BodyYawFollowOffset() { return 0; }
+float BodyTrackingYaw(float nativeYaw) { return nativeYaw; }
 
 VrikTransformSnapshot testNativePair{},testLuaPair{};
 bool testNativeAvailable=false,testLuaAvailable=false;
@@ -41,6 +47,7 @@ namespace cvr::ladder { bool Active() { return false; } }
 bool OpenXRManager::GetHeadPose(OpenXRHeadPose*) const { std::abort(); }
 bool OpenXRManager::GetNativeFrameHead(OpenXRHeadPose*,uint64_t*,uint64_t*,XrTime*,cvr::roomscale::Vec2*) const { std::abort(); }
 bool OpenXRManager::LocateHeadPoseAt(XrTime,OpenXRHeadPose*) { std::abort(); }
+void OpenXRManager::UpdateBodyPosture(OpenXRHeadPose&) { std::abort(); }
 
 volatile float g_VRBindScale=1,g_VRBindOffX=0,g_VRBindOffY=0,g_VRBindOffZ=0;
 volatile int g_VRBindAxis=0,g_VRUseHeadRelative=0;

@@ -13,7 +13,7 @@ using namespace cvr::vrui;
 void Log(const char*,...){}
 #include "Overlay/VrWidgets.hpp"
 namespace overlay {
-bool DrawLiveControls(LiveControlsUiState&,int section){if(section==3)widgets::DrawBindings();return false;}
+bool DrawLiveControls(LiveControlsUiState&,int section,bool* editing){if(editing)*editing=false;if(section==3)widgets::DrawBindings();return false;}
 bool DrawFpsOverlayControls(LiveControlsUiState&){return false;}
 }
 namespace cvr::camera {std::recursive_mutex& ImageSubmissionMutex(){static std::recursive_mutex m;return m;}}
@@ -54,7 +54,7 @@ int main()try{
     LiveControlsUiState state{};state.overlay=GetSettings();
     auto render=[&](const char* path,bool desktop=false){
         auto canvas=AcquireCanvas(device.Get(),DXGI_FORMAT_R8G8B8A8_UNORM);Check(bool(canvas),"canvas pool exhausted");
-        ImGui_ImplDX12_NewFrame();ImGui::NewFrame();overlay::DrawVrShell(state);ImGui::Render();
+        ImGui_ImplDX12_NewFrame();ImGui::NewFrame();bool editing=false;overlay::DrawVrShell(state,editing);ImGui::Render();
         Hr(alloc->Reset());Hr(list->Reset(alloc.Get(),nullptr));D3D12_RESOURCE_BARRIER b{};b.Type=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         b.Transition={canvas->texture.Get(),0,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_RENDER_TARGET};list->ResourceBarrier(1,&b);
         auto rtv=canvas->rtv->GetCPUDescriptorHandleForHeapStart();float clear[4]{};list->ClearRenderTargetView(rtv,clear,0,nullptr);list->OMSetRenderTargets(1,&rtv,FALSE,nullptr);

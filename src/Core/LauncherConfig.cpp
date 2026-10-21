@@ -13,6 +13,7 @@
 #include <psapi.h>
 #include <xinput.h>
 #include "Utils/SharedSlots.hpp"   // CyberpunkVR_Hands_Shared slot map (single source of truth)
+#include "Anim/WheelRange.hpp"
 #include <cstdint>
 #include <cstddef>
 #include <cstdio>
@@ -79,7 +80,7 @@ void InitRuntimePaths() {
     g_liveControls.xrWheelGrab = 1;
     g_liveControls.xrWheelRadius = 0.28f;
     // 90 deg = hands vertical is full lock, the 1:1 reading of a real wheel.
-    g_liveControls.xrWheelSteerMaxDeg = 90.0f;
+    g_liveControls.xrWheelSteerMaxDeg = cvr::anim::WheelFullLockDefault;
     // 1.5 deg of deadzone: enough to swallow tremor, small enough that the wheel does not feel dead
     // off centre. Every degree here is a degree the car ignores.
     g_liveControls.xrWheelSteerDeadDeg = 1.5f;
@@ -151,10 +152,12 @@ void EnsureLiveControlFileExists() {
     // Who owns the XR frame loop: -1 auto (submit thread on SteamVR, inline pump on Virtual
     // Desktop), 0 force inline, 1 force the thread.
     fprintf(file, "xr_threaded_submit=-1\n");
+    fprintf(file, "xr_stage_replay=0\nxr_submit_chain=0\nxr_defer_present=0\nxr_gt_skip_render_queue=0\n");
     fprintf(file, "xr_force_fov=0\n");
     fprintf(file, "xr_menu_rect=0\n");
     fprintf(file, "xr_menu_fov=65.0\n");
     fprintf(file, "xr_menu_follow_deg=60.0\n");
+    fprintf(file, "xr_hud_stereo_depth=1\n");
     fprintf(file, "xr_3dof_movement=0\n");
     fprintf(file, "xr_roomscale_movement=1\n");
     fprintf(file, "xr_tracked_body_rotation=0\n");
@@ -172,7 +175,12 @@ void EnsureLiveControlFileExists() {
     fprintf(file, "xr_world_scale=1.0\n");
     fprintf(file, "xr_ipd_scale=1.0\n");
     fprintf(file, "xr_sharpness=0.0\n");
-    fprintf(file, "xr_sharpmix=1.0\n");
+    fprintf(file, "xr_sharpmix=%.1f\n",cvr::sharpen::DefaultAmount);
+    cvr::foveated::WriteSettings(file,{});
+    cvr::vrs::WriteSettings(file,{});
+    cvr::hidden_area::WriteSettings(file,{});
+    std::fprintf(file,"xr_mono_cascades=1\n");
+    std::fprintf(file,"xr_scope_stabilize=80\n");
     fprintf(file, "xr_reuse_last_frame=0\n");
     fprintf(file, "xr_hmd_smooth=0.35\n");
     // UEVR's own default, in their units: follow-per-second, multiplied by delta time where it is
@@ -188,11 +196,8 @@ void EnsureLiveControlFileExists() {
     fprintf(file, "xr_runtime=0\n");
     fprintf(file, "xr_nvidia_reflex=%d\n", cvr::reflex::DefaultMode);
     fprintf(file, "xr_local_shadow_reuse=0\n");
-    // Default ON: now safe via cross-queue Signal hook (CyberpunkVRPort_
-    // WaitOnAllGameSignals) that GPU-Waits on every tracked game queue
-    // before our depth copy. Lets the compositor do depth-aware reprojection
-    // → fixes far-building shift on head turn (parallax-correct timewarp
-    // instead of orientation-only). Users on broken runtimes can set 0.
+    // Only frame-matched, per-eye depth is submitted. Synthetic frames omit it
+    // until their interpolation backend supplies corresponding depth.
     fprintf(file, "xr_depth_submit=1\n");
     fprintf(file, "xr_movement_control=0\n");
     fprintf(file, "xr_disable_mouse_y=1\n");

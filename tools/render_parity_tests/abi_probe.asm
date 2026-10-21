@@ -38,6 +38,13 @@ CvrRenderGraphKey PROC
     jne Bad
     cmp r8, CacheExpectedReturn
     jne Bad
+    cmp r9, 01020304h
+    jne Bad
+    cmp DWORD PTR [rsp+28h], 09101112h
+    jne Bad
+    mov rax, 0fedcba9876543210h
+    cmp [rsp+30h], rax
+    jne Bad
     mov rax, rsp
     and eax, 0fh
     cmp eax, 8
@@ -64,6 +71,60 @@ Bad:
     mov CacheError, 1
     ret
 CvrRenderGraphKey ENDP
+CvrRenderGraphCacheResult PROC
+    cmp rcx, 01010101h
+    jne BadResult
+    mov rax, rsp
+    and eax, 0fh
+    cmp eax, 8
+    jne BadResult
+    xor eax, eax
+    xor ecx, ecx
+    xor edx, edx
+    xor r8d, r8d
+    xor r9d, r9d
+    xor r10d, r10d
+    xor r11d, r11d
+    pxor xmm0, xmm0
+    pxor xmm1, xmm1
+    pxor xmm2, xmm2
+    pxor xmm3, xmm3
+    pxor xmm4, xmm4
+    pxor xmm5, xmm5
+    ret
+BadResult:
+    mov CacheError, 1
+    ret
+CvrRenderGraphCacheResult ENDP
+CacheResultProbe PROC FRAME
+    lea rsp, [rsp-38h]
+    .allocstack 38h
+    .endprolog
+    mov [rsp+30h], rcx
+    mov rax, 0fedcba9876543210h
+    mov [rsp+28h], rax
+    lea rax, ResultHere
+    mov CacheExpectedReturn, rax
+    mov [rsp], rax
+    mov rax, 01010101h
+    mov rcx, 01020304h
+    mov rdx, 02030405h
+    mov r8, 05060708h
+    mov r9, 09101112h
+    mov r10, 013141516h
+    mov r11, 017181920h
+    movdqu xmm0, XMMWORD PTR Seed
+    movdqu xmm1, xmm0
+    movdqu xmm2, xmm0
+    movdqu xmm3, xmm0
+    movdqu xmm4, xmm0
+    movdqu xmm5, xmm0
+    cmp rax, rax
+    jmp QWORD PTR [rsp+30h]
+ResultHere:
+    lea rsp, [rsp+30h]
+    ret
+CacheResultProbe ENDP
 CacheProbe PROC FRAME
     lea rsp, [rsp-38h]
     .allocstack 38h
@@ -92,4 +153,64 @@ ReturnHere:
     lea rsp, [rsp+38h]
     ret
 CacheProbe ENDP
+NativeCopyProbe PROC
+    mov rax, rcx
+    cmp rax, rax
+    ret
+NativeCopyProbe ENDP
+CvrResourceContextAfter PROC
+    cmp rcx, 01020304h
+    jne CopyBad
+    cmp rdx, 02030405h
+    jne CopyBad
+    cmp r8, CacheExpectedReturn
+    jne CopyBad
+    mov rax, rsp
+    and eax, 0fh
+    cmp eax, 8
+    jne CopyBad
+    xor eax, eax
+    xor ecx, ecx
+    xor edx, edx
+    xor r8d, r8d
+    xor r9d, r9d
+    xor r10d, r10d
+    xor r11d, r11d
+    pxor xmm0, xmm0
+    pxor xmm1, xmm1
+    pxor xmm2, xmm2
+    pxor xmm3, xmm3
+    pxor xmm4, xmm4
+    pxor xmm5, xmm5
+    ret
+CopyBad:
+    mov CacheError, 1
+    ret
+CvrResourceContextAfter ENDP
+ResourceProbe PROC FRAME
+    lea rsp, [rsp-38h]
+    .allocstack 38h
+    .endprolog
+    mov [rsp+30h], rcx
+    lea rax, CopyReturn
+    mov CacheExpectedReturn, rax
+    mov rax, 01010101h
+    mov rcx, 01020304h
+    mov rdx, 02030405h
+    mov r8, 05060708h
+    mov r9, 09101112h
+    mov r10, 013141516h
+    mov r11, 017181920h
+    movdqu xmm0, XMMWORD PTR Seed
+    movdqu xmm1, xmm0
+    movdqu xmm2, xmm0
+    movdqu xmm3, xmm0
+    movdqu xmm4, xmm0
+    movdqu xmm5, xmm0
+    call QWORD PTR [rsp+30h]
+CopyReturn:
+    call NativeCacheProbe
+    lea rsp, [rsp+38h]
+    ret
+ResourceProbe ENDP
 END

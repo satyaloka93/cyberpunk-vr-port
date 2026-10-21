@@ -5,3 +5,4 @@
 *.dtex      binary
 *.ent       binary
 *.dxil      binary
+wabbajack/*.json text eol=lf

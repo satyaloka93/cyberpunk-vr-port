@@ -6,19 +6,20 @@
 #
 # Usage:
 #   pwsh scripts\build_dist.ps1
-#   pwsh scripts\build_dist.ps1 -Version 0.1.7 -Zip
+#   pwsh scripts\build_dist.ps1 -Version 0.1.8 -Zip
 
 param(
     [ValidatePattern('^\d+\.\d+\.\d+(?:-[A-Za-z0-9][A-Za-z0-9.-]*)?$')]
-    [string]$Version = "0.1.7",
+    [string]$Version = "0.1.8",
     [string]$BuildDir = "build",
-    [ValidatePattern('^[0-9a-fA-F]{7,40}$')][string]$SourceCommit,
+    [string]$SourceRevision,
     [switch]$Zip,
     [switch]$Force
 )
 
 $ErrorActionPreference = "Stop"
 $RepoRoot = (Resolve-Path "$PSScriptRoot\..").Path
+if (-not $SourceRevision) { $SourceRevision = git -C $RepoRoot rev-parse --short HEAD }
 $DistRoot = [IO.Path]::GetFullPath((Join-Path $RepoRoot "dist"))
 $Out      = [IO.Path]::GetFullPath((Join-Path $DistRoot "CyberpunkVRPort-$Version"))
 if ((Split-Path $Out -Parent) -ne $DistRoot) { throw "Package path must be directly inside dist" }
@@ -54,27 +55,6 @@ function Need($p, $what) {
     return $p
 }
 
-function Get-SourceCommit {
-    if ($SourceCommit) { return $SourceCommit }
-    # A worktree created by WSL can have a Linux-absolute gitdir in its .git file.
-    $dotGit = Join-Path $RepoRoot '.git'
-    if (Test-Path -LiteralPath $dotGit -PathType Leaf) {
-        $pointer = (Get-Content -LiteralPath $dotGit -Raw).Trim()
-        if ($pointer -match '^gitdir: /mnt/([a-zA-Z])/(.+)$') {
-            $gitDir = $Matches[1].ToUpperInvariant() + ':\' + $Matches[2].Replace('/','\')
-            try {
-                $value = & git --git-dir=$gitDir rev-parse --short HEAD 2>$null
-                if ($LASTEXITCODE -eq 0 -and $value) { return $value }
-            } catch { }
-        }
-    }
-    try {
-        $value = & git -C $RepoRoot rev-parse --short HEAD 2>$null
-        if ($LASTEXITCODE -eq 0 -and $value) { return $value }
-    } catch { }
-    return 'unavailable (worktree metadata inaccessible to this build host)'
-}
-
 if (Test-Path $Out) {
     if (-not $Force) { throw "Package already exists: $Out. Use -Force to rebuild it." }
     $resolvedOut = (Resolve-Path -LiteralPath $Out).Path
@@ -107,10 +87,56 @@ Add-File $stereoDll "red4ext\plugins\CyberpunkVR_Stereo\CyberpunkVR_Stereo.dll"
 # skipped and the only symptom is one line in the log.
 Add-File (Need (Join-Path $RepoRoot "src\Shaders\sight_reflex_ps.dxil") "sight PS") "red4ext\plugins\CyberpunkVR_Stereo\CyberpunkVR_SightPs.dxil"
 Add-File (Need (Join-Path $RepoRoot "src\Shaders\sight_reflex_vs.dxil") "sight VS") "red4ext\plugins\CyberpunkVR_Stereo\CyberpunkVR_SightVs.dxil"
+Add-File (Need (Join-Path $RepoRoot "src\Shaders\sight_reflex_ps_scope.dxil") "sight PS scope variant") "red4ext\plugins\CyberpunkVR_Stereo\CyberpunkVR_SightPsScope.dxil"
+foreach ($variant in @('011D27FFE5AAD161', '39E6BD24D20C3295')) {
+    Add-File (Need (Join-Path $RepoRoot "src\Shaders\scope_glass_$variant.dxil") "scope glass PS $variant") "red4ext\plugins\CyberpunkVR_Stereo\CyberpunkVR_ScopeGlass_$variant.dxil"
+}
+Add-File (Need (Join-Path $RepoRoot "src\Shaders\lens_velocity_ps.dxil") "lens velocity PS") "red4ext\plugins\CyberpunkVR_Stereo\CyberpunkVR_LensVelocityPs.dxil"
+Add-File (Need (Join-Path $RepoRoot "src\Shaders\lens_mask_ps.dxil") "lens history mask PS") "red4ext\plugins\CyberpunkVR_Stereo\CyberpunkVR_LensMaskPs.dxil"
+Add-File (Need (Join-Path $RepoRoot "src\Shaders\sight_mask_ps.dxil") "camera surface history mask PS") "red4ext\plugins\CyberpunkVR_Stereo\CyberpunkVR_SightMaskPs.dxil"
+Add-File (Need (Join-Path $RepoRoot "src\Shaders\lens_source_resolve_cs.dxil") "lens source resolve CS") "red4ext\plugins\CyberpunkVR_Stereo\CyberpunkVR_LensSourceResolveCs.dxil"
+Add-File (Need (Join-Path $RepoRoot "src\Shaders\camera_source_resolve_cs.dxil") "camera source resolve CS") "red4ext\plugins\CyberpunkVR_Stereo\CyberpunkVR_CameraSourceResolveCs.dxil"
 # The outline shader. Without it the port still runs and the engine draws its own thin line, so it
 # is not fatal to omit -- which is exactly why it has to be listed: a missing file here looks like a
 # feature that was never built.
 Add-File (Need (Join-Path $RepoRoot "src\Shaders\vision_highlight_cs.dxil") "outline CS") "red4ext\plugins\CyberpunkVR_Stereo\CyberpunkVR_VisionCs.dxil"
+# The volumetric-fog twins for the asymmetric projection, by engine shader hash. Missing ones leave the
+# fog ignoring the projection's shift -- shafts in the wrong place, blocky haze -- so all three are required.
+foreach ($hash in @('1dc449918634d656', '2ba4e029e1931fa9', '9535892c88d0f345', '168d9acf8a2d71f2')) {
+    Add-File (Need (Join-Path $RepoRoot "src\Shaders\asym_fog\$hash.dxil") "volumetric fog shift twin $hash") "red4ext\plugins\CyberpunkVR_Stereo\asym\$hash.dxil"
+}
+# The screen-space and planar reflection twins, same reason: without them reflections are traced from the
+# wrong points. One per SSR quality's trace (tools/asym_tests/asym_ssr_shaders.py); the traces and the clear of
+# the tiles without coarse hits (c36da...) also merge the two eyes' reflections (Render/SsrWideMerge.cpp).
+foreach ($hash in @('78cc00b0064fdcc3', '5663e7e429cb06f7', '8e29e9279bc461ad', '8c54cd58991d44b2', 'cbf5910cf3345d82', '0d0d144348ca7372', '057c1b9099263e6d', 'c36da84c6344378a')) {
+    Add-File (Need (Join-Path $RepoRoot "src\Shaders\asym_ssr\$hash.dxil") "SSR shift twin $hash") "red4ext\plugins\CyberpunkVR_Stereo\asym_ssr\$hash.dxil"
+}
+# The shadow-mask twin: merges the two eyes' sun contact shadows as one wide display (Render/SsrWideMerge.cpp).
+Add-File (Need (Join-Path $RepoRoot "src\Shaders\asym_shadow\0f7d6dab2e706d58.dxil") "shadow-mask wide-merge twin") "red4ext\plugins\CyberpunkVR_Stereo\asym_shadow\0f7d6dab2e706d58.dxil"
+# The material view-direction twins (tools/asym_tests/view_dir_shaders.py): screens and holograms whose parallax
+# layers and facing terms used the camera's forward axis take the pixel's own view ray (Render/HiddenAreaShaders.cpp).
+Get-ChildItem (Join-Path $RepoRoot "src\Shaders\view_dir") -Filter *.dxil | ForEach-Object { Add-File $_.FullName "red4ext\plugins\CyberpunkVR_Stereo\view_dir\$($_.Name)" }
+# The cone-AO twins: without them the occlusion in corners differs between the eyes; the traces also merge the
+# two eyes' AO at their inner edges (Render/SsrWideMerge.cpp, kConeAo).
+foreach ($hash in @('34d5c22bdeded25c', '900998f12942de54', '1014a66e76b130c3', '1902e65cecef16ef')) {
+    Add-File (Need (Join-Path $RepoRoot "src\Shaders\asym_ao\$hash.dxil") "cone-AO shift twin $hash") "red4ext\plugins\CyberpunkVR_Stereo\asym_ao\$hash.dxil"
+}
+# The particle-facing vertex twins, one per particle vertex shader in the game's cache that lays sprites out
+# along the camera's axes (tools/asym_tests/particle_facing_shaders.py): without them smoke and steam turn
+# with the head. Too many to list; the count is checked instead.
+$particleTwins = @(Get-ChildItem -LiteralPath (Need (Join-Path $RepoRoot "src\Shaders\asym_particles") "particle-facing twins") -Filter *.dxil)
+if ($particleTwins.Count -lt 114) { throw "particle-facing twins: $($particleTwins.Count) of 114 in src\Shaders\asym_particles" }
+foreach ($twin in $particleTwins) {
+    Add-File $twin.FullName "red4ext\plugins\CyberpunkVR_Stereo\asym_particles\$($twin.Name)"
+}
+# The auto-exposure twins (tools/asym_tests/asym_expo_shaders.py): the luminance image metered around the view
+# centre, and the slower adaptation.
+foreach ($name in @("df89e9d648ff7b36.dxil", "b059d1d55826b33f.dxil")) {
+    Add-File (Need (Join-Path $RepoRoot "src\Shaders\asym_expo\$name") "auto-exposure twin $name") "red4ext\plugins\CyberpunkVR_Stereo\asym_expo\$name"
+}
+# The screen-effect twin (tools/asym_tests/screen_fx_shaders.py): the Sandevistan's look without its radial smear
+# and block tearing around each eye's screen middle.
+Add-File (Need (Join-Path $RepoRoot "src\Shaders\screen_fx\52f74d75736ab8b0.dxil") "Sandevistan screen-effect twin") "red4ext\plugins\CyberpunkVR_Stereo\screen_fx\52f74d75736ab8b0.dxil"
 
 # Merged into the player's settings ONCE, preserving personal preferences, when first_launch=1
 # in vrport.ini. FirstLaunch clears it to 0 only after the merge succeeds. A timestamped backup
@@ -226,7 +252,7 @@ REQUIREMENTS
 
     Input Loader is required for the scanner HUD editor's Right Shift binding.
 
-    Nothing else may proxy dxgi. If bin\x64\dxgi.dll exists (R.E.A.L. VR installs one), move it
+    Nothing else may proxy dxgi. If another VR mod installed bin\x64\dxgi.dll, move it
     out of the folder -- two VR paths in one process fight over the same engine hooks.
 
 INSTALL
@@ -237,6 +263,9 @@ INSTALL
     Its old loot scaling and tooltip reparenting are replaced by the texture HUD.
     Also remove r6\scripts\CyberpunkVRPort_SettingsGuard\vrport_settings_guard.reds
     to restore the native cascade shadow settings in the game menu.
+    Upgrading from 0.1.7 or older: delete archive\pc\mod\VRCigarette.archive.xl,
+    archive\pc\mod\vrport_basketball.archive and archive\pc\mod\vrport_mag.archive.
+    Their assets are inside cyberpunkvrport.archive now; the old files would duplicate them.
     QuickBoot is not included. If you previously installed a development build with it,
     remove bin\x64\plugins\cyber_engine_tweaks\mods\CyberpunkVRPort_QuickBoot to keep
     normal startup and save selection. Existing launcher preferences are preserved;
@@ -270,7 +299,7 @@ IF SOMETHING IS WRONG
     package added and then offers your own settings back. UNINSTALL.txt is the same thing
     written out by hand, including the two things neither of them can put back for you.
 
-Source base commit $(Get-SourceCommit) (local changes may be present); packaged on $(Get-Date -Format "yyyy-MM-dd").
+Built from source $SourceRevision on $(Get-Date -Format "yyyy-MM-dd").
 "@
 Set-Content (Join-Path $Out "INSTALL.txt") $readme -Encoding utf8
 
@@ -361,7 +390,7 @@ $looseLines
 
 5. IF YOU MOVED A dxgi.dll ASIDE FOR THIS MOD
 
-    R.E.A.L. VR and some other VR mods install bin\x64\dxgi.dll, and this port cannot share a
+    Some other VR mods install bin\x64\dxgi.dll, and this port cannot share a
     process with one, so you may have renamed it -- deploy_stereo.ps1 renames it to
     dxgi.dll.disabled-red4ext. Rename it back if you want that mod again.
 
@@ -376,7 +405,7 @@ $looseLines
     Each has its own uninstall; the lists above remove only what carries the
     CyberpunkVRPort name.
 
-Source base commit $(Get-SourceCommit) (local changes may be present); packaged on $(Get-Date -Format "yyyy-MM-dd").
+Generated from source $SourceRevision on $(Get-Date -Format "yyyy-MM-dd").
 "@
 Set-Content (Join-Path $Out "UNINSTALL.txt") $uninstall -Encoding utf8
 
@@ -571,36 +600,4 @@ if ($Zip) {
     if (Test-Path $archivePath) { Remove-Item $archivePath -Force }
     Compress-Archive -Path (Join-Path $Out "*") -DestinationPath $archivePath
     Write-Host ("  packaged -> {0}  ({1:N0} bytes)" -f $archivePath, (Get-Item $archivePath).Length)
-
-    # Separate installer asset: these scripts must NOT be extracted into the game root.
-    # Its dependency manifest and core live beside the entrypoint, so the ZIP is portable.
-    $switcherOut = Join-Path $DistRoot 'CyberpunkVRPort-Switcher'
-    if (Test-Path -LiteralPath $switcherOut) {
-        if (-not $Force) { throw "Switcher package already exists: $switcherOut. Use -Force to rebuild it." }
-        if ((Get-Item -LiteralPath $switcherOut).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Refusing linked switcher package' }
-        Remove-Item -LiteralPath $switcherOut -Recurse -Force
-    }
-    New-Item -ItemType Directory -Path (Join-Path $switcherOut 'scripts'), (Join-Path $switcherOut 'wabbajack'), (Join-Path $switcherOut 'docs'), (Join-Path $switcherOut 'patches\dualsense') -Force | Out-Null
-    foreach ($name in @('Switch-CyberpunkVRPort.ps1','CyberpunkVR-Switcher.Core.ps1','README-SWITCHER.txt','Install-PSVR2AutoFireGrip.ps1')) {
-        Copy-Item -LiteralPath (Need (Join-Path $RepoRoot "scripts\$name") $name) -Destination (Join-Path $switcherOut 'scripts')
-    }
-    Copy-Item -LiteralPath (Need (Join-Path $RepoRoot 'Switch-CyberpunkVRPort.bat') 'switcher batch') -Destination $switcherOut
-    Copy-Item -LiteralPath (Need (Join-Path $RepoRoot 'wabbajack\manifest.json') 'dependency manifest') -Destination (Join-Path $switcherOut 'wabbajack')
-    Copy-Item -LiteralPath (Need (Join-Path $RepoRoot 'docs\PSVR2-TWEAKS-017.md') 'PSVR2 instructions') -Destination (Join-Path $switcherOut 'docs')
-    Copy-Item -LiteralPath (Need (Join-Path $RepoRoot 'patches\dualsense\PSVR2AutoFireGrip.lua') 'optional PSVR2 grip helper') -Destination (Join-Path $switcherOut 'patches\dualsense')
-    $archiveName = [IO.Path]::GetFileName($archivePath)
-    $selection = [ordered]@{
-        schemaVersion = 1
-        fork = [ordered]@{
-            name = "CyberpunkVRPort PSVR2 fork $Version"
-            fileName = $archiveName
-            url = "https://github.com/satyaloka93/cyberpunk-vr-port/releases/download/$Version/$archiveName"
-            sha256 = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
-        }
-    }
-    $selection | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $switcherOut 'wabbajack\release-selection.json') -Encoding UTF8
-    $switcherZip = "$switcherOut.zip"
-    if (Test-Path -LiteralPath $switcherZip) { Remove-Item -LiteralPath $switcherZip -Force }
-    Compress-Archive -Path (Join-Path $switcherOut '*') -DestinationPath $switcherZip
-    Write-Host ("  switcher -> {0}  ({1:N0} bytes)" -f $switcherZip, (Get-Item $switcherZip).Length)
 }

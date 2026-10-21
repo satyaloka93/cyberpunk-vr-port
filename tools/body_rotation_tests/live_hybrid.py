@@ -22,6 +22,12 @@ class HybridProbe(Probe):
   row['head_down_deg']=math.asin(max(-1,min(1,2*(y*z-w*x)/n)))/D if n>.5 else None
   off=fields['bodyBend']['offset']+self.types['cvr::body::BendSample']['fields']['angle']['offset']
   row['bend_deg']=struct.unpack_from('<f',data,off)[0]/D
+  row['published_head_position']=[struct.unpack_from('<f',data,fields['pos'+k]['offset'])[0] for k in ('X','Y','Z')]
+  row['published_head_rotation']=q
+  if 'cvr::body::BendTracker' in self.types:
+   desc=self.types['cvr::body::BendTracker'];address=self.instance+self.types['OpenXRManager']['fields']['m_bodyBendTracker']['offset']
+   bend_data=self.r.read(address,desc['size'])
+   row['bend_tracker']={name:struct.unpack_from('<3f' if name in ('m_head','m_lever','m_neck') else '<f',bend_data,desc['fields'][name]['offset']) for name in ('m_head','m_lever','m_neck','m_right','m_forward','m_drop')}
   return row
  def phase_is(self,tracked):
   self.hold(.2);r=self.sample()
@@ -52,7 +58,7 @@ class HybridProbe(Probe):
  def custom_suite(self):
   assert 'xr_hybrid_body_rotation=1' in self.ini.read_text()
   self.mode(0) # explicit tracked-only off; installed hybrid remains on
-  for pose in ('rest','rifle','right_pistol','crossed'):
+  for pose in (('rest',) if self.a.quick else ('rest','rifle','right_pistol','crossed')):
    for sign in (-1,1):
     self.phase=pose+'/neutral';self.pose(pose,0,0,jitter=0);self.hold(.7);self.phase_is(False)
     baseline=self.get('CyberpunkVR_BodyYawRealignRad')/D
@@ -101,5 +107,6 @@ if __name__=='__main__':
  for flag in ('dll','types','out'):p.add_argument('--'+flag,type=Path,required=True)
  p.add_argument('--batch-runtime',type=Path)
  p.add_argument('--pid',type=int,required=True)
+ p.add_argument('--quick',action='store_true',help='One posture for routing, both hinge directions and pitch hysteresis')
  p.add_argument('--game',type=Path,default=Path(r'C:\Program Files (x86)\Steam\steamapps\common\Cyberpunk 2077'))
  a=p.parse_args();a.case='hybrid';a.poses=None;assert not a.out.exists();HybridProbe(a).run()

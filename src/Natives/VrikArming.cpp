@@ -61,8 +61,10 @@
 #include <utility>
 #include <iomanip>
 #include <string>
+#include <vector>
 #include "Anim/VrikHook.hpp"
 #include "Anim/CharacterRig.hpp"
+#include "Anim/Cyberware.hpp"
 #include "Anim/SkeletonPolicy.hpp"
 #include "Anim/WeaponAim.hpp"
 #include "Natives/NativeState.hpp"
@@ -77,6 +79,38 @@
 
 // Resolves the player's live track buffers (a2[7][3] candidates) so the hook can
 // identify the player call. Returns bitmask: 1=bufA set, 2=bufB set.
+namespace {
+struct PlayerBinding {
+    uintptr_t object{},rig{},names{},parents{},reference{},trackA{},trackB{};
+    uint64_t id{};
+    uint32_t bones{},parentCount{},referenceCount{};
+    bool operator==(const PlayerBinding&) const = default;
+};
+PlayerBinding s_playerBinding{};
+bool ReadPlayerBinding(RED4ext::anim::AnimatedObject* object,PlayerBinding& key) {
+    __try {
+        if(!object || !object->metaRig)return false;
+        auto* rig=object->metaRig;
+        if(!rig->boneNames.Size() || !rig->parentIndeces.Size() || !rig->boneTransforms.Size())return false;
+        auto* base=reinterpret_cast<uint8_t*>(object);
+        const auto ownerB=*reinterpret_cast<uintptr_t*>(base+0x18);
+        key={reinterpret_cast<uintptr_t>(object),reinterpret_cast<uintptr_t>(rig),
+            reinterpret_cast<uintptr_t>(&rig->boneNames[0]),reinterpret_cast<uintptr_t>(&rig->parentIndeces[0]),
+            reinterpret_cast<uintptr_t>(&rig->boneTransforms[0]),
+            rig->referenceTracks.Size() ? reinterpret_cast<uintptr_t>(&rig->referenceTracks[0]):0,
+            ownerB ? *reinterpret_cast<uintptr_t*>(ownerB+0x18):0,object->metaRigID,
+            rig->boneNames.Size(),rig->parentIndeces.Size(),rig->boneTransforms.Size()};
+        return key.bones>0 && key.bones<=VRIK_MAX_BONES && key.parentCount==key.bones &&
+            key.referenceCount>=key.bones && key.names && key.parents && key.reference && (key.trackA || key.trackB);
+    } __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
+}
+}
+
+bool VRIK_PlayerBindingChanged() {
+    PlayerBinding current{};
+    return !ReadPlayerBinding(FindPlayerAnimatedObjectByComponentName("root"),current) || !(current==s_playerBinding);
+}
+
 static int ArmPlayerLocked() {
     g_PlayerTrackBufA = 0;
     g_PlayerTrackBufB = 0;
@@ -86,6 +120,8 @@ static int ArmPlayerLocked() {
     g_solveCacheTick = 0xFFFFFFFFu;
     auto* animObj = FindPlayerAnimatedObjectByComponentName("root");
     if (!animObj || !VRIK_IsReadable(animObj, 0x40)) return -1;
+    PlayerBinding binding{};
+    if(!ReadPlayerBinding(animObj,binding))return -1;
     uint8_t* base = reinterpret_cast<uint8_t*>(animObj);
 
     uintptr_t trackA=0,trackB=0;
@@ -419,6 +455,12 @@ static int ArmPlayerLocked() {
             }
             VRIK_ConfigureRigPolicy(policyNames,written,
                 referenceReadable ? reference : nullptr,referenceReadable ? referenceLimit : 0,female);
+            std::vector<const char*> trackNames;
+            if(metaRig->trackNames.Size()<=8192) {
+                for(uint32_t i=0;i<metaRig->trackNames.Size();++i)trackNames.push_back(metaRig->trackNames[i].ToString());
+            }
+            VRIK_ConfigureCyberwareTracks(trackNames.data(),static_cast<int>(trackNames.size()),
+                metaRig->referenceTracks.Size()?&metaRig->referenceTracks[0]:nullptr);
 
             // PERF (audit, session 3): per-solve FK used to walk the FULL rig (up to
             // 256 bones) 3+ times per fresh solve, while the solver only ever reads
@@ -470,7 +512,10 @@ static int ArmPlayerLocked() {
 
     // Publish only after indices, hierarchy, reference pose and replay state
     // belong to this rig. A failed resolve leaves the player branch disarmed.
-    if(g_VRBoneCount>0){g_PlayerTrackBufA=trackA;g_PlayerTrackBufB=trackB;}
+    PlayerBinding finished{};
+    if(g_VRBoneCount>0 && ReadPlayerBinding(animObj,finished) && finished==binding) {
+        g_PlayerTrackBufA=trackA;g_PlayerTrackBufB=trackB;s_playerBinding=binding;
+    }
     return (g_PlayerTrackBufA ? 1 : 0) | (g_PlayerTrackBufB ? 2 : 0);
 }
 

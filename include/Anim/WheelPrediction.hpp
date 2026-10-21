@@ -1,4 +1,5 @@
 #pragma once
+#include "Anim/WheelRange.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -45,10 +46,10 @@ public:
         const auto interval=stamp-m_points[m_count-2].stamp;
         const uint64_t lease=std::clamp(interval*2,uint64_t(25000),uint64_t(60000));
         if(now<stamp || now-stamp>lease)return physical;
-        limit=std::isfinite(limit)&&limit>=30&&limit<=120 ? limit:90;
+        limit=WheelFullLockDegrees(limit);
         dead=std::isfinite(dead)&&dead>=0&&dead<=20 ? dead:1.5f;
         // Fade over two degrees at neutral/full lock. The lead cannot cross
-        // either boundary or pre-empt the user's configured center deadzone.
+        // either boundary or pre-empt the player's configured center deadzone.
         const float envelope=std::clamp(std::min(std::abs(physical)-dead,limit-std::abs(physical))/2.f,0.f,1.f);
         const float lead=std::clamp(m_velocity*ms*.001f,-MaxLeadDegrees,MaxLeadDegrees)*envelope;
         return physical+lead;

@@ -514,6 +514,9 @@ void hud_snapshot_copy(ID3D12GraphicsCommandList* list, ID3D12Resource* src,
 // rebuild if a graphics setting turns out to move them.
 extern "C" __declspec(dllexport) float CyberpunkVR_HudCurvatureX   = 0.009017f;
 extern "C" __declspec(dllexport) float CyberpunkVR_HudCurvatureY   = 0.084242f;
+// The engine's own bend as it was before the in-eye composite's was zeroed (Grading.cpp,
+// FlattenHudComposite); 0,0 until then.
+extern "C" __declspec(dllexport) float CyberpunkVR_HudEngineCurvature[2] = {0.0f, 0.0f};
 extern "C" __declspec(dllexport) float CyberpunkVR_HudAberration   = 0.0001f;
 extern "C" __declspec(dllexport) float CyberpunkVR_HudGain         = 2.0f;    // the engine's x2
 extern "C" __declspec(dllexport) float CyberpunkVR_HudGlowGain     = 1.0f;
@@ -737,7 +740,7 @@ extern "C" __declspec(dllexport) void CyberpunkVR_NoteHudCompositeInputs(
             (unsigned long long)g_hud_node_binds.load(std::memory_order_relaxed),
             (unsigned long long)g_hud_node_unresolved.load(std::memory_order_relaxed),
             g_rtv_dim_count.load(std::memory_order_relaxed),
-            RtvDescriptorCapacity,
+            rtv_descriptor_limit(),
             g_rtv_dim_wrapped_logged ? " (wrapped)" : "");
         return;
     }

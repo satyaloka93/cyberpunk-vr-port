@@ -73,7 +73,7 @@
 -- ============================================================================================================
 
 -- DEBUG LOGGING, one flag for every CET bridge: the plugin publishes the launcher's DEBUG state to
--- shared slot [156]. Without it these per-second reports produced megabytes a session for users who
+-- shared slot [156]. Without it these per-second reports produced megabytes a session for players who
 -- never asked for them -- measured 3.4 MB from this mod alone in one sitting. Nothing is deleted: tick
 -- DEBUG and every line comes back.
 local function dbgOn()
@@ -131,15 +131,21 @@ local fade  = { [0] = 0.0, [1] = 0.0 }
 local CAPS_PHYS_ON = false
 
 local vbComps, vbScanAt, vbWanted = nil, -1.0, nil
+-- When a scan finds no capsule components, the next one waits a second: with none on the player (the archive
+-- without them) the scan ran every frame, because nothing ever set vbWanted.
+local vbEmptyAt = -10.0
+
+local function mountedNow()
+    local pl = Game.GetPlayer()
+    return pl ~= nil and Game.GetMountedVehicle(pl) ~= nil
+end
 
 local function bodyCapsulesForVehicle(now)
-    local inCar = false
-    pcall(function()
-        local pl = Game.GetPlayer()
-        if pl then inCar = Game.GetMountedVehicle(pl) ~= nil end
-    end)
+    local okM, mounted = pcall(mountedNow)
+    local inCar = okM and mounted or false
     local want = CAPS_PHYS_ON and not inCar
     if vbWanted == want then return inCar end
+    if not vbComps and now - vbEmptyAt < 1.0 then return inCar end
     if not vbComps or now - vbScanAt > 5.0 then
         local found = {}
         pcall(function()
@@ -151,7 +157,7 @@ local function bodyCapsulesForVehicle(now)
                 if string.find(tostring(cs[i]:GetName()), 'VRPortBody_') then found[#found + 1] = cs[i] end
             end
         end)
-        if #found == 0 then return inCar end
+        if #found == 0 then vbEmptyAt = now return inCar end
         vbComps, vbScanAt = found, now
     end
     for i = 1, #vbComps do pcall(function() vbComps[i]:Toggle(want) end) end
@@ -231,6 +237,11 @@ end
 
 -- ---------------------------------------------------------------------------------------------------------
 
+-- Entity reads for pcall without a closure per call (these run every frame).
+local function worldPos(e) return e:GetWorldPosition() end
+local function worldRot(e) return e:GetWorldOrientation() end
+local function activeWeapon(pl) return pl:GetActiveWeapon() end
+
 -- World -> model through the PLAYER's transform. NOT VRWorldToModel: that is anchored on the render-view pair,
 -- and VRViewWorldPos sits about a metre below the real camera, which put the gun 0.397 m from the hand holding
 -- it. A round trip through it is exact because both directions share the error, so it looked fine. Measured
@@ -242,9 +253,9 @@ end
 local function worldFrame()
     local pl = Game.GetPlayer()
     if not pl then return nil end
-    local ok, base = pcall(function() return pl:GetWorldPosition() end)
+    local ok, base = pcall(worldPos, pl)
     if not ok or not base then return nil end
-    local ok2, q = pcall(function() return pl:GetWorldOrientation() end)
+    local ok2, q = pcall(worldRot, pl)
     if not ok2 or not q then return nil end
     return base.x, base.y, base.z, -q.i, -q.j, -q.k, q.r    -- conjugate: world -> model
 end
@@ -287,14 +298,14 @@ local W_GIVE_UP = 30       -- frames of failure before the weapon is considered 
 local function heldWeapon()
     local pl = Game.GetPlayer()
     if not pl then lastW, wMiss = nil, 0 return nil end
-    local ok, w = pcall(function() return pl:GetActiveWeapon() end)
+    local ok, w = pcall(activeWeapon, pl)
     if ok and w then
         lastW, wMiss = w, 0
         return w
     end
     if lastW then
         -- still there? a held entity answers for its position; a despawned one does not
-        local ok2, p = pcall(function() return lastW:GetWorldPosition() end)
+        local ok2, p = pcall(worldPos, lastW)
         if ok2 and p then
             wMiss = wMiss + 1
             if wMiss < W_GIVE_UP then return lastW end
@@ -326,8 +337,22 @@ local WGX, WGY, WGZ, WGDX, WGDY, WGDZ, WGN = {}, {}, {}, {}, {}, {}, 0
 -- that actually holds the pistol off its own pistol. In the log: "stopped by R = vrp_hand_r>barrel".
 local WGRX, WGRY, WGRZ = 0.0, 0.0, 0.0
 
+-- PER-FRAME CALLS WITHOUT GARBAGE. `pcall(function() ... end)` builds a closure on every call and CName.new a
+-- userdata, and this ran for all 58 slots every frame in this module and again in the reload's: thousands of
+-- objects a second, which the GC collected in one 13-15 ms piece about once a second -- the periodic hitch.
+-- The slot names are made once per capsule, and pcall gets plain functions plus arguments.
+local function slotTransform(comp, name) return comp:GetSlotTransform(name) end
+local function slotPosition(tr) return WorldPosition.ToVector4(tr.Position) end
+local function slotName(c)
+    local n = c.cname
+    if not n then n = CName.new(c.slot); c.cname = n end
+    return n
+end
+
 -- Reads the live slots into the flat arrays above, in MODEL space. Returns the count, 0 if there is no weapon.
-local function readWeapon()
+-- `full` false stops at the first slot that answers: the caller only asks whether the weapon does, and the
+-- arrays are read by the collision solve alone.
+local function readWeapon(full)
     WGN = 0
     if not WCAPS then return 0 end
     local pl = Game.GetPlayer()
@@ -381,11 +406,12 @@ local function readWeapon()
     local n = 0
     for i = 1, #WCAPS do
         local c = WCAPS[i]
-        local o, found, tr = pcall(function() return slotComp:GetSlotTransform(CName.new(c.slot)) end)
+        local o, found, tr = pcall(slotTransform, slotComp, slotName(c))
         if o and found and tr then
-            local wp = nil
-            pcall(function() wp = WorldPosition.ToVector4(tr.Position) end)
+            local okP, wp = pcall(slotPosition, tr)
+            if not okP then wp = nil end
             local q = tr.Orientation
+            if wp and q and not full then n = 1 break end
             if wp and q then
                 -- authored in the bone's frame: rotate into the world, then convert into model space
                 local ox, oy, oz = qrot(q.i, q.j, q.k, q.r, c.cx, c.cy, c.cz)
@@ -741,12 +767,22 @@ local RAW = {}
 -- onUpdate (before any early return can silence it). Exists because the grip died with zero log output twice, and
 -- each time the silent early-out cost a debugging round to even locate.
 local dbgStage, dbgAcc, dbgNote = 'never-ran', 0.0, ''
+-- dbgOn(), sampled by the tracer's own once-a-second tick: the notes are formatted only while somebody reads them.
+local traceOn = false
+
+-- The collision-off release, without a fresh Vector4 and closure per hand per frame.
+local ZERO4 = nil
+local function releaseHand(side)
+    if not ZERO4 then ZERO4 = Vector4.new(0, 0, 0, 0) end
+    VRHandStopModel(side, false, ZERO4)
+end
 
 registerForEvent('onUpdate', function(dt)
     dbgAcc = dbgAcc + (dt or 0.016)
     if dbgAcc >= 1.0 then
         dbgAcc = 0.0
-        if dbgOn() then
+        traceOn = dbgOn()
+        if traceOn then
             pcall(function() spdlog.info(string.format('[Tick] stage=%s %s ownHand=%s collOn=%s',
                 dbgStage, dbgNote,
                 (type(GetVRSharedSlot) == 'function') and tostring(GetVRSharedSlot(162)) or '?',
@@ -769,7 +805,7 @@ registerForEvent('onUpdate', function(dt)
 
     local rl, rr = VRHandRawModel(0), VRHandRawModel(1)
     dbgStage = 'hands'
-    dbgNote = string.format('Lw=%.1f Rw=%.1f', rl and rl.w or -1, rr and rr.w or -1)
+    if traceOn then dbgNote = string.format('Lw=%.1f Rw=%.1f', rl and rl.w or -1, rr and rr.w or -1) end
     if rl and rl.w < 0.5 then rl = nil end
     if rr and rr.w < 0.5 then rr = nil end
     if not rl and not rr then return end
@@ -778,9 +814,10 @@ registerForEvent('onUpdate', function(dt)
     if rr then PX[1], PY[1], PZ[1] = rr.x, rr.y, rr.z end
 
     local holder = nil
-    local haveGun = readWeapon() > 0
+    -- With the collision off the slots, and the holder, only feed the tracer's note.
+    local haveGun = readWeapon(COLL_ON) > 0
     if type(VRPoseCensus) == 'function' then VRPoseCensus(-4, haveGun and 1 or 0) end
-    if haveGun then
+    if haveGun and (COLL_ON or traceOn) then
         holder = holderOf(rl, rr)
         if holder ~= nil and (not RAW[holder] or not HAND[holder]) then holder = nil end
     end
@@ -788,7 +825,9 @@ registerForEvent('onUpdate', function(dt)
     -- COLLISION OFF (dev): release both hands so nothing clamps them, run only the physical reload, and stop.
     if not COLL_ON then
         dbgStage = 'colloff'
-        dbgNote = string.format('gun=%s holder=%s slotComp=%s', tostring(haveGun), tostring(holder), tostring(slotComp ~= nil))
+        if traceOn then
+            dbgNote = string.format('gun=%s holder=%s slotComp=%s', tostring(haveGun), tostring(holder), tostring(slotComp ~= nil))
+        end
         -- ...EXCEPT THE WRIST THE RELOAD HOLDS, and that exception is what the split cost here. While the
         -- reload lived in this file the release was safe by construction: it ran, and the reload's frame
         -- re-took its wrist two statements later in this same callback. Two mods have no guaranteed
@@ -799,8 +838,8 @@ registerForEvent('onUpdate', function(dt)
             local v = GetVRSharedSlot(162)
             if v == 0.0 or v == 1.0 then ownRel = math.floor(v) end
         end
-        if ownRel ~= 0 then pcall(function() VRHandStopModel(0, false, Vector4.new(0, 0, 0, 0)) end) end
-        if ownRel ~= 1 then pcall(function() VRHandStopModel(1, false, Vector4.new(0, 0, 0, 0)) end) end
+        if ownRel ~= 0 then pcall(releaseHand, 0) end
+        if ownRel ~= 1 then pcall(releaseHand, 1) end
         bodyCapsulesForVehicle(os.clock())
         return
     end

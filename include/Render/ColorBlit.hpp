@@ -15,9 +15,14 @@ public:
                            uint32_t width,
                            uint32_t height);
 
+    // u0..v1: the source sub-rectangle stretched over the whole target; the default is a plain copy.
     bool RecordBlit(ID3D12GraphicsCommandList* cmdList,
                     ID3D12Resource* srcColor,
-                    ID3D12Resource* dstColor);
+                    ID3D12Resource* dstColor,
+                    float u0 = 0.0f,
+                    float v0 = 0.0f,
+                    float u1 = 1.0f,
+                    float v1 = 1.0f);
 
     // Alpha-blend an overlay over what is already in dstColor, which must be in RENDER_TARGET.
     // The source is expected to carry PREMULTIPLIED alpha -- the blend is ONE / INV_SRC_ALPHA,
@@ -98,6 +103,9 @@ public:
         float panelBrightness= 1.0f;
         float panelShadow    = 1.0f;
         float panelGlow      = 1.0f;
+        // 1 = the panel bends with `curvature` above: the engine's own values, which the in-eye block no
+        // longer carries once the port zeroed them (CyberpunkVR_HudEngineCurvature).
+        float panelEngineCurve = 0.0f;
     };
 
     // Full composite: scene + HUD -> dstColor (which must be in RENDER_TARGET). Unlike

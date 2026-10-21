@@ -394,12 +394,14 @@ local CFG = {
     -- cannot be changed after the attach -- so the only instrument that settles it is the picture, and
     -- one reload of this module per value beats a rebuild per guess. What is already known: attached
     -- with the WEAPON plane, live, with a gun in the other hand, the grenade was visible.
-    -- 2, THE WEAPON PLANE, because that is the only setting the grenade has ever been SEEN in: it was
-    -- visible in the hand when it was attached that way by hand, live, and it has not been seen since
-    -- the module started choosing the scene plane for an empty hand. Following the player is the right
-    -- idea and 0 still does it -- but an invisible grenade cannot be tuned, and being able to see the
-    -- thing comes first.
-    grenade_grab_plane = 2,
+    -- 0, FOLLOW THE PLAYER. It was 2 while the grenade could not be seen in the scene plane, and the
+    -- price of 2 was the "transparent hand": an empty hand is drawn in the scene plane, the weapon plane
+    -- is drawn on top of it, so the grenade covered the fingers that hold it. Measured 2026-10-09 with
+    -- the per-type props, right hand, no weapon, simulator screenshots: in the scene plane the grenade is
+    -- drawn and the back of the hand covers it as it should; in the weapon plane it is drawn over the
+    -- hand. A grenade is only taken with no weapon in hand, so it starts in the scene plane, and follows
+    -- the player into the weapon plane if a weapon comes out in the other hand.
+    grenade_grab_plane = 0,
     -- THE RECORDED FINGER POSE, ON. It was switched off for a while on suspicion of a crash, and it was
     -- innocent: the fault was a plane check asking the held prop `GetItemID`, which is a weapon's
     -- question and dereferenced a null. Twenty-eight clean grab-and-release cycles after that was
@@ -483,8 +485,8 @@ local CFG = {
     --
     -- The point is `VRPalmModelPos`, which is the SOLVED avatar's `RightHandMiddle1` /
     -- `LeftHandMiddle1` -- the middle finger's base knuckle. That is a reasonable place to call "the
-    -- hand", and it is not where everyone's own sense of "I am touching it" sits: the user's reading
-    -- of it was "то ли по костяшкам, то ли где конец предплечья".
+    -- hand", and it is not where everyone's own sense of "I am touching it" sits: in the headset it read
+    -- as somewhere between the knuckles and the end of the forearm.
     --
     -- So it can be moved, in the palm's OWN frame, and the panel prints where it ends up. Zero keeps
     -- the knuckle, which is what every measurement in this file so far was taken against.
@@ -612,9 +614,13 @@ local CFG = {
     grenade_flight_soft = true,
     -- How far past a soft hit the ray restarts, in metres.
     grenade_flight_soft_step = 0.05,
-    -- The floor of last resort, at the player's feet, used only while falling and only below it.
+    -- The floor of last resort, at the player's feet, used only while falling through it and only where
+    -- a ray straight down finds no ground more than floor_drop metres below the ground under the feet
+    -- (rays floor_probe metres long; a kerb is 0.15).
     grenade_flight_floor = true,
     grenade_flight_floor_lift = 0.02,
+    grenade_flight_floor_drop = 0.05,
+    grenade_flight_floor_probe = 50.0,
     -- How long it lives. The fuse runs from the throw; a grenade that has come to rest gets the
     -- shorter one, so it does not sit on the floor for a second and a half doing nothing.
     grenade_fuse_s = 2.5,
@@ -799,7 +805,7 @@ local CFG = {
     --   1 magenta   2 white   3 cyan   4 green   5 amber   6 red   7 blue   8 violet
     --
     -- The material is base/materials/loot_drop_highlight.mt -- the game's own "this can be picked up"
-    -- highlight, found by the user after a rule of mine had ruled it out in writing.
+    -- highlight, found in the headset after a rule had ruled it out in writing.
     --
     -- HighlightIntensity is FIXED at 0.08 in all eight, chosen on the picture out of a 0.05..0.30
     -- sweep. For scale, CDPR's own uses of this same material (base/gameplay/loot/materials) run from
@@ -1017,8 +1023,8 @@ local WEAPON_MAG = {
     "nue",
 }
 
--- CARRIED ON THE BACK, and therefore deliberately absent from the list above -- the user's own
--- enumeration. A rifle slung over the shoulder is reached for over the shoulder, so a magazine
+-- CARRIED ON THE BACK, and therefore deliberately absent from the list above -- by
+-- design. A rifle slung over the shoulder is reached for over the shoulder, so a magazine
 -- for it on the hip would be a second place the hand has to know about:
 --
 --   borg authority ajax achilles grad hercules hmg kolac
@@ -1340,10 +1346,20 @@ local function toHipsFrame(x, y, z)
     return qrot(-HIPS_QI, -HIPS_QJ, -HIPS_QK, HIPS_QR, x - HIPS_TX, y - HIPS_TY, z - HIPS_TZ)
 end
 
+-- CALLS MADE EVERY FRAME, WITHOUT A CLOSURE EACH. `pcall(function() ... end)` allocates a closure per
+-- call, and the mods' per-frame garbage is what CET's collector has to keep up with (see the GC step in
+-- CyberpunkVRPort_Stereo). pcall takes these plain functions and their arguments instead.
+local function hashOf(obj) return tostring(EntityID.ToHash(obj:GetEntityID())) end
+local function isEnabled(c) return c:IsEnabled() end
+local function gamePaused() return Game.GetSystemRequestsHandler():IsGamePaused() end
+local function localPosition(c) local v = c:GetLocalPosition() return v.x, v.y, v.z end
+local function localOrientation(c) local q = c:GetLocalOrientation() return q.i, q.j, q.k, q.r end
+local function planeParamOf(c) return tostring(c.renderingPlaneAnimationParam.value or c.renderingPlaneAnimationParam) end
+local function toggle(c, on) c:Toggle(on) end
+
 local function entityHash(obj)
-    local h = nil
-    pcall(function() h = tostring(EntityID.ToHash(obj:GetEntityID())) end)
-    return h
+    local ok, h = pcall(hashOf, obj)
+    return ok and h or nil
 end
 
 -- WHERE THE MESHES ACTUALLY LIVE, measured live -- and the first version of this file had it wrong.
@@ -1642,7 +1658,7 @@ local BELT_PIECES = {
 -- Every `vrp_belt*` component the player is wearing, by name. Cached, and thrown away the moment the
 -- cached belt component stops being one -- a garment survives a wardrobe change by being rebuilt, and
 -- a stale component pointer is written into nothing.
-local function beltParts(pl)
+local function beltParts(pl, who)
     -- THE CACHE IS VALIDATED ON ITSELF, and the first version was not: it kept the map as long as
     -- `S.beltComp` -- a DIFFERENT variable, filled by another function -- was alive. The first scan
     -- runs before the garment is merged, so the map is empty; the next tick `S.beltComp` exists and the
@@ -1652,7 +1668,7 @@ local function beltParts(pl)
     -- still pass that test, and on a save switch every one of these belongs to an entity that no
     -- longer exists. The entity hash changes the moment the player does, and that is the only signal
     -- worth trusting here.
-    local who = entityHash(pl)
+    who = who or entityHash(pl)
     local cached = S.beltParts
     if cached ~= nil and S.beltPartsFor == who and who ~= nil then
         local ok = false
@@ -1675,60 +1691,76 @@ local function beltParts(pl)
     return map
 end
 
+-- The component names, built once: the all-in-one first, then the pieces in panel order.
+local BELT_PIECE_NAMES = { "vrp_belt" }
+for _, k in ipairs(BELT_PIECES) do BELT_PIECE_NAMES[#BELT_PIECE_NAMES + 1] = "vrp_belt_" .. k end
+
+local function chunkMaskOf(c) return c.chunkMask end
+
+-- Internal A/B controls; none of these switches retains native component handles.
+-- legacyBeltWalk: every belt piece reads IsEnabled() and the worn piece's chunkMask every frame.
+local PERFORMANCE = { legacyHighlightScan = false, legacyEmptyPropPoll = false, legacyBeltWalk = false }
+
+-- How many pieces re-read IsEnabled() per frame. A piece changes by our own Toggle, which the walk
+-- records, or when the garment is rebuilt, which replaces the parts map and with it these records;
+-- three a frame still re-reads each of the 21 every seven frames, against a change from outside.
+-- IsDefined stays on every piece every frame.
+local PIECE_READS_PER_FRAME = 3
+-- The worn piece's chunkMask is read again every eighth frame while the piece and the mask stay the same.
+local MASK_READ_FRAMES = 8
+
 -- One read, a write only when it differs -- the same shape as every other live toggle here.
-local function applyBeltPieces(pl)
-    local map = beltParts(pl)
-    local want = {}
+--
+-- Returns the piece that is on afterwards, the all-in-one first and then the pieces in panel order,
+-- so the answer is stable rather than whatever `pairs` happens to yield: WHICHEVER BELT PIECE IS ON is
+-- the one a chunk mask can do anything to. It used to be hardcoded to `vrp_belt`, the all-in-one --
+-- and the moment the belt switched to the bare `strap` the mask section became a row of ticks acting
+-- on a component nobody was wearing. NO FAST PATH ON `S.beltComp`: it was validated with `IsDefined`
+-- and a call to `IsEnabled`, and calling anything on a component whose entity has been destroyed is
+-- the fault itself -- the check WAS the crash. The answer comes from this walk, every frame; the
+-- chunk mask used to walk the pieces and call IsEnabled on each of them a second time.
+-- `who` is the player's entity hash when the caller already has it this frame.
+local function applyBeltPieces(pl, who)
+    local map = beltParts(pl, who)
     local pieces = beltPieceTable()
-    want["vrp_belt"] = beltAllInOne()
-    for _, k in ipairs(BELT_PIECES) do
-        want["vrp_belt_" .. k] = (pieces[k] == true)
-    end
-    for nm, on in pairs(want) do
+    if S.pieceMap ~= map then S.pieceMap, S.pieceOn = map, {} end
+    local known = S.pieceOn
+    local count = #BELT_PIECE_NAMES
+    local first = S.pieceRead or 0
+    S.pieceRead = (first + PIECE_READS_PER_FRAME) % count
+    local worn, wornName = nil, nil
+    for i, nm in ipairs(BELT_PIECE_NAMES) do
+        local on
+        if i == 1 then on = beltAllInOne() else on = (pieces[BELT_PIECES[i - 1]] == true) end
         local c = map[nm]
         if c ~= nil and IsDefined(c) then
-            local is = nil
-            pcall(function() is = c:IsEnabled() end)
-            if is ~= on then pcall(function() c:Toggle(on) end) end
-        end
-    end
-end
-
--- WHICHEVER BELT PIECE IS ON, because that is the one a chunk mask can do anything to. It used to be
--- hardcoded to `vrp_belt`, the all-in-one -- and the moment the belt switched to the bare `strap` the
--- mask section became a row of ticks acting on a component nobody was wearing.
-local function beltGarment(pl)
-    -- NO FAST PATH ON `S.beltComp`. It was validated with `IsDefined` and a call to `IsEnabled`, and
-    -- calling anything on a component whose entity has been destroyed is the fault itself -- the check
-    -- WAS the crash. `beltParts` is cached and keyed on the player, so the lookup below costs a walk
-    -- over twenty-odd map entries a few times a second.
-    S.beltComp = nil
-    S.beltCompName = nil
-    local parts = beltParts(pl)
-    -- The all-in-one first, then the pieces in panel order, so the answer is stable rather than
-    -- whatever `pairs` happens to yield.
-    local order = { "vrp_belt" }
-    for _, k in ipairs(BELT_PIECES) do order[#order + 1] = "vrp_belt_" .. k end
-    for _, nm in ipairs(order) do
-        local x = parts[nm]
-        if x ~= nil and IsDefined(x) then
-            local on = nil
-            pcall(function() on = x:IsEnabled() end)
-            if on == true then
-                S.beltComp, S.beltCompName = x, nm
-                return x
+            local is = known[nm]
+            if PERFORMANCE.legacyBeltWalk or is == nil or (i - 1 - first) % count < PIECE_READS_PER_FRAME then
+                local okE
+                okE, is = pcall(isEnabled, c)
+                if not okE then is = nil end
             end
+            local now = is
+            if is ~= on and pcall(toggle, c, on) and is ~= nil then now = on end
+            known[nm] = now
+            if now == true and worn == nil then worn, wornName = c, nm end
         end
     end
-    return nil
+    return worn, wornName
 end
 
-local function applyBeltChunks(pl)
-    local c = beltGarment(pl)
+-- `c` is the piece applyBeltPieces left on this frame.
+local function applyBeltChunks(c, name)
+    S.beltComp, S.beltCompName = c, name
     if c == nil then return end
     local want = beltChunkMask()
-    local have = nil
-    pcall(function() have = c.chunkMask end)
+    if not PERFORMANCE.legacyBeltWalk and c == S.maskComp and want == S.maskWant and (S.maskSkip or 0) > 0 then
+        S.maskSkip = S.maskSkip - 1
+        return
+    end
+    S.maskComp, S.maskWant, S.maskSkip = c, want, MASK_READ_FRAMES - 1
+    local okM, have = pcall(chunkMaskOf, c)
+    if not okM then have = nil end
     if have ~= nil and tostring(have) == tostring(want) then return end
     pcall(function() c.chunkMask = want end)
     -- ...and a nudge, because a field the renderer already read does not re-read itself.
@@ -2110,7 +2142,7 @@ local function applyElements(st)
         -- setLit, and a rule here would fight it: applyElements runs four times a second and writes
         -- whenever the state differs from what it wants, so the mark would go out a quarter of a
         -- second after it came on.
-        local isTwin = (string.sub(name, -4) == "_lit")
+        local isTwin = string.find(name, "_lit", -4, true) ~= nil
         local rule = ruleFor(name)
         local want = wanted(rule, st)
         if hideAll then want = false end
@@ -2121,11 +2153,11 @@ local function applyElements(st)
             want = false
         end
 
-        local is = nil
-        pcall(function() is = comp:IsEnabled() end)
+        local okE, is = pcall(isEnabled, comp)
+        if not okE then is = nil end
         if not isTwin and is ~= nil and is ~= want then
             S.want[name] = want
-            pcall(function() comp:Toggle(want) end)
+            pcall(toggle, comp, want)
             if CFG.verbose then log("%s -> %s (was %s)", name, tostring(want), tostring(is)) end
         end
 
@@ -2135,11 +2167,8 @@ local function applyElements(st)
         local off = offsetFor(name)
         if off ~= nil then
             local wx, wy, wz = off.x or 0.0, off.y or 0.0, off.z or 0.0
-            local cx, cy, cz = nil, nil, nil
-            pcall(function()
-                local v = comp:GetLocalPosition()
-                cx, cy, cz = v.x, v.y, v.z
-            end)
+            local okL, cx, cy, cz = pcall(localPosition, comp)
+            if not okL then cx, cy, cz = nil, nil, nil end
             if cx == nil or math.abs(cx - wx) > 0.0002
                 or math.abs(cy - wy) > 0.0002 or math.abs(cz - wz) > 0.0002 then
                 pcall(function() comp:SetLocalPosition(Vector4.new(wx, wy, wz, 1.0)) end)
@@ -2148,11 +2177,8 @@ local function applyElements(st)
             -- can aim with; the quaternion is what the engine takes, and it is also what gets baked
             -- into the asset afterwards, so the log prints both.
             local qi, qj, qk, qr = eulerQuat(off.rx, off.ry, off.rz)
-            local ai, aj, ak, ar = nil, nil, nil, nil
-            pcall(function()
-                local q = comp:GetLocalOrientation()
-                ai, aj, ak, ar = q.i, q.j, q.k, q.r
-            end)
+            local okQ, ai, aj, ak, ar = pcall(localOrientation, comp)
+            if not okQ then ai, aj, ak, ar = nil, nil, nil, nil end
             if ai == nil or math.abs(ai - qi) > 0.0004 or math.abs(aj - qj) > 0.0004
                 or math.abs(ak - qk) > 0.0004 or math.abs(ar - qr) > 0.0004 then
                 pcall(function() comp:SetLocalOrientation(Quaternion.new(qi, qj, qk, qr)) end)
@@ -2164,11 +2190,8 @@ local function applyElements(st)
         for _, el in ipairs(CFG.elements) do
             if el.host == name and S.dressed[name] == el.name then
                 local wx, wy, wz = el.ox or 0.0, el.oy or 0.0, el.oz or 0.0
-                local cx, cy, cz = nil, nil, nil
-                pcall(function()
-                    local v = comp:GetLocalPosition()
-                    cx, cy, cz = v.x, v.y, v.z
-                end)
+                local okL, cx, cy, cz = pcall(localPosition, comp)
+                if not okL then cx, cy, cz = nil, nil, nil end
                 if cx == nil or math.abs(cx - wx) > 0.0002
                     or math.abs(cy - wy) > 0.0002 or math.abs(cz - wz) > 0.0002 then
                     pcall(function() comp:SetLocalPosition(Vector4.new(wx, wy, wz, 1.0)) end)
@@ -2179,8 +2202,8 @@ local function applyElements(st)
         -- One CName read per element per tick, and a write only when the value is not ours -- which in
         -- practice is once per attach.
         if CFG.render_plane_param ~= "" then
-            local cur = nil
-            pcall(function() cur = tostring(comp.renderingPlaneAnimationParam.value or comp.renderingPlaneAnimationParam) end)
+            local okR, cur = pcall(planeParamOf, comp)
+            if not okR then cur = nil end
             if cur ~= nil and cur ~= CFG.render_plane_param then
                 pcall(function() comp.renderingPlaneAnimationParam = CName.new(CFG.render_plane_param) end)
                 S.planeWrites = S.planeWrites + 1
@@ -2237,29 +2260,32 @@ end
 
 -- The hips in MODEL space: position and orientation. Model space is where VRPalmModelPos already is, so
 -- nothing has to be composed through the render view -- the mistake the reload module measured at 0.46 m.
+-- Read every frame (the magazine reach), so no closure per call and the slot name made once.
+local hipsSlotName = nil
+local function playerModelBasis(pl)
+    local base = pl:GetWorldPosition()
+    local q = pl:GetWorldOrientation()
+    return base.x, base.y, base.z, -q.i, -q.j, -q.k, q.r        -- conjugate: world -> model
+end
+local function hipsSlotWorld(sc)
+    hipsSlotName = hipsSlotName or CName.new("hips")
+    local found, tr = sc:GetSlotTransform(hipsSlotName)
+    if not found or tr == nil then return nil end
+    local v = WorldPosition.ToVector4(tr.Position)
+    local o = tr.Orientation
+    return v.x, v.y, v.z, o.i, o.j, o.k, o.r
+end
+
 local function hipsModelFrame()
     local pl = Game.GetPlayer()
     local sc = slotsComponent()
     if pl == nil or sc == nil then return nil end
-    local bx, by, bz, ci, cj, ck, cr
-    local ok = pcall(function()
-        local base = pl:GetWorldPosition()
-        local q = pl:GetWorldOrientation()
-        bx, by, bz = base.x, base.y, base.z
-        ci, cj, ck, cr = -q.i, -q.j, -q.k, q.r        -- conjugate: world -> model
-    end)
+    local ok, bx, by, bz, ci, cj, ck, cr = pcall(playerModelBasis, pl)
     if not ok or bx == nil then return nil end
 
-    local px, py, pz, qi, qj, qk, qr
-    local okS = pcall(function()
-        local found, tr = sc:GetSlotTransform(CName.new("hips"))
-        if not found or tr == nil then return end
-        local v = WorldPosition.ToVector4(tr.Position)
-        px, py, pz = v.x - bx, v.y - by, v.z - bz
-        local o = tr.Orientation
-        qi, qj, qk, qr = o.i, o.j, o.k, o.r
-    end)
-    if not okS or px == nil or qi == nil then return nil end
+    local okS, vx, vy, vz, qi, qj, qk, qr = pcall(hipsSlotWorld, sc)
+    if not okS or vx == nil or qi == nil then return nil end
+    local px, py, pz = vx - bx, vy - by, vz - bz
 
     px, py, pz = qrot(ci, cj, ck, cr, px, py, pz)                 -- hips position, model space
     qi, qj, qk, qr = qmul(ci, cj, ck, cr, qi, qj, qk, qr)          -- hips rotation, model space
@@ -2525,9 +2551,6 @@ end
 
 -- ---------------------------------------------------------------------------------------------------
 -- BELT PROPS
-
--- Internal A/B controls; neither switch retains native component handles.
-local PERFORMANCE = { legacyHighlightScan = false, legacyEmptyPropPoll = false }
 
 local propS = { obj = {}, objAt = {}, emptySlot = {}, mesh = {}, claimAt = {}, item = {}, at = {}, placed = {}, lit = {}, dist = {}, flip = {},
                 glowComp = {}, glow = {}, emis = {}, plane = {}, fresh = {}, want = {} }
@@ -3004,19 +3027,20 @@ local function planeOf_DO_NOT_CALL(c)
     if string.find(v, "Scene") then return 0 end
     return tonumber(v)
 end
-local function playerPlane(pl, now)
-    if (now - planeS.at) < 0.2 then return planeS.val end
-    planeS.at = now
-    -- A WEAPON IN A HAND SLOT, and nothing else. That is what puts the first person into RPl_Weapon to
-    -- begin with -- equipment.swift:740 asks for that plane on equip -- so the presence of an item in a
-    -- weapon slot answers the same question the animation parameter answers, through an API this module
-    -- already uses on every tick for the props themselves.
-    --
-    -- What it cannot know is a state where the game lowers the plane WITHOUT unequipping: a scene, a
-    -- device takeover, a braindance. The stronger source for those is the plane a subscribed component
-    -- reports, and reading that crashed the game (see planeOf_DO_NOT_CALL), so it is not on the table.
+-- A WEAPON IN A HAND SLOT, and nothing else. That is what puts the first person into RPl_Weapon to
+-- begin with -- equipment.swift:740 asks for that plane on equip -- so the presence of an item in a
+-- weapon slot answers the same question the animation parameter answers, through an API this module
+-- already uses on every tick for the props themselves.
+--
+-- What it cannot know is a state where the game lowers the plane WITHOUT unequipping: a scene, a
+-- device takeover, a braindance. The stronger source for those is the plane a subscribed component
+-- reports, and reading that crashed the game (see planeOf_DO_NOT_CALL), so it is not on the table.
+--
+-- Uncached, for the grenade grab: a grenade must never go into a hand slot a weapon is still in (see
+-- grenade.lua, the free-hand branch). playerPlane below is the cached reading of the same thing.
+local function weaponInHands(pl)
     local ts = transactions()
-    if ts == nil then return planeS.val end
+    if ts == nil or pl == nil then return nil end
     -- OUR OWN PROPS DO NOT COUNT AS A WEAPON. The test above asks "is there an item in a hand slot",
     -- and a grenade taken off the belt is exactly that -- so without this exclusion, putting one in an
     -- empty hand would make this function answer RPl_Weapon and move the whole belt into the weapon
@@ -3045,6 +3069,14 @@ local function playerPlane(pl, now)
     pcall(function()
         armed = realWeapon("AttachmentSlots.WeaponRight") or realWeapon("AttachmentSlots.WeaponLeft")
     end)
+    return armed
+end
+
+local function playerPlane(pl, now)
+    if (now - planeS.at) < 0.2 then return planeS.val end
+    planeS.at = now
+    local armed = weaponInHands(pl)
+    if armed == nil then return planeS.val end
     planeS.val = armed and 2 or 0
     planeS.src = armed and "weapon" or "empty"
     return planeS.val
@@ -3101,7 +3133,7 @@ end
 -- therefore keeps its lit twins enabled, its vision claim standing and its light burning, and what is
 -- left is a highlight hanging in the air where the prop was, staying there as the player walks away.
 --
--- The user also noted it happened with EVERY marking, not just the current material, and that follows
+-- It also happened with EVERY marking, not just the current material, and that follows
 -- from the same cause: all three mechanisms live ON THE OBJECT, and the drop withdrew none of them.
 -- So this is not per-mechanism -- it puts all three out unconditionally, without looking at prop_mark,
 -- because the mark may well have been changed since the prop was lit.
@@ -3338,6 +3370,7 @@ local GRENADE = (function()
     m.setup({
         CFG = CFG, S = S, log = log,
         propItem = propItem, propAllowSlot = propAllowSlot, playerPlane = playerPlane,
+        weaponInHands = weaponInHands,
         activeGrenade = activeGrenadeName,
         eulerQuat = eulerQuat, transactions = transactions,
     })
@@ -3349,8 +3382,8 @@ end)()
 -- One function because two things ask it now -- the element highlight and the magazine reach -- and a
 -- reach that disagreed with the mark it lights would be unexplainable from inside the headset.
 local function palmPoint(side)
-    local p = nil
-    pcall(function() p = VRPalmModelPos(side) end)
+    local okP, p = pcall(VRPalmModelPos, side)
+    if not okP then p = nil end
     if p == nil or p.w == 0.0 then return nil end
     local ho = CFG.highlight_hand_off
     if ho ~= nil and (math.abs(ho.x or 0) + math.abs(ho.y or 0) + math.abs(ho.z or 0)) > 1e-6 then
@@ -3423,6 +3456,14 @@ local function updateHighlight(dt)
     local leave = enter * (CFG.highlight_release or 1.35)
     local nearest = nil
     local targets = nil
+    -- WITH A WEAPON IN HAND THE GRENADES ARE NOT ON OFFER. A lit holder is what lets a grip take one
+    -- (grenade.lua starts a grab only at the holder this hand has lit), and a grenade put into the hand
+    -- slot the gun is in pushed the gun out of the slot behind the equipment system's back: the hand was
+    -- left in the pistol grip with nothing in it and the holster could not draw again. So the holders
+    -- simply do not light until the weapon is put away.
+    local plNow = Game.GetPlayer()
+    local noGrenades = plNow ~= nil and playerPlane(plNow, os.clock()) == 2
+    local litBefore = { [0] = S.litHand[0], [1] = S.litHand[1] }
 
     for side = 0, 1 do
         local p = palmPoint(side)
@@ -3436,9 +3477,11 @@ local function updateHighlight(dt)
                 for host, comp in pairs(S.comps) do
                     local ex, ey, ez = elementCentre(host)
                     local eligible = ex ~= nil and markable(host)
+                        and not (noGrenades and string.find(host, "ucbeltgrenade", 1, true) == 1)
                     local on = nil
                     if eligible or PERFORMANCE.legacyHighlightScan then
-                        pcall(function() on = comp:IsEnabled() end)
+                        local okE, v = pcall(isEnabled, comp)
+                        if okE then on = v end
                     end
                     if eligible and on == true then
                         local ax, ay, az = toHipsFrame(ex, ey, ez)
@@ -3458,6 +3501,11 @@ local function updateHighlight(dt)
             -- Hysteresis is per hand: it holds what THIS hand already has until that one is left
             -- behind, which is what stops a mark flickering between two elements of equal distance.
             local held = S.litHand[side]
+            -- ...and one this hand already had lit is let go of too: it is no longer a target, so the
+            -- hysteresis below would otherwise keep holding it whenever nothing else is within reach.
+            if noGrenades and held ~= nil and string.find(held, "ucbeltgrenade", 1, true) == 1 then
+                S.litHand[side], held = nil, nil
+            end
             if best == nil or bestD == nil then
                 S.litHand[side] = nil
             elseif held == best then
@@ -3467,13 +3515,27 @@ local function updateHighlight(dt)
             end
             if bestD ~= nil and (nearest == nil or bestD < nearest) then nearest = bestD end
             S.handSide = S.handSide or {}
-            S.handSide[side] = { best = best, d = bestD }
+            local hs = S.handSide[side]
+            if hs == nil then hs = {}; S.handSide[side] = hs end
+            hs.best, hs.d = best, bestD
             S.hand = p
         else
             S.litHand[side] = nil
         end
     end
     S.handDist = nearest
+
+    -- A TICK IN THE HAND THAT REACHED IT: the moment an element lights for a hand, that hand feels it,
+    -- so the belt can be found without looking down. Only on the edge -- a hand resting on a pouch
+    -- does not keep buzzing. 1 = the belt-touch profile (src/Runtimes/Haptics.cpp); mask 1 left, 2 right.
+    if type(VRHapticEvent) == "function" then
+        for side = 0, 1 do
+            local h = S.litHand[side]
+            if h ~= nil and h ~= litBefore[side] then
+                pcall(VRHapticEvent, 1, side == 1 and 2 or 1)
+            end
+        end
+    end
 
     local want = {}
     for side = 0, 1 do
@@ -3504,9 +3566,21 @@ local function upgradeThrowCfg()
     log("throw defaults upgraded to v%d (gain %.1f)", THROW_CFG_VERSION, CFG.grenade_throw_gain)
 end
 
+-- The grab plane the same way: every belt.cfg written while the default was 2 carries 2, and only a
+-- versioned re-apply gets the corrected default to it.
+local GRAB_PLANE_CFG_VERSION = 1
+
+local function upgradeGrabPlaneCfg()
+    if CFG.grenade_grab_plane_v == GRAB_PLANE_CFG_VERSION then return end
+    CFG.grenade_grab_plane_v = GRAB_PLANE_CFG_VERSION
+    CFG.grenade_grab_plane = 0
+    log("grenade grab plane upgraded to v%d (follow the player)", GRAB_PLANE_CFG_VERSION)
+end
+
 registerForEvent("onInit", function()
     loadCfg()
     upgradeThrowCfg()
+    upgradeGrabPlaneCfg()
     ensureGrenadeRecords()
     -- Player entity IDs can be reused across saves (the live player is 1ULL).
     -- Reset on the actual attach event as well as nil/player-change detection.
@@ -3526,8 +3600,7 @@ end)
 -- So the check moves to the top of the tick, before anything can touch them, and it is the whole test:
 -- a different entity hash means everything cached is thrown away. `memoDrop` does the same on the
 -- frames where the player is briefly nil; this covers the swaps where it never is.
-local function dropIfPlayerChanged(pl)
-    local who = entityHash(pl)
+local function dropIfPlayerChanged(pl, who)
     if who == nil or who == S.compsFor then return end
     startupClothing:Reset()
     S.compsFor = who
@@ -3576,17 +3649,17 @@ registerForEvent("onUpdate", function(dt)
     --
     -- There is no safe way to hold a native handle across a teardown, so the window is closed. A tick
     -- in the panel now shows when the overlay closes, a second later. That is a fair price.
-    local paused = false
-    pcall(function() paused = Game.GetSystemRequestsHandler():IsGamePaused() end)
-    if paused then return end
-    dropIfPlayerChanged(pl)
+    local okP, paused = pcall(gamePaused)
+    if okP and paused then return end
+    -- The player's identity once a frame; the parts walk below needs the same answer.
+    local who = entityHash(pl)
+    dropIfPlayerChanged(pl, who)
     -- The quiet second after a player swap. Everything below this line touches native objects.
     if S.holdOff ~= nil then
         if os.clock() < S.holdOff then return end
         S.holdOff = nil
     end
-    applyBeltPieces(pl)
-    applyBeltChunks(pl)
+    applyBeltChunks(applyBeltPieces(pl, who))
 
     updateMagReach()
     updateHighlight(dt)
@@ -4119,7 +4192,7 @@ registerForEvent("onDraw", function()
                     #names, ng, nmag, nam, liveCount))
                 -- A FILTER INSTEAD OF FORTY-SIX COLLAPSING HEADERS.
                 --
-                -- The headers were the bug the user kept hitting: the magazines are almost always
+                -- The headers were the bug that kept being hit: the magazines are almost always
                 -- disabled, so they landed in the closed half of the list and their sliders could not
                 -- be reached -- "не показывает редактирование для магазинных". Whatever the header state
                 -- was doing, it is not worth debugging: type a few letters and the rows appear, open.
@@ -4266,6 +4339,23 @@ end)
 -- Everything here is a read of state this module computes anyway; nothing starts work of its own.
 return {
     performance = PERFORMANCE,
+    -- THE GRIP AT A LIT GRENADE HOLDER BELONGS TO THE GRENADE. The holster's right-hip zone reaches the
+    -- grenade holders, so one squeeze there used to draw (or put away) a weapon AND take a grenade into
+    -- the same hand slot. The holster asks this and stands down while it is true. It is false whenever
+    -- a weapon is in hand -- the holders do not light then -- so putting the weapon away still works.
+    -- A grenade already in that hand, or a grab of it waiting on the weapon, counts too: the two mods run
+    -- in no fixed order, and the belt may have taken this very squeeze earlier in the same frame.
+    grenadeReach = function(side)
+        if not CFG.grenade_grab then return false end
+        if S.grab.slot ~= nil then return S.grab.side == side end
+        if S.grab.pending ~= nil then return S.grab.pending.side == side end
+        local h = S.litHand[side]
+        return h ~= nil and string.sub(h, 1, 13) == "ucbeltgrenade"
+    end,
+    -- The grenade module itself, for the panel's own controls driven from a tool (pin / unpin), and the
+    -- config, so a test can set the grab plane without the overlay.
+    grenade = GRENADE,
+    cfg = CFG,
     -- The magazine key of the weapon in hand, but only while this belt actually carries a pouch for
     -- it. nil means "conjure one the old way": a weapon we never built a magazine for must not become
     -- unreloadable.

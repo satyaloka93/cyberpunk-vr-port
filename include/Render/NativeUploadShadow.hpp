@@ -12,7 +12,8 @@ namespace cvr::stereo::packets {
 class UploadShadow {
 public:
     static constexpr size_t Limit=16*1024*1024;
-    void Reset(size_t bytes=0){std::vector<uint8_t>().swap(data_);ranges_.clear();size_=bytes<=Limit?bytes:0;}
+    void Reset(size_t bytes=0){const auto next=bytes<=Limit?bytes:0;
+        if(!next || next!=size_)std::vector<uint8_t>().swap(data_);ranges_.clear();size_=next;}
     bool Write(size_t at,std::span<const uint8_t> bytes){
         if(at>size_ || bytes.size()>size_-at)return false;
         if(bytes.empty())return true;

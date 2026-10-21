@@ -586,7 +586,7 @@ void VRPalmCamLocal(RED4ext::IScriptable* aContext, RED4ext::CStackFrame* aFrame
 //
 // Any bone of the SOLVED rig, by index, in model space -- the same space as VRPalmModelPos, so world =
 // playerPos + playerRot * this. Needed because the collision capsules are authored from guessed anatomy
-// (a vanilla ragdoll's radii) while the thing they must match is the VR arm the user swings: reported as
+// (a vanilla ragdoll's radii) while the thing they must match is the VR arm the player swings: reported as
 // "not the size of the arms", with the hand collider stopping at the base of the palm and no fingers.
 // Guessing again is not a plan; these read the joints themselves, fingertips included.
 //

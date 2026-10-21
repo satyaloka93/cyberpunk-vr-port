@@ -35,26 +35,34 @@ registerForEvent("onInit", function()
     ObserveAfter("PlayerPuppet", "OnGameAttached", function() fast = -1 end)
 end)
 
-registerForEvent("onUpdate", function()
-    local ok, err = pcall(function()
-        local player = Game.GetPlayer()
-        local state = -1
-        local waterContext = false
-        local paused = Game.GetSystemRequestsHandler():IsGamePaused()
-        if player then
-            local board = player:GetPlayerStateMachineBlackboard()
-            if board then
+-- The two field ids, read once: blackboard definitions are global and live as long as the game.
+local swimmingId, highLevelId
+-- A plain function for pcall: `pcall(function() ... end)` would allocate a closure every frame.
+local function bridgeState()
+    local player = Game.GetPlayer()
+    local state = -1
+    local waterContext = false
+    local paused = Game.GetSystemRequestsHandler():IsGamePaused()
+    if player then
+        local board = player:GetPlayerStateMachineBlackboard()
+        if board then
+            if not swimmingId then
                 local defs = GetAllBlackboardDefs().PlayerStateMachine
-                state = board:GetInt(defs.Swimming)
-                -- HighLevel stays Swimming (6) while Surface/Diving transitions
-                -- briefly clear the narrower Swimming blackboard value to 0.
-                waterContext = board:GetInt(defs.HighLevel) == 6
+                swimmingId, highLevelId = defs.Swimming, defs.HighLevel
             end
-            waterContext = waterContext or player:IsUnderwater() or player:HasHeadUnderwater()
+            state = board:GetInt(swimmingId)
+            -- HighLevel stays Swimming (6) while Surface/Diving transitions
+            -- briefly clear the narrower Swimming blackboard value to 0.
+            waterContext = board:GetInt(highLevelId) == 6
         end
-        if state == 0 or state == 3 then fast = -1 end
-        Game.SetVRSwimmingState(player, state, fast, paused and 1 or 0, waterContext and 1 or 0)
-    end)
+        waterContext = waterContext or player:IsUnderwater() or player:HasHeadUnderwater()
+    end
+    if state == 0 or state == 3 then fast = -1 end
+    Game.SetVRSwimmingState(player, state, fast, paused and 1 or 0, waterContext and 1 or 0)
+end
+
+registerForEvent("onUpdate", function()
+    local ok, err = pcall(bridgeState)
     if not ok and not reportedError then
         reportedError = true
         print("[swimming] state bridge unavailable: " .. tostring(err))

@@ -12,11 +12,13 @@ param(
     [string]$ForkArchive,
     [string]$ForkSha256,
     [switch]$KeepReShade,
+    [switch]$DisableDxgiProxy,
     [switch]$KeepHUDitor,
     [switch]$Yes,
     [switch]$WhatIf
 )
 $ErrorActionPreference = 'Stop'
+if ($KeepReShade -and $DisableDxgiProxy) { throw 'KeepReShade and DisableDxgiProxy are mutually exclusive.' }
 . (Join-Path $PSScriptRoot 'CyberpunkVR-Switcher.Core.ps1')
 $repo = Split-Path -Parent $PSScriptRoot
 if (-not $CacheRoot) { $CacheRoot = Join-Path $env:LOCALAPPDATA 'CyberpunkVRPort\switcher-cache' }
@@ -24,9 +26,9 @@ $CacheRoot = [IO.Path]::GetFullPath($CacheRoot)
 $BackupRoot = [IO.Path]::GetFullPath($BackupRoot)
 $interactiveMenu = $Action -eq 'Menu'
 $release = [pscustomobject]@{
-    name='CyberpunkVRPort upstream 0.1.7'; fileName='CyberpunkVRPort-0.1.7.zip'
-    url='https://github.com/dariulone/cyberpunk-vr-port/releases/download/0.1.7/CyberpunkVRPort-0.1.7.zip'
-    sha256='a77b211d4db4e75b61b08951762e9034f60511731f3a441f21b11d1f723c7c84'
+    name='CyberpunkVRPort upstream 0.1.8'; fileName='CyberpunkVRPort-0.1.8.zip'
+    url='https://github.com/dariulone/cyberpunk-vr-port/releases/download/0.1.8/CyberpunkVRPort-0.1.8.zip'
+    sha256='4275d620f695ee1e864678b68c2c660f536d9cef017fd9b06bf5639177a377fa'
 }
 function Set-EditionRelease {
     if ($Edition -ne 'Fork') { return }
@@ -51,7 +53,7 @@ function Set-EditionRelease {
     if ($expected -and $actual -ine $expected) { throw "Fork archive checksum mismatch: $path" }
     Write-Host "Fork archive SHA-256: $actual"
     if (-not $expected) { Write-Host 'Local archive selected explicitly; no independently pinned checksum available yet.' -ForegroundColor Yellow }
-    $script:release = [pscustomobject]@{ name='CyberpunkVRPort PSVR2 fork 0.1.7'; fileName=[IO.Path]::GetFileName($path); sha256=$actual; localPath=$path }
+    $script:release = [pscustomobject]@{ name=('CyberpunkVRPort local PSVR2 fork: ' + [IO.Path]::GetFileName($path)); fileName=[IO.Path]::GetFileName($path); sha256=$actual; localPath=$path }
 }
 
 function Show-PSVR2ToolkitGuidance {
@@ -63,9 +65,15 @@ function Show-PSVR2ToolkitGuidance {
     } catch { Write-Verbose "PSVR2 hardware detection unavailable: $_" }
     if ($detected) { Write-Host "`nPSVR2/Sense hardware detected." -ForegroundColor Green }
     if ($detected -or $Edition -eq 'Fork') {
-        Write-Host 'Optional adaptive triggers and advanced haptics require PSVR2Toolkit, installed separately:'
-        Write-Host 'https://github.com/satyaloka93/PSVR2Toolkit/releases/tag/cyberpunk-dsx-bridge-v0.3.1'
-        Write-Host 'Use its Cyberpunk 0.1.7 bridge launcher and follow docs/PSVR2-TWEAKS-017.md.'
+        if ($Edition -eq 'Upstream') {
+            Write-Host 'Official upstream 0.1.8 has native controller haptics, not our isolated Toolkit bridge integration. Select our fork for that integration.' -ForegroundColor Yellow
+            Write-Host 'The switcher does not start/stop a bridge or change Toolkit drivers or OpenXR layers.'
+            return
+        }
+        Write-Host 'PSVR2 haptics/adaptive triggers in our bridge-enabled fork require PSVR2Toolkit, installed separately (Steam DSX is NOT required):'
+        Write-Host 'https://github.com/satyaloka93/PSVR2Toolkit/releases/tag/cyberpunk-dsx-bridge-v0.3.2'
+        Write-Host 'Use its Cyberpunk 0.1.7 protocol bridge, also used by our modified 0.1.8. Audio controls: Mods > DualSense settings > PSVR2 Haptics.'
+        Write-Host 'Read docs/PSVR2-018-RC.md for this 0.1.8 PSVR2 release candidate and Toolkit setup.'
         Write-Host 'This switcher does not install drivers, register OpenXR layers, or start a bridge.'
     }
 }
@@ -226,11 +234,17 @@ function Show-Plan([string]$Root, [string]$Stage, [string[]]$Remove) {
     Write-Host "`nGame: $Root"
     Write-Host "Stage: $Stage"
     Write-Host "$($Remove.Count) existing port/conflict files backed up; $($writes.Count) staged files installed."
+    Write-Host 'Clean replacement: back up ALL originals, remove selected old port files, install, then verify hashes and retired-file removal.'
     Write-Host "Backup parent: $BackupRoot"
     Write-Host 'Game files, saves, unrelated mods, DLSS replacements and game UserSettings.json are preserved.'
     Write-Host 'Personal fit/input preferences and calibration migrate; old render/FG/debug tuning does not.'
     Write-Host 'First-launch graphics overwrite is disabled; native FG starts OFF; launcher starts visible.'
-    if (-not $KeepReShade) { Write-Host 'ReShade dxgi.dll: disabled into backup; addon DLLs and settings stay on disk.' -ForegroundColor Yellow }
+    if ($DisableDxgiProxy) {
+        Write-Host 'EXPLICIT REQUEST: back up and disable bin\x64\dxgi.dll. This may disable Cheeky, ReShade or another loader.' -ForegroundColor Yellow
+    } else {
+        Write-Host 'Existing dxgi.dll/version.dll loaders and Cheeky/ReShade settings are preserved. Their compatibility is not guaranteed.'
+        Write-Host 'Only use -DisableDxgiProxy if you intend to disable the dxgi loader; -Yes alone never selects this.'
+    }
     if (-not $KeepHUDitor) { Write-Host 'HUDitor: disabled into backup; the port native HUD replaces it.' -ForegroundColor Yellow }
     $Remove | Set-Content -LiteralPath (Join-Path $Stage '..\last-plan-remove.txt') -Encoding UTF8
     $writes.FullName | Set-Content -LiteralPath (Join-Path $Stage '..\last-plan-write.txt') -Encoding UTF8
@@ -284,11 +298,13 @@ try {
     foreach ($storage in @($CacheRoot,$BackupRoot)) {
         if (($storage.TrimEnd('\') + '\').StartsWith(($root + '\'), [StringComparison]::OrdinalIgnoreCase)) { throw 'Cache/backups must be outside the game folder.' }
     }
-    $dependencies = @((Get-Content -LiteralPath (Join-Path $repo 'wabbajack\manifest.json') -Raw | ConvertFrom-Json).mods | Where-Object { $probes.ContainsKey($_.id) } | Sort-Object priority)
+    $dependencies = @((Get-Content -LiteralPath (Join-Path $repo 'wabbajack\switcher-dependencies.json') -Raw | ConvertFrom-Json).mods | Sort-Object priority)
+    foreach ($mod in $dependencies) { if (-not $probes.ContainsKey($mod.id)) { throw "Unknown dependency probe: $($mod.id)" } }
+    if ($dependencies.Count -ne $probes.Count) { throw 'Dependency manifest is incomplete.' }
     $settingsFile = Join-Path $env:LOCALAPPDATA 'CD Projekt Red\Cyberpunk 2077\UserSettings.json'
     if ($Action -eq 'Menu') {
-        Write-Host "CyberpunkVR Port switcher -- upstream or PSVR2 fork 0.1.7`nGame: $root"
-        Write-Host "1  Preview / download and stage upstream`n2  Install upstream 0.1.7`n3  Preview / stage PSVR2 fork`n4  Install PSVR2 fork`n5  Restore previous port`n6  Installed dependency status`n7  Open required Nexus download pages`nQ  Quit"
+        Write-Host "CyberpunkVR Port switcher -- official upstream 0.1.8 or PSVR2 fork 0.1.8-psvr2.1-rc1`nGame: $root"
+        Write-Host "1  Preview / download and stage upstream 0.1.8`n2  Install upstream 0.1.8`n3  Preview / stage PSVR2 fork`n4  Install PSVR2 fork`n5  Restore previous port`n6  Installed dependency status`n7  Open required Nexus download pages`nQ  Quit"
         $choice = Read-Host 'Choose'
         $Action = switch ($choice) { '1' { 'Prepare' }; '2' { 'Install' }; '3' { $Edition='Fork'; 'Prepare' }; '4' { $Edition='Fork'; 'Install' }; '5' { 'Restore' }; '6' { 'Status' }; '7' { 'Nexus' }; default { return } }
         if ($Edition -eq 'Fork' -and -not $ForkArchive) { $ForkArchive = (Read-Host 'Optional path to local fork ZIP (Enter downloads pinned release)').Trim('"') }
@@ -324,24 +340,28 @@ try {
         try { $locked = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $locked = $true }
         if (-not $locked) { throw 'Another switcher is active for this game.' }
         if ($Action -eq 'Restore') { Restore-Previous $root; return }
-        # Never stack an install over an interrupted transaction or an un-restored switch.
+        # Completed installs may be upgraded: each transaction snapshots CURRENT files
+        # into a new directory. Older baselines remain immutable and restorable.
+        # An interrupted transaction still requires recovery before any new install.
         if (Test-Path -LiteralPath $BackupRoot) {
             foreach ($file in Get-ChildItem -LiteralPath $BackupRoot -Filter transaction.json -Recurse -File) {
                 $j = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
                 if ($j.GameRoot -ieq $root -and $j.Status -eq 'Prepared') { throw "Interrupted switch. Run Restore -RestoreFrom `"$($file.Directory.FullName)`" first." }
                 if ($Action -eq 'Install' -and $j.GameRoot -ieq $root -and $j.Status -eq 'Installed' -and $file.Directory.Name -match '^(upstream|switch)-') {
-                    throw "Already switched; restore first to avoid losing the original baseline: $($file.Directory.FullName)"
+                    Write-Host "Earlier backup preserved: $($file.Directory.FullName)"
+                    Write-Host 'Upgrade will create a NEW backup of the currently installed port. Restore defaults to the newest completed switch.'
                 }
             }
         }
         $stage = New-ReleaseStage $root
-        $remove = @(Get-PortFiles $root (-not $KeepHUDitor) (-not $KeepReShade) | Sort-Object -Unique)
+        Assert-ProxyPreservation $root $stage ([bool]$DisableDxgiProxy)
+        $remove = @(Get-PortFiles $root (-not $KeepHUDitor) ([bool]$DisableDxgiProxy) | Sort-Object -Unique)
         Show-Plan $root $stage $remove
         Show-PSVR2ToolkitGuidance
         if ($Action -eq 'Prepare' -or $WhatIf) { Write-Host 'Prepared only. No game files changed.' -ForegroundColor Green; return }
         if (-not (Confirm-Change "Install $($release.name)?")) { Write-Host 'Cancelled. Game unchanged.'; return }
         Assert-GameClosed
-        $backup = Join-Path $BackupRoot ('switch-0.1.7-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0,8))
+        $backup = Join-Path $BackupRoot ('switch-' + $Edition.ToLowerInvariant() + '-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0,8))
         $null = Invoke-PortTransaction $root $stage $remove $backup $settingsFile
         Write-Host "Installed $($release.name). Backup: $backup" -ForegroundColor Green
         Write-Host 'Start your OpenXR runtime, then launch from Steam. F10 opens the port menu. FG starts OFF.'

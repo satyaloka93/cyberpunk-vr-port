@@ -16,7 +16,7 @@ volatile int g_VRSmokeFingerActive=0,g_VRSmokeFingerActiveL=0,g_VRSmokeFingerCou
 int g_VRSmokeFingerIdx[32]{},g_VRSmokeFingerIdxL[32]{};
 // Boundaries unused by this ownership test must never silently emulate tracking.
 OpenXRManager& OpenXRManager::Get(){std::abort();}
-bool OpenXRManager::GetGestureHandFrame(OpenXRHeadPose*,OpenXRHeadPose*,uint64_t*,uint64_t*)const{std::abort();}
+bool OpenXRManager::GetGestureHandFrame(OpenXRHeadPose*,OpenXRHeadPose*,uint64_t*,uint64_t*,bool)const{std::abort();}
 void VRIK_QuatNorm(float*){std::abort();}
 float SharedPose(int index) {return slots[index];}
 bool OverlayIsVisible(){return false;}
@@ -32,12 +32,9 @@ int main(){
     Check(WheelControlState()==7,"both grips failed to engage");
     Sleep(270);Check(WheelControlState()==4,"test did not expire the old animation publication");
     WheelMaintainGrab();Check(WheelControlState()==7,"missing camera revoked an existing physical grip");
-    slots[49]=0;WheelMaintainGrab();Check(WheelControlState()==7,"letting go of the grip dropped the latched wheel grab");
-    slots[49]=1;WheelMaintainGrab();Check(WheelControlState()==7,"camera-loss path toggled a grab without a fresh animation solve");
-    slots[49]=0;WheelUpdate(.02f);WheelStoreTarget(0,g_fkPos[0]);WheelStoreTarget(1,g_fkPos[1]);
-    slots[49]=1;WheelStoreTarget(0,g_fkPos[0]);WheelUpdate(.02f);WheelStoreTarget(0,g_fkPos[0]);WheelStoreTarget(1,g_fkPos[1]);WheelPublishGrab();
-    Check(WheelControlState()==6,"second grip click did not release the right-hand wheel grab");
+    slots[49]=0;WheelMaintainGrab();Check(WheelControlState()==6,"right release ignored during camera loss");
+    slots[49]=1;WheelMaintainGrab();Check(WheelControlState()==6,"camera-loss path started a new grab without proximity");
     slots[0]=0;WheelMaintainGrab();Check(WheelControlState()==4,"tracking loss did not release the remaining grip");
     g_isDriving=false;Check(WheelControlState()==0,"wheel control escaped the driver seat");
-    WheelReset();std::cout<<"PASS production wheel-toggle ownership across camera loss, second-click release and tracking loss\n";
+    WheelReset();std::cout<<"PASS production wheel ownership across camera loss, release, regrab and tracking loss\n";
 }

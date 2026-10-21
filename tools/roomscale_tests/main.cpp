@@ -24,6 +24,7 @@
 #include <atomic>
 #include <thread>
 #include <vector>
+#include <random>
 
 using namespace cvr::roomscale;
 namespace {
@@ -1300,6 +1301,41 @@ void BodyFollowSuspend() {
     follower.Step(.8f,.08726646f,stamp+=11111,2);
     Near(follower.Offset(),0,"recenter retained the previous origin's offset");
 }
+void BodyBendNoise() {
+    float minimum=1000;int failed=0;
+    for(float hz:{30.f,45.f,90.f,144.f})for(unsigned seed=1;seed<=10;++seed) {
+        cvr::body::BendTracker tracker;std::mt19937 rng(seed);
+        std::normal_distribution<float> noise(0,.002f);cvr::body::BendSample result{};
+        tracker.Update({0,0,0},{0,0,0,1},1);
+        for(int i=0;i<int(hz*1.2f);++i) {
+            const float u=std::min(1.f,float(i+1)/(hz*1.2f));
+            const float angle=40*pi/180*(u*u*(3-2*u));
+            const std::array<float,3> position{noise(rng),.63f*(std::cos(angle)-1)+noise(rng),-.63f*std::sin(angle)+noise(rng)};
+            for(int repeated=0;repeated<3;++repeated)result=tracker.Update(position,{0,0,0,1},1);
+        }
+        // Keep the true endpoint, with independent tracking noise still active.
+        for(int i=0;i<int(hz*.3f);++i)
+            result=tracker.Update({noise(rng),.63f*(std::cos(40*pi/180)-1)+noise(rng),-.63f*std::sin(40*pi/180)+noise(rng)},
+                                  {0,0,0,1},1);
+        minimum=std::min(minimum,result.angle*180/pi);
+        failed+=result.angle<5*pi/180;
+    }
+    std::cout<<"noisy hinge: minimum "<<minimum<<" degrees, failed "<<failed<<"/40\n";
+    Check(failed==0,"2mm tracking noise hid a deliberate 40-degree level-head hinge");
+    float falseBend=0;
+    for(float drop:{0.f,.35f,.7f})for(float hz:{30.f,90.f,144.f})for(unsigned seed=1;seed<=10;++seed) {
+        cvr::body::BendTracker tracker;std::mt19937 rng(914+seed);
+        std::normal_distribution<float> noise(0,.002f);
+        tracker.Update({0,-drop,0},{0,0,0,1},1);
+        for(int i=0;i<int(hz*30);++i) {
+            const float t=i/hz;
+            const auto result=tracker.Update({noise(rng),-drop+noise(rng),-.5f*t+noise(rng)}, {0,0,0,1},1);
+            falseBend=std::max(falseBend,result.angle*180/pi);
+        }
+    }
+    std::cout<<"noisy flat/crouched walk: false bend "<<falseBend<<" degrees\n";
+    Check(falseBend<5,"noisy walking/crouching created a false Hybrid posture cue");
+}
 int main(int argc, char** argv) {
     if (argc != 2) return 2;
     const std::string name = argv[1];
@@ -1324,6 +1360,7 @@ int main(int argc, char** argv) {
     if(name=="eye_float_alias") { EyeFloatAlias();return 0; }
     if(name=="native_camera_pair") { NativeCameraPair();return 0; }
     if(name=="render_roundoff") { RenderRoundoff();return 0; }
+    if(name=="body_bend_noise") { BodyBendNoise();return 0; }
     if(name=="hand_view_sample") { HandViewSample();return 0; }
     if (name == "cadence") Cadence(); else if (name == "camera") Camera();
     else if (name == "collision") Collision(); else if (name == "feedback") Feedback();

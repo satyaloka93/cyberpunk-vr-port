@@ -1,6 +1,14 @@
+#include "Render/StageReplay.hpp"
+#include "Render/GpuQueueTimeline.hpp"
 #include "Utils/DebugGate.hpp"
 #include "Render/RenderProbeScope.hpp"
 #include "Render/StereoSceneState.hpp"
+#include "Render/MonoCascades.hpp"
+#include "Render/HiddenArea.hpp"
+#include "Render/NativeIndirectPolicy.hpp"
+#include "Render/StereoDescriptorAudit.hpp"
+#include "Render/SourceResourceIntent.hpp"
+#include "Render/RegisteredConstantUpload.hpp"
 // DepthCapture -- finding the game's depth buffer, and the queue synchronisation that makes it usable.
 //
 // The depth buffer is not handed to anyone: it is bound. So the way to find it is to watch what the
@@ -71,6 +79,8 @@ bool PatchVtableMethod(void** vtable, size_t slot, void* hook) {
     if (g_originalVtableMethods.find(key) == g_originalVtableMethods.end()) {
         g_originalVtableMethods[key] = methodSlot;
     }
+    // Publish the map's value (first original wins) before the detour becomes reachable.
+    g_originalMethodTable.Publish(key, g_originalVtableMethods[key]);
     vtable[slot] = hook;
 
     DWORD restoreProtect = 0;
@@ -151,8 +161,10 @@ void STDMETHODCALLTYPE HookedCreateDepthStencilView(ID3D12Device* device, ID3D12
     if (originalFn) {
         originalFn(device, resource, desc, dest);
     }
-    if(cvr::stereo::probe::internalCommands)return;
     cvr::stereo::scene_state::DsvCreated(resource,desc,dest);
+    if(cvr::stereo::probe::internalCommands)return;
+    cvr::cascades::DsvCreated(resource,desc,dest);
+    cvr::hidden_area::DsvCreated(resource,desc,dest);
     if (resource && dest.ptr) {
         D3D12_RESOURCE_DESC rd = resource->GetDesc();
         DepthDsvInfo info{};
@@ -170,7 +182,8 @@ void STDMETHODCALLTYPE HookedCreateDepthStencilView(ID3D12Device* device, ID3D12
 
 void STDMETHODCALLTYPE HookedOMSetRenderTargets(ID3D12GraphicsCommandList* list, UINT numRTVs, const D3D12_CPU_DESCRIPTOR_HANDLE* rtvs, BOOL singleHandle, const D3D12_CPU_DESCRIPTOR_HANDLE* dsv) {
     void** vtable = *reinterpret_cast<void***>(list);
-    OMSetRenderTargetsFn originalFn = GetOriginalMethod<OMSetRenderTargetsFn>(vtable, 46);
+    static OriginalSiteCache<OMSetRenderTargetsFn> site;
+    OMSetRenderTargetsFn originalFn = GetOriginalMethodCached(site, vtable, 46);
     if (originalFn) {
         originalFn(list, numRTVs, rtvs, singleHandle, dsv);
     }
@@ -306,7 +319,8 @@ void STDMETHODCALLTYPE HookedOMSetRenderTargets(ID3D12GraphicsCommandList* list,
 
 void STDMETHODCALLTYPE HookedResourceBarrier(ID3D12GraphicsCommandList* list, UINT numBarriers, const D3D12_RESOURCE_BARRIER* barriers) {
     void** vtable = *reinterpret_cast<void***>(list);
-    ResourceBarrierFn originalFn = GetOriginalMethod<ResourceBarrierFn>(vtable, 26);
+    static OriginalSiteCache<ResourceBarrierFn> site;
+    ResourceBarrierFn originalFn = GetOriginalMethodCached(site, vtable, 26);
     if (originalFn) {
         originalFn(list, numBarriers, barriers);
     }
@@ -358,9 +372,88 @@ void TryHookCmdListVtable(ID3D12CommandList* anyList) {
     PatchVtableMethod(vtable, 26, reinterpret_cast<void*>(&HookedResourceBarrier));
 }
 
+using CopyDescriptorsFn=void(STDMETHODCALLTYPE*)(ID3D12Device*,UINT,const D3D12_CPU_DESCRIPTOR_HANDLE*,const UINT*,UINT,const D3D12_CPU_DESCRIPTOR_HANDLE*,const UINT*,D3D12_DESCRIPTOR_HEAP_TYPE);
+using CopyDescriptorsSimpleFn=void(STDMETHODCALLTYPE*)(ID3D12Device*,UINT,D3D12_CPU_DESCRIPTOR_HANDLE,D3D12_CPU_DESCRIPTOR_HANDLE,D3D12_DESCRIPTOR_HEAP_TYPE);
+using CreateCommandSignatureFn=HRESULT(STDMETHODCALLTYPE*)(ID3D12Device*,const D3D12_COMMAND_SIGNATURE_DESC*,ID3D12RootSignature*,REFIID,void**);
+using CreateSrvFn=void(STDMETHODCALLTYPE*)(ID3D12Device*,ID3D12Resource*,const D3D12_SHADER_RESOURCE_VIEW_DESC*,D3D12_CPU_DESCRIPTOR_HANDLE);
+using CreateUavFn=void(STDMETHODCALLTYPE*)(ID3D12Device*,ID3D12Resource*,ID3D12Resource*,const D3D12_UNORDERED_ACCESS_VIEW_DESC*,D3D12_CPU_DESCRIPTOR_HANDLE);
+using CreateSamplerFn=void(STDMETHODCALLTYPE*)(ID3D12Device*,const D3D12_SAMPLER_DESC*,D3D12_CPU_DESCRIPTOR_HANDLE);
+static void STDMETHODCALLTYPE AuditSrv(ID3D12Device* device,ID3D12Resource* resource,const D3D12_SHADER_RESOURCE_VIEW_DESC* desc,D3D12_CPU_DESCRIPTOR_HANDLE dest) {
+    cvr::stereo::descriptors::MutationScope mutation;
+    const auto original=GetOriginalMethod<CreateSrvFn>(*reinterpret_cast<void***>(device),18);
+    if(original)original(device,resource,desc,dest);
+    if(!cvr::stereo::probe::internalCommands && cvr::stereo::constants::RegisteredIntentTracking())
+        cvr::stereo::source_resource_intent::MarkStructuredView(resource,desc,&CyberpunkVR_RegisteredIntentEnable);
+    cvr::stereo::descriptors::Srv(resource,desc,dest);
+}
+static void STDMETHODCALLTYPE AuditUav(ID3D12Device* device,ID3D12Resource* resource,ID3D12Resource* counter,const D3D12_UNORDERED_ACCESS_VIEW_DESC* desc,D3D12_CPU_DESCRIPTOR_HANDLE dest) {
+    cvr::stereo::descriptors::MutationScope mutation;
+    const auto original=GetOriginalMethod<CreateUavFn>(*reinterpret_cast<void***>(device),19);
+    if(original)original(device,resource,counter,desc,dest);
+    cvr::stereo::descriptors::Uav(resource,counter,desc,dest);
+}
+static void STDMETHODCALLTYPE AuditSampler(ID3D12Device* device,const D3D12_SAMPLER_DESC* desc,D3D12_CPU_DESCRIPTOR_HANDLE dest) {
+    cvr::stereo::descriptors::MutationScope mutation;
+    const auto original=GetOriginalMethod<CreateSamplerFn>(*reinterpret_cast<void***>(device),22);
+    if(original)original(device,desc,dest);
+    cvr::stereo::descriptors::Sampler(desc,dest);
+}
+static HRESULT STDMETHODCALLTYPE HookedCreateCommandSignature(ID3D12Device* device,const D3D12_COMMAND_SIGNATURE_DESC* desc,ID3D12RootSignature* root,REFIID id,void** out) {
+    const auto original=GetOriginalMethod<CreateCommandSignatureFn>(*reinterpret_cast<void***>(device),41);
+    if(!original)return E_FAIL;const auto result=original(device,desc,root,id,out);
+    if(SUCCEEDED(result) && desc && out && *out){
+        cvr::cascades::SignatureCreated(static_cast<ID3D12CommandSignature*>(*out),*desc);
+        cvr::stereo::indirect_policy::Created(static_cast<ID3D12CommandSignature*>(*out),*desc);
+    }
+    return result;
+}
+// The render jobs call these tens of thousands of times a frame. The cascade and hidden-area
+// observers track depth-stencil views only and return at once for any other heap type, so they
+// are called for DSV copies alone.
+static void STDMETHODCALLTYPE HookedCopyDescriptors(ID3D12Device* device,UINT n,const D3D12_CPU_DESCRIPTOR_HANDLE* dest,const UINT* sizes,UINT m,const D3D12_CPU_DESCRIPTOR_HANDLE* source,const UINT* counts,D3D12_DESCRIPTOR_HEAP_TYPE type) {
+    cvr::stereo::descriptors::MutationScope mutation;
+    static OriginalSiteCache<CopyDescriptorsFn> site;
+    const auto original=GetOriginalMethodCached(site,*reinterpret_cast<void***>(device),23);
+    if(original)original(device,n,dest,sizes,m,source,counts,type);
+    if(type==D3D12_DESCRIPTOR_HEAP_TYPE_DSV) {
+        cvr::cascades::CopyDescriptors(device,n,dest,sizes,m,source,counts,type);
+        cvr::hidden_area::CopyDescriptors(device,n,dest,sizes,m,source,counts,type);
+    }
+    cvr::stereo::descriptors::Copy(device,n,dest,sizes,m,source,counts,type);
+    cvr::stereo::stage_replay::Copy(device,n,dest,sizes,m,source,counts,type);
+}
+static void STDMETHODCALLTYPE HookedCopyDescriptorsSimple(ID3D12Device* device,UINT n,D3D12_CPU_DESCRIPTOR_HANDLE dest,D3D12_CPU_DESCRIPTOR_HANDLE source,D3D12_DESCRIPTOR_HEAP_TYPE type) {
+    cvr::stereo::descriptors::MutationScope mutation;
+    static OriginalSiteCache<CopyDescriptorsSimpleFn> site;
+    const auto original=GetOriginalMethodCached(site,*reinterpret_cast<void***>(device),24);
+    if(original)original(device,n,dest,source,type);
+    if(type==D3D12_DESCRIPTOR_HEAP_TYPE_DSV) {
+        cvr::cascades::CopyDescriptors(device,1,&dest,&n,1,&source,&n,type);
+        cvr::hidden_area::CopyDescriptors(device,1,&dest,&n,1,&source,&n,type);
+    }
+    cvr::stereo::descriptors::Copy(device,1,&dest,&n,1,&source,&n,type);
+    cvr::stereo::stage_replay::Copy(device,1,&dest,&n,1,&source,&n,type);
+}
+bool DescriptorMutationHooksReady(ID3D12Device* device){
+    if(!device)return false;auto** table=*reinterpret_cast<void***>(device);
+    return table[18]==reinterpret_cast<void*>(&AuditSrv) && GetOriginalMethod<CreateSrvFn>(table,18) &&
+        table[19]==reinterpret_cast<void*>(&AuditUav) && GetOriginalMethod<CreateUavFn>(table,19) &&
+        table[22]==reinterpret_cast<void*>(&AuditSampler) && GetOriginalMethod<CreateSamplerFn>(table,22) &&
+        table[23]==reinterpret_cast<void*>(&HookedCopyDescriptors) && GetOriginalMethod<CopyDescriptorsFn>(table,23) &&
+        table[24]==reinterpret_cast<void*>(&HookedCopyDescriptorsSimple) && GetOriginalMethod<CopyDescriptorsSimpleFn>(table,24);
+}
 void InstallDepthCaptureHooks(ID3D12Device* device) {
     if (!device) return;
     void** vtable = *reinterpret_cast<void***>(device);
+    if(cvr::stereo::descriptors::Enabled()) {
+        cvr::stereo::descriptors::Initialize(device);
+        PatchVtableMethod(vtable,18,reinterpret_cast<void*>(&AuditSrv));
+        PatchVtableMethod(vtable,19,reinterpret_cast<void*>(&AuditUav));
+        PatchVtableMethod(vtable,22,reinterpret_cast<void*>(&AuditSampler));
+    }
+    PatchVtableMethod(vtable,23,reinterpret_cast<void*>(&HookedCopyDescriptors));
+    PatchVtableMethod(vtable,24,reinterpret_cast<void*>(&HookedCopyDescriptorsSimple));
+    PatchVtableMethod(vtable,41,reinterpret_cast<void*>(&HookedCreateCommandSignature));
     if (PatchVtableMethod(vtable, 21, reinterpret_cast<void*>(&HookedCreateDepthStencilView))) {
         if (g_verboseLog) Log("[DEPTH-DIAG] Hooked ID3D12Device::CreateDepthStencilView (slot 21)\n");
     }
@@ -372,7 +465,9 @@ extern "C" __declspec(dllexport) std::atomic<uint32_t> CyberpunkVR_LegacyQueueSi
 void TryHookQueueSignalVtable(ID3D12CommandQueue* queue); // defined below
 void ClearLegacyQueueSignals();
 
+extern "C" __declspec(dllexport) std::atomic<uint64_t> CyberpunkVR_EclTiming[8];   // Stereo/DeviceHooks.cpp
 void STDMETHODCALLTYPE HookedExecuteCommandLists(ID3D12CommandQueue* queue, UINT numLists, ID3D12CommandList* const* lists) {
+    LARGE_INTEGER eclStart{};QueryPerformanceCounter(&eclStart);
     CVR_DIAGNOSTIC(g_eclTotalCalls.fetch_add(1, std::memory_order_relaxed));
     CVR_DIAGNOSTIC(g_eclTotalLists.fetch_add(numLists, std::memory_order_relaxed));
     RecordEclQueue(queue);
@@ -406,7 +501,9 @@ void STDMETHODCALLTYPE HookedExecuteCommandLists(ID3D12CommandQueue* queue, UINT
     }
     void** vtable = *reinterpret_cast<void***>(queue);
     ExecuteCommandListsFn originalFn = GetOriginalMethod<ExecuteCommandListsFn>(vtable, 10);
-    if (originalFn) {
+    LARGE_INTEGER eclOn{};QueryPerformanceCounter(&eclOn);
+    CyberpunkVR_EclTiming[2].fetch_add(uint64_t(eclOn.QuadPart-eclStart.QuadPart), std::memory_order_relaxed);
+    if (originalFn && !cvr::gpu::queue_timeline::Execute(queue, numLists, lists, originalFn)) {
         originalFn(queue, numLists, lists);
     }
 }

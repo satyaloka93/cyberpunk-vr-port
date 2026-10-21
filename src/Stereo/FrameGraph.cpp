@@ -1,4 +1,5 @@
 #include "Utils/DebugGate.hpp"
+#include "Render/SharpenPolicy.hpp"
 #include "Stereo/RenderParity.hpp"
 #include "Stereo/FrameGraphFeatures.hpp"
 #include "Stereo/VrcamViewport.hpp"
@@ -66,8 +67,9 @@ thread_local bool t_rtt_prepare_ours = false;
 static __int64 rtt_call_orig(__int64 a1, __int64 a2) {
     bool ours = false;
     __try {
-        ours = a1 && *reinterpret_cast<uint64_t*>(a1 + 0x260) ==
-                         g_vrcam_ctx_key.load(std::memory_order_relaxed);
+        const auto key=a1?*reinterpret_cast<uint64_t*>(a1+0x260):0;
+        ours = a1 && (key==g_vrcam_ctx_key.load(std::memory_order_relaxed) ||
+                      key==cvr::cname_hash("vr_optics_feed"));
     } __except (EXCEPTION_EXECUTE_HANDLER) { ours = false; }
     const bool prev = t_rtt_prepare_ours;
     t_rtt_prepare_ours = ours;
@@ -224,6 +226,7 @@ std::atomic<bool> g_rtt_force_flags{true};
 // giving VRCAM bit50 makes it SAMPLE main's cascades instead of regenerating
 // them into the shared atlas -> no main shadow flicker, VRCAM keeps quality.
 std::atomic<bool> g_force_view_flags{true};
+extern "C" __declspec(dllexport) int32_t CyberpunkVR_OpticsSceneLinear=1;
 static const uint64_t SHADOW_CASCADE_REUSE_BIT = (1ULL << 50);  // SET = skip cascade regen
 // Distant shadows: work-fn sub_140373998 renders them only if flags bit 11
 // (0x800) is set. VRCAM naturally lacks it; forcing flags=main gave it bit11 ->
@@ -445,7 +448,7 @@ static void fg_observe(__int64 a4, const char* which) {
         //
         // Debounced, because two graphs alternating frame to frame would otherwise re-arm forever
         // and never let an identification settle.
-        if (which[0] == 'f') {
+        if (which[0] == 'f' && key!=cvr::cname_hash("vr_optics_feed")) {
             static uint64_t s_lastFullKey = 0;
             static bool     s_haveLastFullKey = false;
             static uint64_t s_lastRearmMs = 0;
@@ -477,31 +480,38 @@ static void fg_observe(__int64 a4, const char* which) {
         // Earliest point we hold the second view's ctx: grant the HUD capability here, before
         // the graph is built and before anything downstream reads it.
         if (key == g_vrcam_ctx_key) hud_grant_capability(reinterpret_cast<uintptr_t>(ctx));
-        if (key == g_vrcam_ctx_key) {
+        const bool optics=key==cvr::cname_hash("vr_optics_feed");
+        if (key == g_vrcam_ctx_key || optics) {
             const auto main=MainFeaturesForVrcam();
             if (g_rtt_force_flags.load(std::memory_order_relaxed) &&
                 (main.f0 | main.f1)) {
                 uint64_t n0 = f0 | main.f0;
                 uint64_t n1 = SupportedHardwareFlags(f1 | main.f1);
+                if(optics) {
+                    n0=cvr::stereo::MergeViewFlags(n0|SHADOW_CASCADE_REUSE_BIT,f0,true);
+                    n1=(n1&~FG_UPSCALER_MASK_F1)|(f1&FG_UPSCALER_MASK_F1);
+                }
                 *reinterpret_cast<uint64_t*>(a4)     = n0;   // actually applied
                 *reinterpret_cast<uint64_t*>(a4 + 8) = n1;
-                CyberpunkVR_DebugFgRttF0 = n0;               // export the POST-OR value
-                CyberpunkVR_DebugFgRttF1 = n1;
+                if(!optics) {
+                    CyberpunkVR_DebugFgRttF0 = n0;
+                    CyberpunkVR_DebugFgRttF1 = n1;
+                }
                 static uint64_t s_forced0 = 0;
-                if (s_forced0 != n0) {                        // log once per change
+                if (!optics && s_forced0 != n0) {             // log once per change
                     s_forced0 = n0;
                     log("[fgflags] FORCED vrcam -> f0=%016llX f1=%016llX (was %016llX/%016llX)",
                         (unsigned long long)n0, (unsigned long long)n1,
                         (unsigned long long)f0, (unsigned long long)f1);
                 }
-            } else {
+            } else if(!optics) {
                 CyberpunkVR_DebugFgRttF0 = f0;
                 CyberpunkVR_DebugFgRttF1 = f1;
             }
             // UPSCALER SELECTOR (guarantee, runs right before the FULL builder reads a4
             // for `if(!69 && !71 && !72 && !73)`): force group 69 (DLSS), clear 71/72/73.
             // See FG_UPSCALER block. Gated on VrcamDlss; only when MAIN chose DLSS.
-            if (CyberpunkVR_VrcamDlss &&
+            if (!optics && CyberpunkVR_VrcamDlss &&
                 (g_main_upscaler_groups.load(std::memory_order_acquire) & FG_DLSS_BIT_F1)) {
                 uint64_t* fr = reinterpret_cast<uint64_t*>(a4);
                 uint64_t nf1 = (fr[1] & ~FG_UPSCALER_MASK_F1) | FG_DLSS_BIT_F1;
@@ -517,14 +527,18 @@ static void fg_observe(__int64 a4, const char* which) {
             // so a transient pre-DLSS frame can't clear it.
             if ((f1 & FG_DLSS_BIT_F1) != 0) {
                 g_main_upscaler_groups.store(f1 & FG_UPSCALER_MASK_F1, std::memory_order_release);
+                cvr::sharpen::gameUpscaler.SelectDlss((f1 & FG_DLSS_BIT_F1)!=0);
                 CyberpunkVR_DebugMainUpscalerGroups = f1 & FG_UPSCALER_MASK_F1;
             }
         }
+        if(optics && CyberpunkVR_OpticsSceneLinear)
+            *reinterpret_cast<uint64_t*>(a4)&=~3ull;
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
 // Attribute a graph-build duration (ticks) to main vs vrcam via the view ctx.
-static void prof_add_build(__int64 a4, int64_t dt) {
+static void prof_add_build(__int64 a4, int64_t t0, int64_t t1) {
+    const int64_t dt = t1 - t0;
     bool vrcam = false;
     if (a4) {
         __try {
@@ -532,6 +546,8 @@ static void prof_add_build(__int64 a4, int64_t dt) {
             vrcam = (*reinterpret_cast<uint64_t*>(ctx + 0x28) == g_vrcam_ctx_key);
         } __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
+    if (CyberpunkVR_NodeTimeline) prof_timeline_add(t0, t1, 0, vrcam ? 5u : 4u);
+    if (!CyberpunkVR_ProfEnable) return;
     if (vrcam) {
         g_prof_build_vrcam_ticks.fetch_add(dt, std::memory_order_relaxed);
         g_prof_build_vrcam_calls.fetch_add(1, std::memory_order_relaxed);
@@ -545,10 +561,10 @@ static __int64 __fastcall Detour_FullBuild(__int64 a1, __int64 a2, __int64 a3,
                                            __int64 a4, __int64 a5) {
     CVR_DIAGNOSTIC(CyberpunkVR_DebugFullTotal++);
     fg_observe(a4, "full");   // DLSS upscaler-group capture/force backup for the crop fix
-    if (CyberpunkVR_ProfEnable) {
+    if (CyberpunkVR_ProfEnable || CyberpunkVR_NodeTimeline) {
         const int64_t t0 = prof_now();
         const __int64 r = g_orig_full_build(a1, a2, a3, a4, a5);
-        prof_add_build(a4, prof_now() - t0);
+        prof_add_build(a4, t0, prof_now());
         return r;
     }
     return g_orig_full_build(a1, a2, a3, a4, a5);
@@ -558,10 +574,10 @@ static __int64 __fastcall Detour_IncrBuild(__int64 a1, __int64 a2, __int64 a3,
                                            __int64 a4, __int64 a5) {
     CVR_DIAGNOSTIC(CyberpunkVR_DebugIncrTotal++);
     fg_observe(a4, "incr");   // DLSS upscaler-group capture/force backup for the crop fix
-    if (CyberpunkVR_ProfEnable) {
+    if (CyberpunkVR_ProfEnable || CyberpunkVR_NodeTimeline) {
         const int64_t t0 = prof_now();
         const __int64 r = g_orig_incr_build(a1, a2, a3, a4, a5);
-        prof_add_build(a4, prof_now() - t0);
+        prof_add_build(a4, t0, prof_now());
         return r;
     }
     return g_orig_incr_build(a1, a2, a3, a4, a5);
@@ -795,6 +811,24 @@ extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugWaterPtrSkips = 0;
 // camera-name key. `g_vrcam_ctx_seen` says the same thing but is written from the node dispatcher,
 // and the assignment hook below has to be certain which object it is refusing to feed.
 static std::atomic<uintptr_t> g_vrcam_view{0};
+static std::atomic<uintptr_t> g_optics_view{0};
+
+bool PhysicalOpticsStereoReady() {
+    // The auxiliary camera may only start after the right eye has produced a
+    // fresh frame. An XR session alone is already active on the loading screen.
+    // No resource is acquired or modified by this game-thread readiness query.
+    const auto tick=g_stable_tick.load(std::memory_order_acquire);
+    const auto now=GetTickCount64();
+    if(!tick || now<tick || now-tick>500)return false;
+    const auto main=g_main_view_ctx.load(std::memory_order_acquire);
+    const auto right=g_vrcam_view.load(std::memory_order_acquire);
+    const auto key=g_vrcam_ctx_key.load(std::memory_order_acquire);
+    if(!main || !right || main==right || !key)return false;
+    __try {
+        return *reinterpret_cast<const uint64_t*>(main+0x28)==0 &&
+            *reinterpret_cast<const uint64_t*>(right+0x28)==key;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
+}
 static const uint32_t kWaterOff = 0x1800;
 
 // Eight bytes at a time, refusing any pair that reads as a user-space address on EITHER side:
@@ -913,6 +947,13 @@ extern "C" __declspec(dllexport) float CyberpunkVR_VrcamFovDeg = 0.f;
 static float g_last_forced_fov  = -1.f;
 static float g_last_forced_zoom = -1.f;
 
+// A scope is an independent RTT view. It needs a drawable native viewport and
+// an extracted final colour, but must never enter the second-eye pose/history
+// path. Match the authored camera name, not its size or its place in a frame.
+static const uint64_t kPhysicalOpticsViewKey = cvr::cname_hash("vr_optics_feed");
+extern "C" __declspec(dllexport) uint64_t CyberpunkVR_OpticsViewSetupHits = 0;
+extern "C" __declspec(dllexport) uint64_t CyberpunkVR_OpticsViewExtractHits = 0;
+
 __int64 __fastcall Detour_FlagCompute(void* a1, __int64 a2, __int64 a3, __int64 a4) {
     t_vrcam_viewport = {};
     bool vrcam = false;
@@ -991,6 +1032,43 @@ __int64 __fastcall Detour_FlagCompute(void* a1, __int64 a2, __int64 a3, __int64 
         } __except (EXCEPTION_EXECUTE_HANDLER) { vrcam = false; }
     }
     bool parityReady=false;
+    bool optics=false;
+    if (a3) {
+        __try {
+            optics = *reinterpret_cast<const uint64_t*>(a3 + 0x28) == kPhysicalOpticsViewKey;
+            if (optics) {
+                const uint32_t w = *reinterpret_cast<const uint32_t*>(a3 + 0x44);
+                const uint32_t h = *reinterpret_cast<const uint32_t*>(a3 + 0x4C);
+                // Same verified RectCompute commit as the native RTT eye. An
+                // empty rect selects the reduced graph, which cannot produce
+                // a colour image for the lens. Keep this view's own dimensions.
+                t_vrcam_viewport={static_cast<uintptr_t>(a3)+PendingVrcamViewport::InputOffset,w,h};
+                if (w && h && w <= 8192 && h <= 8192) {
+                    *reinterpret_cast<VrcamRenderRect*>(a3 + 0x14) =
+                        {0,0,static_cast<int32_t>(w),static_cast<int32_t>(h)};
+                }
+                // Use engine handle assignment so the scope owns its references
+                // to the player's current exposure/environment, including dusk.
+                if (g_main_ctx && g_handle_assign) {
+                    for (uint32_t off : kEnvHandleOffs) {
+                        if (*reinterpret_cast<void**>(g_main_ctx + off))
+                            g_handle_assign(reinterpret_cast<void*>(a3 + off),
+                                            reinterpret_cast<void*>(g_main_ctx + off));
+                    }
+                    const uint32_t extras=CyberpunkVR_EnvExtraMask;
+                    for(uint32_t k=0;k<kEnvExtraCount;++k) {
+                        const auto off=kEnvExtraOffs[k];
+                        if((extras&(1u<<k)) && *reinterpret_cast<void**>(g_main_ctx+off))
+                            g_handle_assign(reinterpret_cast<void*>(a3+off),
+                                            reinterpret_cast<void*>(g_main_ctx+off));
+                    }
+                }
+                g_optics_view.store(static_cast<uintptr_t>(a3),std::memory_order_release);
+                water_mirror_apply(static_cast<uintptr_t>(a3));
+                CVR_DIAGNOSTIC(++CyberpunkVR_OpticsViewSetupHits);
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) { optics=false; }
+    }
     __int64 res = cvr::stereo::ComputeFlagsWithMainAa(g_orig_flag_compute,a1,a2,a3,a4,&parityReady);
     // MAIN's result is transient: reading its context later can see cleared
     // flags. Capture at the producer, not the highest-popcount graph ever seen.
@@ -998,8 +1076,8 @@ __int64 __fastcall Detour_FlagCompute(void* a1, __int64 a2, __int64 a3, __int64 
     // AND AGAIN ONCE THE ORIGINAL HAS RUN. Whether this block is filled before FlagCompute or
     // inside it has not been measured, and it is not worth a build to find out: writing it twice
     // costs 96 bytes on one view per frame and covers both orders.
-    if (vrcam) water_mirror_apply(static_cast<uintptr_t>(a3));
-    if (res && vrcam && g_force_view_flags.load(std::memory_order_relaxed)) {
+    if (vrcam || optics) water_mirror_apply(static_cast<uintptr_t>(a3));
+    if (res && (vrcam || optics) && g_force_view_flags.load(std::memory_order_relaxed)) {
         __try {
             // (Optional / default-OFF) Force VRCAM's feature flags to the current
             // main view's. This makes VRCAM run the FULL main pass set, but that
@@ -1038,10 +1116,16 @@ __int64 __fastcall Detour_FlagCompute(void* a1, __int64 a2, __int64 a3, __int64 
                 }
                 if (CyberpunkVR_DistantReuseMode == 0)
                     vf0 &= ~DISTANT_SHADOW_BIT;   // A/B: distant OFF for vrcam
-                f[0] = cvr::stereo::MergeViewFlags(vf0,f[0],parityReady);
+                // The scope uses the same scene features/reuse policy as the
+                // second eye, but its own AA and resolution-dependent resolve.
+                f[0] = cvr::stereo::MergeViewFlags(vf0,f[0],optics || parityReady);
+                const auto ownResolve=f[1]&FG_UPSCALER_MASK_F1;
                 f[1] = SupportedHardwareFlags(m1);
-                CyberpunkVR_DebugFgRttF0 = f[0];
-                CyberpunkVR_DebugFgRttF1 = f[1];
+                if(optics)f[1]=(f[1]&~FG_UPSCALER_MASK_F1)|ownResolve;
+                else {
+                    CyberpunkVR_DebugFgRttF0 = f[0];
+                    CyberpunkVR_DebugFgRttF1 = f[1];
+                }
                 CVR_DIAGNOSTIC(++CyberpunkVR_DebugRttFlagForceHits);
             }
         } __except (EXCEPTION_EXECUTE_HANDLER) {}
@@ -1058,6 +1142,24 @@ __int64 __fastcall Detour_FlagCompute(void* a1, __int64 a2, __int64 a3, __int64 
             CVR_DIAGNOSTIC(++CyberpunkVR_DebugVrcamExtractionHits);
         } __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
+    if (res && optics) {
+        __try {
+            // The RTT CopyToTexture consumer requires ExtractionFinalColor.
+            auto* f=reinterpret_cast<uint64_t*>(res);
+            f[1] |= 1ULL;
+            // Native RTT omits these postprocessing groups. Direct texture
+            // readback confirmed missing exposure/colour processing even when
+            // the image was correctly extracted. Retain this view's own AA,
+            // hardware features and scene flags; inherit only groups 79/80.
+            const auto main=MainFeaturesForVrcam();
+            constexpr uint64_t postGroups=(1ULL<<15)|(1ULL<<16);
+            f[1]=(f[1]&~postGroups)|(main.f1&postGroups);
+            // The optical image is shaded into the eye's HDR scene, whose
+            // tonemap runs afterwards. Keep this intermediate scene linear.
+            if(CyberpunkVR_OpticsSceneLinear)f[0]&=~3ull;
+            CVR_DIAGNOSTIC(++CyberpunkVR_OpticsViewExtractHits);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
     // UPSCALER SELECTOR (primary): capture MAIN's chosen upscaler (key==0), and for
     // vrcam force group 69 (DLSS) + clear 71/72/73 so SCENE_FULL's builder does NOT emit
     // the native TAAU/resolve (PipelineState_563) that crops. Runs LAST (survives the
@@ -1069,6 +1171,7 @@ __int64 __fastcall Detour_FlagCompute(void* a1, __int64 a2, __int64 a3, __int64 
             uint64_t* f = reinterpret_cast<uint64_t*>(res);
             if (key2 == 0) {
                 g_main_upscaler_groups.store(f[1] & FG_UPSCALER_MASK_F1, std::memory_order_release);
+                cvr::sharpen::gameUpscaler.SelectDlss((f[1] & FG_DLSS_BIT_F1)!=0);
                 CyberpunkVR_DebugMainUpscalerGroups = f[1] & FG_UPSCALER_MASK_F1;
                 // AND THIS IS WHERE VRCAM'S DLSS DECIDES ITSELF. The whole feature is "mirror
                 // whatever MAIN's upscaler is", and every gate below already refused to act unless
@@ -1151,9 +1254,11 @@ extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugWaterAssigns = 0;
 static void* __fastcall Detour_WaterAssign(void* dst, void* src) {
     if (CyberpunkVR_WaterAssign) {
         const uintptr_t vv = g_vrcam_view.load(std::memory_order_acquire);
+        const uintptr_t ov = g_optics_view.load(std::memory_order_acquire);
         const uintptr_t mc = g_main_ctx;
-        if (vv && mc && vv != mc &&
-            reinterpret_cast<uintptr_t>(dst) == vv + kWaterOff) {
+        const auto address=reinterpret_cast<uintptr_t>(dst);
+        if (mc && ((vv && vv!=mc && address==vv+kWaterOff) ||
+                   (ov && ov!=mc && address==ov+kWaterOff))) {
             src = reinterpret_cast<void*>(mc + kWaterOff);
             CVR_DIAGNOSTIC(InterlockedIncrement64(
                 reinterpret_cast<volatile LONG64*>(&CyberpunkVR_DebugWaterAssigns)));

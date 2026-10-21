@@ -13,7 +13,8 @@ FogCamera Camera(float yaw,float x,float y,float z) {
     for(unsigned i=0;i<c.size();++i)c[i]=float(i)*.01f;
     std::fill_n(c.data()+32,16,0.0f);std::fill_n(c.data()+80,16,0.0f);
     c[32]=c[37]=.7815386f;c[42]=-1.25e-6f;c[43]=.020000025f;c[46]=1;
-    c[34]=.0006f;c[38]=-.0004f;
+    // P20/P21 carry the jitter; camera[51].xy holds it alone
+    c[34]=c[204]=.0006f;c[38]=c[205]=-.0004f;
     const auto co=std::cos(yaw),si=std::sin(yaw);
     c[80]=co;c[81]=si;c[83]=-co*x-si*y;
     c[86]=1;c[87]=-z;
@@ -29,8 +30,31 @@ std::array<float,4> Project(const FogProjection& m,const std::array<float,4>& p)
 int main() {
     FogCamera source=Camera(.7f,-1359,-1798,7.69f);FogProjection sourceProjection{};
     Check(FogCurrentProjection(source,sourceProjection),"MAIN projection extracted");
-    auto unjittered=source;unjittered[34]=unjittered[38]=0;FogProjection expected{};
+    auto unjittered=source;unjittered[34]=unjittered[38]=unjittered[204]=unjittered[205]=0;FogProjection expected{};
     Check(FogCurrentProjection(unjittered,expected) && expected==sourceProjection,"source froxels exclude temporal jitter");
+    // The asymmetric projection's NDC shift sits in P20/P21 next to the jitter and must survive.
+    auto shifted=source;shifted[34]+=.03f;shifted[38]+=.1776f;
+    auto shiftedClean=unjittered;shiftedClean[34]=.03f;shiftedClean[38]=.1776f;
+    FogProjection withShift{},cleanShift{};
+    Check(FogCurrentProjection(shifted,withShift) && FogCurrentProjection(shiftedClean,cleanShift),"shifted projection extracted");
+    for(unsigned i=0;i<16;++i)Check(std::abs(withShift[i]-cleanShift[i])<=1e-6f*std::max(1.0f,std::abs(cleanShift[i])),"jitter removed, shift kept");
+    Check(withShift!=sourceProjection,"the shift reaches the borrowed projection");
+    {
+        const std::array<float,4> point{-1355,-1792,8,1};
+        const auto a=Project(withShift,point),b=Project(sourceProjection,point);
+        Check(std::abs((a[1]/a[3]-b[1]/b[3])-.1776f)<1e-4f && std::abs((a[0]/a[3]-b[0]/b[3])-.03f)<1e-4f,"NDC moves by exactly the shift");
+    }
+    // The borrow needs one frustum: the same window passes whatever the jitter, a mirrored one does not.
+    {
+        FogProjection a{},b{},c{};
+        auto rejittered=shiftedClean;rejittered[34]+=.0004f;rejittered[204]+=.0004f;
+        auto mirrored=shiftedClean;mirrored[34]=-.03f;
+        Check(FogFrustum(shiftedClean,a) && FogFrustum(rejittered,b) && FogFrustum(mirrored,c),"frustum extracted");
+        Check(SameFogFrustum(a,b),"jitter alone keeps the frustum");
+        Check(!SameFogFrustum(a,c),"a mirrored window is another frustum");
+    }
+    auto wild=source;wild[204]=.5f;FogProjection rejected{};
+    Check(!FogCurrentProjection(wild,rejected),"a jitter slot holding anything but a sub-pixel jitter is refused");
     for(int degree=-180;degree<=180;++degree) {
         auto native=Camera(float(degree)*.01745329252f,-1359.065f,-1798,7.69f);
         FogCamera patched{};Check(ApplyFogHistoryProjection(native,sourceProjection,patched),"head turn accepts valid source");

@@ -1,6 +1,24 @@
 #include "Utils/DebugGate.hpp"
+#include "Utils/RunAudit.hpp"
+#include "Render/SceneGpuProfile.hpp"
 #include "Render/NativeStereoProbe.hpp"
+#include "Render/NativeStereoFamilies.hpp"
+#include "Render/NativeConstantCapture.hpp"
+#include "Render/RegisteredConstantUpload.hpp"
+#include "Render/NativeTextureRead.hpp"
+#include "Render/NativeBufferRead.hpp"
+#include "Render/NativeCommandRecording.hpp"
+#include "Render/NativeRetainedGeometry.hpp"
+#include "Render/NativeTargetAccess.hpp"
+#include "Render/NativeMaterialBinding.hpp"
+#include "Render/NativeSourceCbvBinding.hpp"
+#include "Render/NativeSourceSrvBinding.hpp"
 #include "Render/CommandResources.hpp"
+#include "Render/FoveatedDlss.hpp"
+#include "Render/FixedVrs.hpp"
+#include "Render/PhysicalOpticsShaders.hpp"
+#include "Render/MonoCascades.hpp"
+#include "Render/NativePreparation.hpp"
 // Dlss -- Streamline and DLSS, made to agree about two views.
 //
 // Five detours: the Streamline constant upload, the DLSS constants, the evaluate call, the apply, and
@@ -79,9 +97,11 @@ static __int64 __fastcall Detour_SlConstants(void* a1, void* a2, void* a3) {
                     uint32_t* mode = reinterpret_cast<uint32_t*>(obj + 0xF94);
                     const uint32_t build_mode =
                         *reinterpret_cast<uint32_t*>(obj + 0xF90);
-                    if (key == g_vrcam_ctx_key) {
-                        CyberpunkVR_DebugVrcamAaMode = *mode;
-                        CyberpunkVR_DebugVrcamBuildModeF90 = build_mode;
+                    if (key == g_vrcam_ctx_key || key == cvr::cname_hash("vr_optics_feed")) {
+                        if(key == g_vrcam_ctx_key) {
+                            CyberpunkVR_DebugVrcamAaMode = *mode;
+                            CyberpunkVR_DebugVrcamBuildModeF90 = build_mode;
+                        }
                         uint32_t want = CyberpunkVR_DebugMainAaMode;   // mirror main
                         if (*mode != want) { *mode = want; CVR_DIAGNOSTIC(++CyberpunkVR_DebugSlHistoryHits); }
                     } else if (key == 0) {
@@ -220,7 +240,9 @@ static __int64 __fastcall Detour_DlssConst(void* a1, unsigned int a2) {
             CVR_DIAGNOSTIC(++CyberpunkVR_DebugVrcamDlssConstHits);
         } __except (EXCEPTION_EXECUTE_HANDLER) { flipped = false; }
     }
-    cvr::framegen::RecordNativeCamera(a1,t_vrcam_sl_active ? 2u : 1u);
+    // Framegen also consumes native TAA: its eye identity must not depend on
+    // whether the Streamline viewport override is enabled for DLSS.
+    cvr::framegen::RecordNativeCamera(a1,cvr::camera::CurrentNodePoseIdentity().view);
     __int64 r = g_orig_dlss_const(a1, a2);
     if (flipped) {
         __try {
@@ -255,7 +277,9 @@ static void __fastcall Detour_DlssEval(void* a1, void* a2, int a3, int a4, int a
             }
         } __except (EXCEPTION_EXECUTE_HANDLER) { flipped = false; }
     }
+    const auto auditDlssStart=cvr::audit::Ticks();
     g_orig_dlss_eval(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14);
+    cvr::audit::Finish(cvr::audit::Dlss,auditDlssStart);
     if (flipped) {
         __try {
             // save vrcam's updated cache for next frame, restore main's cache into a1
@@ -276,7 +300,7 @@ static void __fastcall Detour_DlssEval(void* a1, void* a2, int a3, int a4, int a
 
 // Did MAIN's ApplyDLSS have flag 0x45 set (i.e. is the game actually using DLSS)? Observed
 // each frame from main's ApplyDLSS call; vrcam only mirrors it when true. This makes the
-// feature a strict MIRROR of main's upscaler: if the user has DLSS OFF (main lacks flag
+// feature a strict MIRROR of main's upscaler: if the player has DLSS OFF (main lacks flag
 // 0x45, or the ApplyDLSS node isn't even emitted), vrcam is never forced into DLSS.
 static bool g_main_dlss_flag = false;
 
@@ -376,19 +400,34 @@ void STDMETHODCALLTYPE hk_RSSetViewports(
     const CommandListVtableHook* e = command_list_hook_entry(self);
     PFN_RSSetViewports orig = e ? e->viewports_original : nullptr;
     if (orig) orig(self, count, vps);
+    cvr::vrs::Viewports(self,count,vps);
     if(CyberpunkVR_NativeStereoProbeState.load(std::memory_order_relaxed)==1)cvr::stereo::native_probe::Viewports(self,count,vps);
 }
+extern "C" void CyberpunkVR_GeometryCostTrackScissor(ID3D12GraphicsCommandList*,UINT,const D3D12_RECT*);
  void STDMETHODCALLTYPE hk_RSSetScissorRects(
         ID3D12GraphicsCommandList* self, UINT count, const D3D12_RECT* rects) {
     // Pass-through (see hk_RSSetViewports).
     const CommandListVtableHook* e = command_list_hook_entry(self);
     PFN_RSSetScissorRects orig = e ? e->scissor_original : nullptr;
     if (orig) orig(self, count, rects);
+    CyberpunkVR_GeometryCostTrackScissor(self,count,rects);
     if(CyberpunkVR_NativeStereoProbeState.load(std::memory_order_relaxed)==1)cvr::stereo::native_probe::Scissors(self,count,rects);
 }
  HRESULT STDMETHODCALLTYPE hk_GfxReset(
         ID3D12GraphicsCommandList* self, ID3D12CommandAllocator* alloc,
         ID3D12PipelineState* pso) {
+    if(self->GetType()==D3D12_COMMAND_LIST_TYPE_COPY){
+        const auto* entry=command_list_hook_entry(self);if(!entry || !entry->reset_original)return E_FAIL;
+        const auto result=entry->reset_original(self,alloc,pso);
+        if(SUCCEEDED(result)){
+            cvr::stereo::retained_geometry::Reset(self);
+            cvr::stereo::target_access::Reset(self);
+            cvr::stereo::texture_read::Reset(self);cvr::stereo::material_binding::Reset(self);
+            cvr::stereo::buffer_read::Reset(self);
+            cvr::stereo::constants::ResetRegistered(self);cvr::gpu::ResetCommandResources(self);
+        }
+        return result;
+    }
     t_vrcam_dlss_post = false;
     t_cur_rt_w = 0; t_cur_rt_h = 0;   // stale RT cleared at frame-start recording
     // A reset ends the recording that owned any pending HUD bind. Dropping it here means the
@@ -407,9 +446,26 @@ void STDMETHODCALLTYPE hk_RSSetViewports(
     PFN_GfxReset orig = e ? e->reset_original : nullptr;
     const HRESULT result=orig ? orig(self,alloc,pso) : S_OK;
     if(orig && SUCCEEDED(result)) {
+        cvr::stereo::retained_geometry::Reset(self);
+        cvr::stereo::native_recording::Reset(self,reinterpret_cast<uintptr_t>(_ReturnAddress()));
+        cvr::stereo::target_access::Reset(self);
+        cvr::stereo::texture_read::Reset(self);
+        cvr::stereo::buffer_read::Reset(self);
+        cvr::stereo::material_binding::Reset(self);
+        cvr::stereo::source_cbv::Reset(self);
+        cvr::stereo::source_srv::Reset(self);
+        cvr::stereo::families::Reset(self,pso);
+        cvr::stereo::constants::Reset(self);
+        cvr::stereo::constants::ResetRegistered(self);
+        cvr::stereo::preparation::ResetList(self);
         if(CyberpunkVR_NativeStereoProbeState.load(std::memory_order_relaxed)==1)
             cvr::stereo::native_probe::Reset(self,pso,e->shading_state_known);
         cvr::gpu::ResetCommandResources(self);
+        cvr::cascades::Reset(self);
+        cvr::gpu::scene_profile::Reset(self);
+        cvr::foveated::ResetList(self);
+        cvr::vrs::Reset(self,e->shading_rate_original!=nullptr,pso);
+        cvr::optics::ListReset(self);cvr::optics::source::ListReset(self);cvr::optics::camera::ListReset(self);
         cvr::camera::ResetImagePoseList(self);
         cvr::framegen::ResetList(self);
     }
@@ -552,7 +608,7 @@ extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugReadbackSkips = 0;
 // read everywhere else; there is no overlay switch any more.
 //
 // It was never a real choice. Every gate that consumes it already refused to act unless MAIN had
-// group 69 set, so the user-facing switch was only ever the redundant half of an AND -- and the
+// group 69 set, so the player-facing switch was only ever the redundant half of an AND -- and the
 // half that could be wrong. On it does two things, both of which only make sense while MAIN is
 // upscaling: it stands vrcam up in its own Streamline viewport, and it makes vrcam render below
 // its target and upscale rather than run DLAA.

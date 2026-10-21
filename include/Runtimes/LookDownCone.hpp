@@ -17,7 +17,7 @@ inline float LookDownFreeLookCone(float downDegrees,float normalDegrees,float lo
     loweredDegrees=std::clamp(std::isfinite(loweredDegrees) ? loweredDegrees:30.0f,0.0f,90.0f);
     if(!std::isfinite(downDegrees))downDegrees=0;
     // Leave small natural head tilts alone; reach the full wider cone by 30deg
-    // down, before the usual chest-belt reach. Never narrow the user's cone.
+    // down, before the usual chest-belt reach. Never narrow the player's cone.
     const float t=std::clamp((downDegrees-10.0f)/20.0f,0.0f,1.0f);
     const float blend=t*t*(3-2*t);
     const float cone=normalDegrees+(std::max(normalDegrees,loweredDegrees)-normalDegrees)*blend;

@@ -24,6 +24,9 @@ struct Snapshot {
     uint64_t stamp = 0, generation = 0;
     bool masked = false;
     bool lootVisible = false;
+    // The channel's slots exist and stay masked, but nothing under their windows is visible:
+    // the canvas would be all zeros, so no GPU work and no layer (Natives/HudPanel.cpp).
+    bool emptyContent = false;
     std::vector<Sprite> sprites;
 };
 struct Frame {
@@ -31,6 +34,7 @@ struct Frame {
     uint64_t stamp = 0, generation = 0, serial = 0;
     bool masked = false;
     bool lootVisible = false;
+    bool empty = false;   // no canvas: the channel shows nothing this frame (Snapshot::emptyContent)
 };
 void Publish(std::shared_ptr<Snapshot> snapshot,Channel channel=Channel::Main);
 void Capture(ID3D12Device* device, ID3D12CommandQueue* queue,Channel channel=Channel::Main);

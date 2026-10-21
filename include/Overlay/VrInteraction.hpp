@@ -54,11 +54,27 @@ struct HoldChord {
     }
 };
 // Pure pose policy used by the XR worker and the interaction tests.
+//
+// THE GRIP CARRIES THE PANEL ON THE CONTROLLER. It used to follow only the hand's TRANSLATION, one to
+// one: at two metres a 25 cm reach moves the panel a few degrees and turning the wrist does nothing, so
+// a grab barely nudged it along its radius. Now the panel's centre is held in the controller's own frame
+// at the moment of the grab and carried rigidly -- turning the wrist swings it around on the full
+// lever, moving the hand moves it, the stick still pushes it away and pulls it in. Whatever the drag
+// produces is stored as before (distance and offsets in the follow heading's frame, clamped), and the
+// panel stays upright, turned to face the head.
 struct Placement {
     cvr::hud::Follow follow;XrPosef pose{{0,0,0,1},{}};
     uint64_t origin=0;bool valid=false;int dragging=-1;
-    XrVector3f gripStart{},panelStart{};
+    XrQuaternionf frame{0,0,0,1};   // the follow heading the distance and offsets are measured in
+    XrVector3f grabLocal{};         // the panel's centre in the dragging controller's own frame
     void Reset(){follow.Reset();valid=false;dragging=-1;}
+    void Face(const XrVector3f& head) {
+        const float dx=pose.position.x-head.x,dz=pose.position.z-head.z;
+        if(dx*dx+dz*dz<1e-4f){pose.orientation=frame;return;}
+        const float yaw=std::atan2(-dx,-dz);
+        pose.orientation={0,std::sin(yaw*.5f),0,std::cos(yaw*.5f)};
+    }
+    void Hold(const Hand& hand){grabLocal=RotateVector(ConjugateQuat(hand.aim.orientation),Sub(pose.position,hand.aim.position));}
     void Update(const Tracking& t,Settings& s,float dt) {
         if(!t.valid){dragging=-1;follow.ResetDelay();return;}
         if(origin!=t.origin){Reset();origin=t.origin;}
@@ -68,22 +84,22 @@ struct Placement {
         if(dragging<0) {
             if(!s.follow){follow.yaw=head;follow.valid=true;follow.following=false;follow.ResetDelay();}
             const float yaw=s.follow?follow.Update(head,s.cone*.01745329252f,dt,true):head;
-            pose.orientation={0,std::sin(yaw*.5f),0,std::cos(yaw*.5f)};
-            pose.position=Add(t.head.position,RotateVector(pose.orientation,{s.offsetX,s.offsetY,-s.distance}));
+            frame={0,std::sin(yaw*.5f),0,std::cos(yaw*.5f)};
         } else {
             const auto& hand=t.hands[dragging];
-            pose.position=Add(panelStart,Sub(hand.aim.position,gripStart));
-            auto local=RotateVector(ConjugateQuat(pose.orientation),Sub(pose.position,t.head.position));
+            const auto target=Add(hand.aim.position,RotateVector(hand.aim.orientation,grabLocal));
+            const auto local=RotateVector(ConjugateQuat(frame),Sub(target,t.head.position));
             const float axis=std::abs(hand.stickY)>.2f?hand.stickY:0;
-            const float old=-local.z;
-            s.distance=std::clamp(old+axis*s.depthSpeed*std::clamp(dt,0.0f,.05f),s.minDistance,s.maxDistance);
+            s.distance=std::clamp(-local.z+axis*s.depthSpeed*std::clamp(dt,0.0f,.05f),s.minDistance,s.maxDistance);
             s.offsetX=std::clamp(local.x,-1.5f,1.5f);s.offsetY=std::clamp(local.y,-1.0f,1.0f);
-            pose.position=Add(t.head.position,RotateVector(pose.orientation,{s.offsetX,s.offsetY,-s.distance}));
-            panelStart=pose.position;gripStart=hand.aim.position;
             follow.ResetDelay();
         }
+        pose.position=Add(t.head.position,RotateVector(frame,{s.offsetX,s.offsetY,-s.distance}));
+        Face(t.head.position);
+        // Re-held on the clamped result, so a bound or the stick is not undone by the next frame.
+        if(dragging>=0)Hold(t.hands[dragging]);
         valid=true;
     }
-    void Grab(int hand,const Tracking& t){dragging=hand;gripStart=t.hands[hand].aim.position;panelStart=pose.position;follow.ResetDelay();}
+    void Grab(int hand,const Tracking& t){dragging=hand;Hold(t.hands[hand]);follow.ResetDelay();}
 };
 }

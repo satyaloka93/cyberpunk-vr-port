@@ -28,7 +28,10 @@ Json::Value& Option(Json::Value& root,const std::string& group,const std::string
 }
 bool Personal(const std::string& group,const std::string& name){
     return group=="/language" || group.starts_with("/audio/") || group=="/gameplay/difficulty" ||
-        group.starts_with("/gallery/") || (group=="/gameplay/misc" && (name=="EnableTelemetry" || name=="EnableCloudSaves"));
+        group.starts_with("/gallery/") || group=="/brightness" ||
+        (group=="/gameplay/misc" && (name=="EnableTelemetry" || name=="EnableCloudSaves")) ||
+        (group=="/video/display" && (name=="Gamma" || name=="PaperWhiteLevel" ||
+                                     name=="MaxMonitorBrightness" || name=="TonemappingMidpoint"));
 }
 int main(int argc,char** argv)try {
     Check(argc==3,"preset and output directory required");
@@ -40,6 +43,16 @@ int main(int argc,char** argv)try {
             Check(option["value"]=="Disabled" && option["index"]==0,"shipped Reflex preset is not Off");
         }
     Check(reflexFound,"shipped Reflex preset missing");
+    bool crosshairFound=false;
+    for(const auto& group:preset["data"])for(const auto& option:group["options"]) {
+        const auto groupName=group["group_name"].asString(),name=option["name"].asString();
+        Check(groupName!="/brightness" && !(groupName=="/video/display" && Personal(groupName,name)),
+              "shipped preset carries a picture calibration value");
+        if(groupName=="/interface/hud" && name=="crosshairs") {
+            crosshairFound=true;Check(option["value"]==false,"shipped HUD crosshair is not off");
+        }
+    }
+    Check(crosshairFound,"shipped HUD crosshair setting missing");
     player["version"]=999;player["player_metadata"]="keep";
     unsigned expected=0;
     for(auto& group:player["data"])for(auto& option:group["options"]){
@@ -78,6 +91,17 @@ int main(int argc,char** argv)try {
     Check(Option(result,"/controls","future_binding")["value"]=="keep binding","unknown input setting lost");
     Check(Group(result,"/future/version")==Group(player,"/future/version"),"unknown group lost");
     Check(cvr::settings::MergeGameSettings(merged.json,Encode(preset)).changed==0,"merge is not idempotent");
+    {
+        // A preset that does carry them still leaves the player's brightness, gamma and HDR levels alone.
+        auto calibrated=preset,own=player;
+        const std::pair<const char*,const char*> picture[]={{"/brightness","Brightness"},{"/video/display","Gamma"},
+            {"/video/display","PaperWhiteLevel"},{"/video/display","MaxMonitorBrightness"},{"/video/display","TonemappingMidpoint"}};
+        for(const auto& [group,name]:picture){Option(calibrated,group,name)["value"]=1.0;Option(own,group,name)["value"]=77.5;}
+        const auto kept=cvr::settings::MergeGameSettings(Encode(own),Encode(calibrated));
+        Check(kept.ok,"calibration merge failed");
+        auto keptJson=Parse(kept.json);
+        for(const auto& [group,name]:picture)Check(Option(keptJson,group,name)["value"]==77.5,"player's brightness or gamma was overwritten");
+    }
     const std::string empty=R"({"version":7,"data":[]})";
     const auto fresh=cvr::settings::MergeGameSettings(empty,Encode(preset));
     Check(fresh.ok,"missing preset groups could not be inserted");

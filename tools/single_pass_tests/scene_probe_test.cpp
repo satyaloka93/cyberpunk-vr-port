@@ -17,7 +17,7 @@
 #include <stdexcept>
 using Microsoft::WRL::ComPtr;
 namespace cvr::stereo::camera_upload {Result CurrentBinding(){return {0x1000,0x2000,2048,0};}}
-namespace cvr::stereo::native_probe {bool Enabled(){return true;}bool CurrentState(ID3D12GraphicsCommandList*,DrawRecord&){return false;}}
+namespace cvr::stereo::native_probe {bool Enabled(){return true;}bool ObserveBindings(){return false;}bool CurrentState(ID3D12GraphicsCommandList*,DrawRecord&){return false;}}
 extern "C" {__declspec(dllexport) std::atomic<uint32_t> CyberpunkVR_NativeStereoProbeState{1};}
 static void Check(HRESULT hr){if(FAILED(hr))throw std::runtime_error("D3D12 API failure "+std::to_string(unsigned(hr)));}
 static void Require(bool v,const char* text){if(!v)throw std::runtime_error(text);}

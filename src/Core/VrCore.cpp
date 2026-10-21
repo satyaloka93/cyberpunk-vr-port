@@ -104,6 +104,14 @@ extern "C" void PrepareStartupLiveControls() {
         g_dialogShown = true;
         if (g_launcherShow) ShowLauncherDialog();
         else {
+            // A pick from a ladder that has since been reshaped names a VRCAM component that no longer
+            // exists: no second eye. The dialog would move it; without the dialog, move it here.
+            const int savedWidth = g_launcherWidth, savedHeight = g_launcherHeight;
+            if (SnapLauncherResolution(g_launcherHmdType, &g_launcherWidth, &g_launcherHeight)) {
+                Log("Launcher: %dx%d is not in HMD type %d's ladder -> %dx%d (nearest in cost)\n",
+                    savedWidth, savedHeight, g_launcherHmdType, g_launcherWidth, g_launcherHeight);
+                SaveLauncherConfig(g_launcherWidth, g_launcherHeight);
+            }
             Log("Launcher skipped (show_launcher=0): %dx%d, HMD type %d; startup wait %d ms\n",
                 g_launcherWidth, g_launcherHeight, g_launcherHmdType, g_launcherDelayMs);
             WaitForLauncherStartup(static_cast<unsigned int>(g_launcherDelayMs));
@@ -233,7 +241,7 @@ extern "C" int GetDisableRoll() {
 extern "C" float CyberpunkVR_HeadsetDefaultFovDeg();
 
 extern "C" float GetForcedFov() {
-    // The user's number always wins. Only when vrport.ini leaves this at 0 does the per-headset
+    // The ini number always wins. Only when vrport.ini leaves this at 0 does the per-headset
     // measured default apply -- see CyberpunkVR_HeadsetDefaultFovDeg in OpenXRManager.cpp for why the
     // default is routed through this value and not through the runtime's eye frusta.
     const float fromIni = g_liveControls.xrForceFov;
@@ -261,7 +269,7 @@ extern "C" int GetSyncSequential() {
     // differential (left rendered at present P, right at P+1) that SteamVR's
     // per-view reprojection amplifies into one-sided left-eye judder/tearing —
     // Virtual Desktop masks it, so it stays off there (already smooth on the
-    // per-eye path). Confirmed direction by the user's both-left/both-right=smooth
+    // per-eye path). Confirmed direction by the both-left/both-right=smooth
     // test: identical per-eye pose = smooth, differing per-eye pose = left tears.
     // Key off the ACTUALLY-detected runtime (by name), not just the xr_runtime ini
     // flag: SteamVR can be the system default OpenXR runtime with xr_runtime=0, and
@@ -297,7 +305,7 @@ extern "C" float GetVrSharpness() {
 }
 
 extern "C" float GetVrSharpmix() {
-    return g_liveControls.xrSharpmix;
+    return cvr::sharpen::gameUpscaler.Amount(g_liveControls.xrSharpmix);
 }
 
 extern "C" int GetReuseLastFrameOutput() {
@@ -383,10 +391,13 @@ void ApplySettingsResolutionOverride(uintptr_t settingsPtr) {
         }
     }
 
-    // VR Mod tracks the settings struct around CP2077SettingsRes; +0x18/+0x1C are the
-    // active dimensions and +0x84/+0x88 are the validator targets used by the game.
-    WriteU32Safe(settingsPtr + 0x18, forcedWidth);
-    WriteU32Safe(settingsPtr + 0x1C, forcedHeight);
+    // ONLY THE TARGET. +0x84/+0x88 is the resolution the game is asked for, +0x18/+0x1C the one it
+    // runs at. The settings tick (sub_14021BF9C) applies a change only when sub_14021C584 -- the
+    // function this hook sits in -- sees the two differ; the apply (sub_14087320C) resizes and then
+    // copies target into active itself. Writing BOTH told the game it was already there: whenever its
+    // renderer had been built at the settings resolution before our first write (a startup race, lost
+    // after the display layout changed, 2026-10-15) or after the world map's suspension, MAIN stayed at
+    // 1024x768 for good while the swapchain and the second view ran at the launcher's size.
     WriteU32Safe(settingsPtr + 0x84, forcedWidth);
     WriteU32Safe(settingsPtr + 0x88, forcedHeight);
 }
@@ -411,8 +422,7 @@ void ApplyKnownResolutionOverrides() {
 //
 // The consequence was a four-degree mismatch: rendered H 90.14 while the submit said 94, and the
 // compositor stretches whatever it is handed to fill what it was promised -- the world reads too
-// large. R.E.A.L. VR writes 100.02 here on the same headset, which derives to H 94.02, matching
-// what it submits.
+// large. A vertical FOV of 100.02 derives to H 94.02 on this headset, matching the submitted FOV.
 //
 // So two values, and keeping them distinct is the whole fix:
 //   g_normalFovOverrideValue  the VERTICAL, i.e. what the engine's field actually receives
@@ -619,8 +629,8 @@ extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugBdPushMain = 0;
 //     VRCAM  position   the scene pose, pushed             per frame
 //
 // One of the four at a different rate is not "a bit of lag in one eye": it is the pair coming apart,
-// and it shows in EVERY braindance, including the one that otherwise looks right -- which is what the
-// user pointed out and what the rate-based auto-switch I started writing would have papered over.
+// and it shows in EVERY braindance, including the one that otherwise looks right -- which is what
+// showed in the headset and what the rate-based auto-switch started first would have papered over.
 //
 // This closes it: MAIN's viewpoint is written into the located buffer from the same per-frame scene
 // pose the second eye is placed with, so all four move together. The half-IPD is NOT applied here --
@@ -908,7 +918,7 @@ extern "C" __declspec(dllexport) int CyberpunkVR_PoseReadBack = 1;
 // there at 90+ fps in mono as well. Rate mismatch is not the mechanism. Not touched.
 extern "C" __declspec(dllexport) int CyberpunkVR_CamComposeAtWrite = 1;
 // 1 = locate the head afresh at the camera write, aimed at the predicted display time of the
-// frame being built (the RealVR arrangement). 0 = read the cached atomics the frame-loop thread
+// frame being built. 0 = read the cached atomics the frame-loop thread
 // refreshes, whose age relative to the write wanders frame to frame.
 extern "C" __declspec(dllexport) int CyberpunkVR_PoseLocateAtWrite = 1;
 // 1 = LocateCamera's translation and PatchCamera's orientation share ONE head sample per frame
@@ -983,7 +993,7 @@ extern "C" __declspec(dllexport) uint32_t CyberpunkVR_DebugTidLocateCam = 0;
 // camera (ctx+0x18) -> view matrices (sub_140788A9C). PrepareSceneRendering's fix-up and
 // SetStreamlineConstants both sit BELOW the producer, so both are downstream of the decisions
 // that already used the camera. Only a write at the component -- PatchCamera -- is upstream of
-// all of them, which is why that is where the engine's own writer lives and where RealVR hooks.
+// all of them, which is why that is where the engine's own writer lives.
 //
 // Counters from the attempt, for the record: ViewCamMain 6192, ViewCamVrcam 5625 (both views DO
 // reach the site once the view test used the dispatcher's tags instead of a component-name hash),
@@ -1021,7 +1031,7 @@ extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugMainPosWrites = 0;
 // (A first attempt at this looked like it had failed -- the view rode the character's head. That
 // was an unrelated regression in the same session: the VRIK cleanup had replaced HALF of a
 // coherent pair, taking hmdRel from a fresh head sample while the controllers it un-rotates came
-// from an older publication. The argument that settled it is simple and was the user's: the
+// from an older publication. The argument that settled it is simple: the
 // ORIENTATION reaches the blender through this very field and works, so the field is read after we
 // write it, and position cannot be the exception.)
 // 1 = MAIN takes the head translation in the COMPONENT, the same way VRCAM always has; 0 = the
@@ -1108,7 +1118,7 @@ extern "C" __declspec(dllexport) int CyberpunkVR_ViewYawFromEngine = 1;
 // else did. There is nothing to follow, so the yaw has to come from here.
 //
 // Deliberately NOT armed everywhere: in ordinary play and in a vehicle the game turns the view
-// itself -- the user reports the same kind of scene works in a car -- and a second source would
+// itself -- the same kind of scene is reported to work in a car -- and a second source would
 // simply double every turn. So it is gated on the scene tier AND on being on foot, and the
 // accumulator is dropped the moment the gate closes, which puts the view back exactly where the
 // game's own yaw has it.
@@ -1230,8 +1240,8 @@ extern "C" __declspec(dllexport) int     CyberpunkVR_EngineCamPosValid = 0;
 // renders. Default 0 until it has been seen on the picture.
 // DEFAULT 0, AND MODE 3 IS NOT THE ANSWER -- the paragraph above is the older claim and it did not
 // survive the picture. Mode 3 takes the second view's base from the located centre, and that base is a
-// TICK OLD relative to what MAIN renders from, so the second eye trails the first; the user has reported
-// this twice ("3 ключ ... дает отставание от main"), and the braindance path deliberately takes its base
+// TICK OLD relative to what MAIN renders from, so the second eye trails the first; this was reported
+// twice (key 3 lags behind MAIN), and the braindance path deliberately takes its base
 // from elsewhere for the same reason. Retried once anyway while chasing a 5.5 m divergence in an AV and
 // it changed nothing there, because that divergence had another cause entirely (a turret published as a
 // taken-over surveillance camera). Leave this at 0 unless a measurement says otherwise.
@@ -1254,7 +1264,7 @@ extern "C" __declspec(dllexport) int32_t CyberpunkVR_VrcamPosFromMain = 0;
 // too and this port would have noticed long ago).
 // A TAKEN-OVER CAMERA GOES THROUGH THE LOCATED BUFFER, the same route a braindance scene uses.
 //
-// Measured at the AV turret, and by an A/B the user flipped in the panel: with the scene path open MAIN's
+// Measured at the AV turret, and by an A/B flipped in the panel: with the scene path open MAIN's
 // orientation tracked the head again and the second eye stopped jerking; with it closed both stopped. The
 // reason is in this file's own machinery -- the located buffer takes its base from the BUFFER the engine
 // is filling this frame (CyberpunkVR_BdBaseFromLocate), so it does not depend on which object the
@@ -2633,7 +2643,7 @@ bool g_projStagePatched = false;
 
 
 
-// Snap-turn yaw delta (degrees) pushed by the XInput hook when the user flicks
+// Snap-turn yaw delta (degrees) pushed by the XInput hook when the player flicks
 // the right stick. Applied here in one frame to give a true instant snap (no
 // stick-driven smooth rotation). Atomic 32-bit float via bit-cast through int.
 volatile LONG g_pendingSnapYawDeltaBits = 0;

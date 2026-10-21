@@ -1,8 +1,13 @@
 #pragma once
+#include "Render/SharpenPolicy.hpp"
 #include "Runtimes/HudLayout.hpp"
 #include "Framegen/Framegen.hpp"
 #include "Overlay/VrOverlay.hpp"
 #include "Hooks/ReflexOptions.hpp"
+#include "Render/FoveatedDlss.hpp"
+#include "Render/FixedVrs.hpp"
+#include "Render/HiddenArea.hpp"
+#include "Render/MonoCascades.hpp"
 
 struct LiveControlsUiState {
     float xrHeadOffsetX;
@@ -19,19 +24,24 @@ struct LiveControlsUiState {
     int xrHudPanel = 1;
     float xrHudFollowDeg = 60.0f;
     int xrInteractionPanel = 1;
-    float xrInteractionFollowDeg = 90.0f;
-    float xrLootFollowDeg = 10.0f;
-    float xrInteractionDistance = 1.5f;
-    float xrInteractionFov = 65.4f;
+    float xrInteractionFollowDeg = 0.0f;
+    float xrLootFollowDeg = 0.0f;
+    float xrInteractionDistance = 2.0f;
+    float xrInteractionFov = 75.0f;
     float xrHudFov = 65.4f;
     float xrHudDistance = 1.5f;
     int xrHudFollowMode = 0;
-    int xrHudStereoDepth = 0;
+    int xrHudStereoDepth = 1;
     float xrHudBrightness = 1.0f;
     float xrHudShadow = 1.0f;
     float xrHudGlow = 1.0f;
     cvr::hud::LayoutSettings hudElements{};
     cvr::framegen::Settings framegen{};
+    cvr::foveated::Settings foveated{};
+    cvr::vrs::Settings vrs{};
+    cvr::hidden_area::Settings hiddenArea{};
+    int monoCascades=1;
+    int scopeStabilize=80;   // xr_scope_stabilize, percent history in a moving scope lens (0 = off)
     int nvidiaReflex = cvr::reflex::DefaultMode;
     cvr::vrui::Settings overlay{};
     int xr3DofMovement;
@@ -40,8 +50,8 @@ struct LiveControlsUiState {
     float xrStereoScale;
     float xrWorldScale;   // uniform world scale (1.0 = default; <1 = world bigger)
     float xrIpdScale;     // eye-separation multiplier on runtime IPD (1.5 = legacy calib)
-    float xrSharpness;    // CAS sharpen strength (0 = off .. 1)
-    float xrSharpmix;     // CAS sharpen mix (0..1)
+    float xrSharpness;    // CAS Emphasis (0..1; zero still sharpens)
+    float xrSharpmix = cvr::sharpen::DefaultAmount; // CAS Sharpening (0..1 -> shader mix 0..4)
     int xrReuseLastFrame; // 1 = reuse last clean frame on stale ticks
     int xrPairLock;       // 1 = pose-pair-lock on (anti-tear); 0 = live pose (full-rate avatar)
     int xrRenderPoseSubmit;
@@ -94,6 +104,11 @@ struct LiveControlsUiState {
     int xrTrackedBodyRotation;
     int xrHybridBodyRotation;
     int xrRoomscaleMovement;
+    int xrPhysicalCrouch;
+    float xrPhysicalCrouchDepth;
+    int xrAsymProjection = 1; // 1 = each eye renders its own off-centre lens window (CyberpunkVR_AsymProjection)
+    int xrHaptics = 1;        // controller vibration (Runtimes/Haptics.cpp)
+    float xrHapticScale = 1.0f;
     // Cutscene VRIK suspend (PR #40). The minimum GameplayTier at which the plugin fully suspends
     // the body+arm solve on foot: -1/0 = never, 1..4 = Tier2..Tier5.
     // Default 3 (Tier4_FPPCinematic). F10 -> VRIK tab.

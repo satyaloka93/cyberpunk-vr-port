@@ -78,7 +78,19 @@ function Expand-SafeModZip([string]$Archive, [string]$Destination) {
     } finally { $zip.Dispose() }
 }
 
-function Get-PortFiles([string]$Root, [bool]$DisableLegacyHud = $true, [bool]$DisableProxy = $true) {
+function Assert-ProxyPreservation([string]$Root, [string]$Stage, [bool]$DisableDxgiProxy = $false) {
+    foreach ($name in @('dxgi.dll','version.dll')) {
+        $existing = Get-SafePath $Root "bin\x64\$name"
+        $incoming = Get-SafePath $Stage "bin\x64\$name"
+        if ($name -eq 'dxgi.dll' -and $DisableDxgiProxy) { continue }
+        if ((Test-Path -LiteralPath $existing -PathType Leaf) -and (Test-Path -LiteralPath $incoming -PathType Leaf) -and
+            (Get-FileHash -LiteralPath $existing).Hash -ne (Get-FileHash -LiteralPath $incoming).Hash) {
+            throw "Package would replace existing $name loader. Nothing installed; review the loader conflict explicitly."
+        }
+    }
+}
+
+function Get-PortFiles([string]$Root, [bool]$DisableLegacyHud = $true, [bool]$DisableProxy = $false) {
     foreach ($parent in @('bin\x64\plugins\cyber_engine_tweaks\mods','r6\scripts','red4ext\plugins')) {
         $path = Get-SafePath $Root $parent
         if (Test-Path -LiteralPath $path) {
@@ -139,10 +151,28 @@ function Invoke-PortTransaction([string]$Root, [string]$Stage, [string[]]$Remove
     if ($SettingsFile -and (Test-Path -LiteralPath $SettingsFile)) { Copy-VerifiedFile $SettingsFile (Join-Path $Backup 'UserSettings.before.json') }
     $journal.Status = 'Prepared'; Save-Journal $journal $Backup
     try {
+        # Clean replacement, not an overlay extraction. ALL originals are already
+        # backed up above. Only the explicitly selected old port/conflict files
+        # are removed; dependencies and other mods are never swept by directory.
+        foreach ($rel in @($Remove | Sort-Object -Unique)) {
+            $target = Get-SafePath $Root $rel
+            if (Test-Path -LiteralPath $target -PathType Leaf) { Remove-Item -LiteralPath $target -Force }
+        }
         foreach ($entry in $entries) {
             $target = Get-SafePath $Root $entry.Path
             if ($entry.Write) { Copy-VerifiedFile (Get-SafePath $Stage $entry.Path) $target }
-            elseif ($entry.Existed) { Remove-Item -LiteralPath $target -Force }
+        }
+        # Check against the pre-write stage hashes, not just source/destination
+        # equality during each copy. Failure must use the same rollback path.
+        foreach ($entry in $entries) {
+            $target = Get-SafePath $Root $entry.Path
+            if ($entry.Write) {
+                if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -ine $entry.AfterHash) {
+                    throw "Installed file verification failed: $($entry.Path)"
+                }
+            } elseif (Test-Path -LiteralPath $target) {
+                throw "Retired port file remains: $($entry.Path)"
+            }
         }
         $journal.Status = 'Installed'; Save-Journal $journal $Backup
     } catch {
@@ -171,7 +201,7 @@ function Set-MigratedSettings([string]$Root, [string]$Stage) {
     if (Test-Path -LiteralPath $ini) {
         foreach ($line in Get-Content -LiteralPath $ini) {
             if ($line -match '^\s*([a-zA-Z0-9_]+)\s*=') {
-                if ($Matches[1] -in $keys -or $Matches[1] -match '^xr_veh_head_offset_[xyz]$') { $lines += $line }
+                if ($Matches[1] -in $keys -or $Matches[1] -match '^xr_(veh|bike)_head_offset_[xyz]$') { $lines += $line }
             }
         }
     }
@@ -185,7 +215,7 @@ function Set-MigratedSettings([string]$Root, [string]$Stage) {
     }
     foreach ($file in Get-ChildItem -LiteralPath (Get-SafePath $Root 'bin\x64') -Filter 'CyberpunkVR_*Grip*.ini' -File) {
         $rel = 'bin\x64\' + $file.Name
-        # Only keep hand poses still shipped by 0.1.7.
+        # Only keep hand poses still shipped by the selected release.
         if (Test-Path -LiteralPath (Get-SafePath $Stage $rel)) { Copy-VerifiedFile $file.FullName (Get-SafePath $Stage $rel) }
     }
 }

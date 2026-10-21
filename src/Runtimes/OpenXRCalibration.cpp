@@ -1,6 +1,7 @@
 // openxr_calibration.cpp - recenter, auto-calibration, and calibration-file I/O.
 // Split verbatim from openxr_manager.cpp (OpenXRManager methods). Shared module
 // state/helpers via openxr_internal.h (inline).
+#include "Runtimes/WristBase.hpp"
 #include "Runtimes/OpenXRManager.hpp"
 #include "Runtimes/OpenXRInternal.hpp"
 #include "Utils/XrMath.hpp"
@@ -54,7 +55,7 @@ void OpenXRManager::EndExternalPoseReset() {
 // ==== AUTO-CALIBRATION ====
 //
 // Procedure (matches standard VR title flow):
-//   1. User clicks Start; HUD shows "Stretch arms out to the SIDES and stand straight. 3..2..1".
+//   1. The player clicks Start; HUD shows "Stretch arms out to the SIDES and stand straight. 3..2..1".
 //   2. While sampling we read live HMD + both controller HMD-local gizmo positions, keep max armSpan.
 //   3. After secs seconds we derive anatomical numbers and publish them via SetVRHandCalib +
 //      SetShoulderAnatomical, then save to file.
@@ -76,7 +77,7 @@ void OpenXRManager::StartAutoCalibration(float secs) {
     // INITIALIZE wrist defaults if they've never been set. Without this, finalisation reads zero
     // values from m_calib[] (atomic float default = 0), publishes identity wrist quats, and the
     // hand orientation breaks (palm faces wrong way). These match the plugin's baked-in defaults
-    // (g_VRWristR_* and g_VRWristL_*) so the user sees the same wrist behaviour as before auto-cal.
+    // (g_VRWristR_* and g_VRWristL_*) so the player sees the same wrist behaviour as before auto-cal.
     if (m_calib[0].load(std::memory_order_relaxed) == 0.0f
         && m_calib[1].load(std::memory_order_relaxed) == 0.0f
         && m_calib[9].load(std::memory_order_relaxed) == 0.0f) {
@@ -88,13 +89,9 @@ void OpenXRManager::StartAutoCalibration(float secs) {
         m_calib[5].store(1.0f,  std::memory_order_relaxed);   // swingL
         m_calib[6].store(0.0f,  std::memory_order_relaxed);   // poleR
         m_calib[7].store(0.0f,  std::memory_order_relaxed);   // poleL
-        m_calib[8].store(0.0f,    std::memory_order_relaxed); // wRp
-        m_calib[9].store(-90.0f,  std::memory_order_relaxed); // wRy
-        m_calib[10].store(0.0f,   std::memory_order_relaxed); // wRr
-        m_calib[11].store(-180.0f,std::memory_order_relaxed); // wLp
-        m_calib[12].store(-90.0f, std::memory_order_relaxed); // wLy
-        m_calib[13].store(0.0f,   std::memory_order_relaxed); // wLr
-        Log("Auto-calibration: initialised wrist/elbow defaults (R yaw=-90, L pitch=-180 yaw=-90).\n");
+        // The wrists start on the baked base (Runtimes/WristBase.hpp): wRp wRy wRr wLp wLy wLr.
+        for (int i = 0; i < 6; ++i) m_calib[8 + i].store(cvr::calib::kWristBase[i], std::memory_order_relaxed);
+        Log("Auto-calibration: initialised wrist/elbow defaults (the baked wrist base).\n");
     }
     m_calibState.store(1, std::memory_order_relaxed);
     Log("Auto-calibration: started (%.1fs T-pose sample). Stretch arms STRAIGHT OUT to the sides.\n", secs);
@@ -209,7 +206,7 @@ void OpenXRManager::TickAutoCalibration() {
         float scaleL = 1.0f;
         (void)realArmLen;
 
-        // PRESERVE all user-tunable values: swing, pole, wrist orientation. Auto-cal only
+        // PRESERVE all tunable values: swing, pole, wrist orientation. Auto-cal only
         // overwrites the anatomy (scale + shoulder offsets) — elbow/wrist tweaks stay.
         float swingR = m_calib[4].load(std::memory_order_relaxed);
         float swingL = m_calib[5].load(std::memory_order_relaxed);
@@ -235,7 +232,7 @@ void OpenXRManager::TickAutoCalibration() {
         Log("  shoulder R = (%.3f, %.3f, %.3f)\n", rx, ry, rz);
         Log("  shoulder L = (%.3f, %.3f, %.3f)\n", lx, lyv, lzv);
 
-        // Auto-apply the camera->head bake (no separate button needed): the user stood straight
+        // Auto-apply the camera->head bake (no separate button needed): the player stood straight
         // in the T-pose, so the published head-vs-camera offset is exactly what we want to bake.
         BakeCameraOffset();
 
@@ -292,7 +289,8 @@ bool OpenXRManager::SaveCalibrationToFile() {
         return false;
     }
     fprintf(f, "# CyberpunkVRPort VRIK auto-calibration\n");
-    fprintf(f, "version=3\n");
+    // Version 4: the wrist angles are OFFSETS from the baked base (Runtimes/WristBase.hpp).
+    fprintf(f, "version=4\n");
     fprintf(f, "scaleR=%.4f\nscaleL=%.4f\n",
             m_calib[0].load(std::memory_order_relaxed),
             m_calib[1].load(std::memory_order_relaxed));
@@ -305,14 +303,12 @@ bool OpenXRManager::SaveCalibrationToFile() {
     fprintf(f, "poleR=%.4f\npoleL=%.4f\n",
             m_calib[6].load(std::memory_order_relaxed),
             m_calib[7].load(std::memory_order_relaxed));
-    fprintf(f, "wRp=%.4f\nwRy=%.4f\nwRr=%.4f\n",
-            m_calib[8].load(std::memory_order_relaxed),
-            m_calib[9].load(std::memory_order_relaxed),
-            m_calib[10].load(std::memory_order_relaxed));
-    fprintf(f, "wLp=%.4f\nwLy=%.4f\nwLr=%.4f\n",
-            m_calib[11].load(std::memory_order_relaxed),
-            m_calib[12].load(std::memory_order_relaxed),
-            m_calib[13].load(std::memory_order_relaxed));
+    {
+        float w[6];
+        for (int i = 0; i < 6; ++i) w[i] = m_calib[8 + i].load(std::memory_order_relaxed) - cvr::calib::kWristBase[i];
+        fprintf(f, "wRp=%.4f\nwRy=%.4f\nwRr=%.4f\n", w[0], w[1], w[2]);
+        fprintf(f, "wLp=%.4f\nwLy=%.4f\nwLr=%.4f\n", w[3], w[4], w[5]);
+    }
     fprintf(f, "shoulderRX=%.4f\nshoulderRY=%.4f\nshoulderRZ=%.4f\n",
             m_calibExt[0].load(std::memory_order_relaxed),
             m_calibExt[1].load(std::memory_order_relaxed),
@@ -327,7 +323,7 @@ bool OpenXRManager::SaveCalibrationToFile() {
             m_camBakeOffset[1].load(std::memory_order_relaxed),
             m_camBakeOffset[2].load(std::memory_order_relaxed));
     // Arm length / eye height were NEVER persisted -> every fresh session ran with
-    // userArmLen=0 (no bone scaling: side reaches bent, hands short) until the user
+    // userArmLen=0 (no bone scaling: side reaches bent, hands short) until the player
     // recalibrated manually. Persist them like the rest of the calibration.
     fprintf(f, "userArmLenR=%.4f\nuserArmLenL=%.4f\nuserEyeHeight=%.4f\n",
             m_userArmLenR.load(std::memory_order_relaxed),
@@ -373,6 +369,8 @@ bool OpenXRManager::LoadCalibrationFromFile() {
         m_camBakeOffset[2].load(std::memory_order_relaxed),
     };
     int version = 0, cameraMountVersion = 0;
+    float wrist[6] = {};
+    bool wristSeen[6] = {};
     char line[128];
     while (fgets(line, sizeof(line), f)) {
         char key[32]; float val;
@@ -384,7 +382,9 @@ bool OpenXRManager::LoadCalibrationFromFile() {
         #define C(name, idx) if (strcmp(key, name) == 0) cb[idx] = val;
         M("scaleR",0) M("scaleL",1) M("heightR",2) M("heightL",3)
         M("swingR",4) M("swingL",5) M("poleR",6) M("poleL",7)
-        M("wRp",8) M("wRy",9) M("wRr",10) M("wLp",11) M("wLy",12) M("wLr",13)
+        #define W(name, idx) if (strcmp(key, name) == 0) { wrist[idx] = val; wristSeen[idx] = true; }
+        W("wRp",0) W("wRy",1) W("wRr",2) W("wLp",3) W("wLy",4) W("wLr",5)
+        #undef W
         E("shoulderRX",0) E("shoulderRY",1) E("shoulderRZ",2)
         E("shoulderLX",3) E("shoulderLY",4) E("shoulderLZ",5)
         C("camBakeX",0) C("camBakeY",1) C("camBakeZ",2)
@@ -405,6 +405,9 @@ bool OpenXRManager::LoadCalibrationFromFile() {
         v[2] = 0.0f;
         v[3] = 0.0f;
     }
+    // Version 4 stores the wrists as offsets from the baked base; older files hold the absolute angles.
+    for (int i = 0; i < 6; ++i)
+        if (wristSeen[i]) v[8 + i] = version >= 4 ? cvr::calib::kWristBase[i] + wrist[i] : wrist[i];
     if (version < 3) {
         if (v[0] < 0.90f || v[0] > 1.25f) v[0] = 1.05f;
         if (v[1] < 0.90f || v[1] > 1.25f) v[1] = 1.06f;

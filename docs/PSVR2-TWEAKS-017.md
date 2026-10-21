@@ -42,7 +42,7 @@ physical/Steam XInput look contributions and pending snap rotation.
 ## Optional adaptive triggers / advanced haptics
 
 The supported bridge/launcher belongs to the external
-[PSVR2Toolkit v0.3.1 release](https://github.com/satyaloka93/PSVR2Toolkit/releases/tag/cyberpunk-dsx-bridge-v0.3.1), not the
+[PSVR2Toolkit v0.3.2 release](https://github.com/satyaloka93/PSVR2Toolkit/releases/tag/cyberpunk-dsx-bridge-v0.3.2), not the
 Cyberpunk game-root ZIP. Use the Toolkit's Cyberpunk **0.1.7** bridge build;
 do not substitute its older legacy shared-slot bridge. Its installer/driver
 steps are intentionally separate from switching the game mod.
@@ -60,6 +60,31 @@ Requirements installed separately:
 - No DSX app, bundled UDPClient, second bridge or other Sense actuator owner.
 - Disable the unnecessary Enhanced DualSense Support native launcher DLL if
   present. Never patch its advertised game version to bypass RED4ext validation.
+
+### In-game audio controls (published in v0.3.2)
+
+The updated Toolkit package separates `driver/` (optional one-time install)
+from `bridge/` (game setup and launch). Run `bridge/setup_cyberpunk017.cmd` once
+with the game closed. It explains and backs up the UDP/native-launcher changes
+and adds a small CET companion without replacing EDS's weapon profiles.
+
+Open the game's **Mods > DualSense settings > PSVR2 Haptics** for **Audio
+haptics** and **Audio haptics strength (%)**. No F10 settings are involved.
+Audio defaults OFF; the stored opt-in strength starts at35%. Changes persist
+and apply to the updated running bridge in about a second. OFF stops audio
+capture without disabling adaptive triggers, weapon recoil or VR melee pulses.
+Audio-derived road rumble stops too; this setting controls all audio feedback.
+The capture uses the default Windows output, including music/ambience and any
+other audio playing there. Try melee with audio OFF to avoid masking it.
+
+Existing compatible Toolkit drivers may be retained. The supplied driver is
+unchanged from v0.2.0/v0.3.1; the new installer detects identical copies, explains
+differences by hash, asks before replacement and supplies a rollback command.
+Stock Sony's driver alone does not expose the Toolkit CAPI used by the bridge.
+Fresh users must complete the [base Toolkit installation](https://github.com/BnuuySolutions/PSVR2Toolkit/wiki/Installation)
+first, retaining its supporting DLLs and original-driver backup. Our driver
+adds raw-trigger transport and clears stale grip-PCM attenuation; current
+bridge effects use standard CAPI modes. The audio menu requires no new driver.
 
 ## Release switcher
 
@@ -99,6 +124,13 @@ reusing upstream's input slots. Weapon/adaptive-trigger profile translation
 and audio-derived grip haptics remain available.
 
 ## Driving and riding
+
+The seated camera controls keep separate **Car Head** and **Bike Head** X/Y/Z
+offsets. The mounted vehicle's class selects which trio is applied; tuning the
+bike no longer moves the car. The old shared `xr_veh_head_offset_*` values are
+migrated to the bike offsets on first load (the prior local values were tuned
+for the bike), while the car starts at zero. New values persist as
+`xr_bike_head_offset_*` and `xr_veh_head_offset_*` in `vrport.ini`.
 
 The bridge mirrors the stereo audio's low-frequency road/engine rumble to both
 grip motors, while retaining the existing shared transient layer. The optional

@@ -1,11 +1,21 @@
 #include "Utils/DebugGate.hpp"
+#include "Render/RegisteredConstantUpload.hpp"
 #include "Render/SinglePassTrace.hpp"
+#include "Render/NativePreparation.hpp"
+#include "Runtimes/AsymmetricProjection.hpp"
 #include "Render/NativeGeometryPackets.hpp"
 #include "Render/StereoGpuProbe.hpp"
 #include "Render/StereoCameraInput.hpp"
 #include "Render/StereoShaderCamera.hpp"
 #include "Render/NativeStereoCameraUpload.hpp"
+#include "Render/NativeMaterialBinding.hpp"
+#include "Render/NativeSourceCbvBinding.hpp"
+#include "Render/NativeSourceSrvBinding.hpp"
+#include "Render/StereoDescriptorAudit.hpp"
 #include "Render/NativeStereoProbe.hpp"
+#include "Render/NativeEarlyDepth.hpp"
+#include "Render/NativePairedGeometry.hpp"
+#include "Render/StageReplay.hpp"
 // Grading -- colour grading and tonemapping, for two views instead of one.
 //
 // The constant-buffer upload, the grading compose and the tonemapping LUT generation. The engine
@@ -16,7 +26,9 @@
 
 #include "Stereo/SyncStereo.hpp"
 #include "Stereo/CascadeSampling.hpp"
+#include "Render/MonoCascades.hpp"
 #include "Stereo/FogHistory.hpp"
+#include "Render/SsrWideMerge.hpp"
 #include "Stereo/WorldMarkers.hpp"
 #include "Utils/StereoLog.hpp"
 #include "Stereo/VrcamConfig.hpp"   // vrcam.json access + CName hashing, shared with the launcher
@@ -47,6 +59,52 @@
 
 namespace cvr {
 namespace detail {
+extern "C" {
+__declspec(dllexport) int32_t CyberpunkVR_OpticsDataProbe=0;
+__declspec(dllexport) uint8_t CyberpunkVR_OpticsViewData[3][4096]{};
+__declspec(dllexport) uint8_t CyberpunkVR_OpticsGradeData[3][688]{};
+__declspec(dllexport) uint32_t CyberpunkVR_OpticsDataSeq[3]{};
+__declspec(dllexport) uint32_t CyberpunkVR_OpticsGradeSeq[3]{};
+__declspec(dllexport) int32_t CyberpunkVR_OpticsGradeMirror=1;
+__declspec(dllexport) int32_t CyberpunkVR_OpticsMaterialProbe=0;
+__declspec(dllexport) float CyberpunkVR_OpticsMaterialData[3][84]{};
+__declspec(dllexport) uint32_t CyberpunkVR_OpticsMaterialSize[3]{};
+__declspec(dllexport) uint32_t CyberpunkVR_OpticsMaterialSeq[3]{};
+__declspec(dllexport) float CyberpunkVR_OpticsShadowData[3][232]{};
+__declspec(dllexport) uint32_t CyberpunkVR_OpticsShadowSeq[3]{};
+}
+static int optics_data_side();
+static void optics_shadow_snapshot(uint32_t size,const void* source) {
+    if(!CyberpunkVR_OpticsDataProbe || !source || size!=928 ||
+       t_current_node_work!=reinterpret_cast<uintptr_t>(g_exe_base)+PREPARE_SCENE_NODE_WORK_RVA)return;
+    const int side=optics_data_side();if(side<0)return;
+    InterlockedIncrement(reinterpret_cast<volatile LONG*>(&CyberpunkVR_OpticsShadowSeq[side]));
+    cloud_cb_raw_copy(CyberpunkVR_OpticsShadowData[side],source,size);
+    InterlockedIncrement(reinterpret_cast<volatile LONG*>(&CyberpunkVR_OpticsShadowSeq[side]));
+}
+void optics_material_snapshot(uint32_t size,const void* source) {
+    if(!CyberpunkVR_OpticsMaterialProbe || !source || size<100 || size>1024)return;
+    float marker{};
+    if(!cloud_cb_raw_copy(&marker,static_cast<const uint8_t*>(source)+96,4))return;
+    const int kind=marker==-713.25f?0:marker==-714.25f?1:marker==-715.25f?2:-1;
+    if(kind<0)return;
+    InterlockedIncrement(reinterpret_cast<volatile LONG*>(&CyberpunkVR_OpticsMaterialSeq[kind]));
+    cloud_cb_raw_copy(CyberpunkVR_OpticsMaterialData[kind],source,std::min(size,336u));
+    CyberpunkVR_OpticsMaterialSize[kind]=size;
+    InterlockedIncrement(reinterpret_cast<volatile LONG*>(&CyberpunkVR_OpticsMaterialSeq[kind]));
+}
+static int optics_data_side() {
+    if(!t_active_view_known)return -1;
+    return t_active_view_key==0?0:t_active_view_key==g_vrcam_ctx_key?1:
+        t_active_view_key==cvr::cname_hash("vr_optics_feed")?2:-1;
+}
+static void optics_grade_snapshot(void* src) {
+    if(!CyberpunkVR_OpticsDataProbe)return;
+    const int side=optics_data_side();if(side<0)return;
+    InterlockedIncrement(reinterpret_cast<volatile LONG*>(&CyberpunkVR_OpticsGradeSeq[side]));
+    cloud_cb_raw_copy(CyberpunkVR_OpticsGradeData[side],src,688);
+    InterlockedIncrement(reinterpret_cast<volatile LONG*>(&CyberpunkVR_OpticsGradeSeq[side]));
+}
 
 // ================================================================================================
 // WHY CLOTH FLAGS STAND STILL IN THE SECOND EYE -- the second view's clock is zero.
@@ -89,7 +147,7 @@ namespace detail {
 // buffer: sub_1401F088C allocates, memcpys from the caller's pointer and commits (read in the
 // debugger before writing anything), so a temporary of ours is read once and engine state is not
 // touched at all. Taking MAIN's latest value is at worst one frame of phase -- 31 ms on a flag.
-// Verified live: the fill counter advances once per frame, and the user confirmed the flags wave.
+// Verified live: the fill counter advances once per frame, and the flags were confirmed to wave in the headset.
 //
 // TWO INSTRUMENTS PAID FOR THIS and are gone, both too expensive to ship: a per-(node, size, view)
 // census of 400/480-byte uploads, which is what named the producing node instead of guessing it, and a
@@ -173,7 +231,7 @@ namespace detail {
 // MODE 1, narrowed back to what was actually confirmed working on the cloth flags: MAIN's clock lent
 // to the second view. Mode 4 copies the whole block, camera position included, and was never verified
 // as necessary -- shipping the broader change on the strength of an unrelated hunt would be guessing.
-// Mode 4 at the user's request: the second view gets MAIN's whole frame-constants block. Worth
+// Mode 4 on request: the second view gets MAIN's whole frame-constants block. Worth
 // knowing which lever is which -- the cable's shadow stopped differing in the same build where this
 // went the other way, from 4 to 1 with the mask narrowed, so if it comes back this is the knob.
 extern "C" __declspec(dllexport) int32_t  CyberpunkVR_SwayTimeFix = 4;
@@ -251,8 +309,8 @@ extern "C" __declspec(dllexport) const char* CyberpunkVR_ProfNodeName(uint32_t r
 // evaluated half in one eye and in the reconstructed half in the other; and because px = (x << 1) | parity,
 // the sample it does get is a full-res pixel to the left in one eye and to the right in the other. That is
 // a one-pixel horizontal disagreement, worst where a shadow is one or two pixels wide and worse with
-// distance -- which is the reported symptom in the user's own words ("тени идут просто со сдвигом... чуть
-// дальше тонкая часть тени в разных глазах по разному"), and why grass and cables differ while a building's
+// distance -- which is the reported symptom (shadows simply shifted... a little
+// farther out the thin part of a shadow differs between the eyes), and why grass and cables differ while a building's
 // shadow does not.
 //
 // NO CONSTANT CAN EQUALISE THAT. Half of the full-res pixels are never evaluated by either eye, and which
@@ -1353,7 +1411,7 @@ void wide_report() {
 //
 // Volumetric fog is a coarse 3D grid whose blockiness is hidden by jittering it per frame and accumulating
 // over time. The two eyes jitter with different offsets and sit at different points of the sequence -- 592
-// against 78 -- so they accumulate different fog. That is what the user sees as sun shafts displaced in
+// against 78 -- so they accumulate different fog. That is what shows as sun shafts displaced in
 // opposite directions and a whole block of light present in one eye and absent in the other, and why it
 // reads as the same class of artefact as the grass without being the shadow map at all.
 //
@@ -1378,6 +1436,8 @@ void wide_report() {
 // camera position matches the world position the player view carries, and a basis that is not axis-aligned.
 // Until the probe can separate the instances, nothing measured here about per-view fog jitter is established.
 extern "C" __declspec(dllexport) int32_t  CyberpunkVR_FogJitterFix = 0;
+// Gated: the player view's 384-byte volumetric-fog block, per side (MAIN, VRCAM), as last uploaded.
+extern "C" __declspec(dllexport) float CyberpunkVR_FogBlockDump[2][96] = {};
 extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugFogJitterFixes = 0;
 
 namespace {
@@ -1428,7 +1488,18 @@ bool fog_block_is_player_view(const void* src) {
     return false;
 }
 
+void fog_block_dump(uint32_t size, const void* src) {
+    if (size != kFogBlockBytes || !src || !g_exe_base || !cvr::RuntimeDiagnosticsEnabled() ||
+        (t_view_side != 0 && t_view_side != 1)) return;
+    const uintptr_t base = reinterpret_cast<uintptr_t>(g_exe_base);
+    if (t_current_node_work <= base || static_cast<uint32_t>(t_current_node_work - base) != VOLUMETRIC_FOG_NODE_RVA) return;
+    if (!fog_block_is_player_view(src)) return;
+    __try { memcpy(CyberpunkVR_FogBlockDump[t_view_side], src, kFogBlockBytes); }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
 bool fog_block_here(uint32_t size, const void* src) {
+    fog_block_dump(size, src);
     if (!CyberpunkVR_FogJitterFix || size != kFogBlockBytes || !src || !g_exe_base) return false;
     const uintptr_t base = reinterpret_cast<uintptr_t>(g_exe_base);
     if (t_current_node_work <= base ||
@@ -1452,7 +1523,7 @@ bool fog_block_here(uint32_t size, const void* src) {
 // RenderScreenSpaceWaterDepth -- i.e. it is one shared field of that block, not a per-pass quantity -- and
 // they advance every frame. That is the shape of a projection JITTER: the sub-pixel offset an engine adds per
 // frame so a temporal filter can accumulate. Two eyes on different jitter sequences accumulate different
-// results, and the passes carrying it are exactly the ones that draw the blocky sun shafts the user reports as
+// results, and the passes carrying it are exactly the ones that draw the blocky sun shafts reported as
 // displaced in opposite directions.
 //
 // WHAT IS NOT CLAIMED. The field is not identified. The 1:-2 ratio between the views is one instant's sample,
@@ -1743,6 +1814,7 @@ void cascs_capture(const void* src, int slot) {
     __except (EXCEPTION_EXECUTE_HANDLER) { return; }
     memcpy(g_cascs_slot[slot], mat, sizeof(mat));
     memcpy(g_cascs_slot_all[slot], all, kCascSampleBytes);
+    if(slot==0 && t_view_side==1)cvr::cascades::SourceSampling(mat,unsigned(cvr::stereo::ActiveCascadeMatrices(mat)));
     if (slot + 1 > g_cascs_have_n) g_cascs_have_n = slot + 1;
     // How far this view's own slots sit from each other -- the number that says whether pairing mattered.
     if (slot > 0) {
@@ -1784,6 +1856,7 @@ bool cascs_apply(const void* src, void* dst, int slot) {
                sizeof(g_cascs_slot[slot]));
     }
     CVR_DIAGNOSTIC(InterlockedIncrement64(reinterpret_cast<volatile LONG64*>(&CyberpunkVR_DebugCascSampleLends)));
+    if(t_view_side==0)cvr::cascades::MainSampling(reinterpret_cast<const float*>(static_cast<const uint8_t*>(dst)+kCascMatFloat*4),unsigned(cvr::stereo::ActiveCascadeMatrices(g_cascs_slot[slot])));
     if (g_cascs_said.exchange(1) == 0) cascs_report(true);
     return true;
 }
@@ -1791,7 +1864,7 @@ bool cascs_apply(const void* src, void* dst, int slot) {
 
 // ---- ONE CASCADE CAMERA FOR BOTH VIEWS, which is where the evidence ended up pointing -------------
 //
-// The user's reading is what settles the direction, and it is worth more than the three lends before it:
+// The reading in the headset is what settles the direction, and it is worth more than the three lends before it:
 // lending only the SAMPLING matrix reproduces the bit-50 artefact "1 в 1". Bit 50 makes a view emit no cascade
 // passes at all, so it samples an atlas somebody else rasterised. Handing MAIN a foreign sampling matrix looks
 // identical to that, so whatever draws the atlas is aligned with MAIN and not with the second view -- and the
@@ -1848,6 +1921,7 @@ void cascr_capture(const void* src, int idx) {
     __try { memcpy(all, src, kCamBlockBytes); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return; }
     memcpy(g_cascr[idx], all, kCamBlockBytes);
+    cvr::cascades::Camera(unsigned(idx),all,kCamBlockBytes,true);
     g_cascr_have[idx] = true;
 }
 
@@ -1869,6 +1943,7 @@ bool cascr_apply(const void* src, void* dst, int idx) {
     if (dmax > g_cascr_dmax[idx]) g_cascr_dmax[idx] = dmax;
     ++g_cascr_pairs;
     memcpy(dst, g_cascr[idx], kCamBlockBytes);
+    cvr::cascades::Camera(unsigned(idx),dst,kCamBlockBytes,false);
     CVR_DIAGNOSTIC(InterlockedIncrement64(reinterpret_cast<volatile LONG64*>(&CyberpunkVR_DebugCascRenderLends)));
     if (g_cascr_said.exchange(1) == 0) cascr_report(true);
     return true;
@@ -1963,18 +2038,39 @@ static bool ReadSinglePassProbe(uintptr_t address,void* out,size_t size) {
     SIZE_T bytes{};
     return address && ReadProcessMemory(GetCurrentProcess(),reinterpret_cast<const void*>(address),out,size,&bytes) && bytes==size;
 }
-static void PredictMainCameraInput(cvr::stereo::trace::Record& row) {
-    if(row.side!=1 || row.node!=0x23A938 || !row.inputValid)return;
-    const auto main=g_main_view_ctx.load(std::memory_order_acquire);
+static void PredictPeerCameraInput(cvr::stereo::trace::Record& row) {
+    if(row.node!=0x23A938 || !row.inputValid)return;
+    const bool paired=(CyberpunkVR_PreparationCameraTrace.load() || cvr::stereo::early_depth::NeedsCamera()) && cvr::stereo::preparation::Pairing() &&
+        CyberpunkVR_PreparationPairState.load()==2;
+    if(paired ? row.side!=0 : row.side!=1)return;
+    row.predictionPeerSide=paired?1u:0u;
+    const auto peer=paired?CyberpunkVR_PreparationPairData[3]:g_main_view_ctx.load(std::memory_order_acquire);
     const auto base=reinterpret_cast<uintptr_t>(g_exe_base);
-    if(!main || !base || main==row.view){row.reserved=1;return;}
+    if(!peer || !base || peer==row.view || (paired && row.view!=CyberpunkVR_PreparationPairData[4])){row.reserved=1;return;}
+    if(paired){
+        cvr::stereo::CameraInput current,previous,check;
+        cvr::stereo::ShaderCameraHistory history,historyCheck;
+        float weight{};
+        if(!ReadSinglePassProbe(peer+0x70,current.bytes.data(),current.bytes.size()) ||
+            !ReadSinglePassProbe(peer+0xEF0,history.bytes.data(),history.bytes.size()) ||
+            !ReadSinglePassProbe(peer+0x70,check.bytes.data(),check.bytes.size()) || check.bytes!=current.bytes ||
+            !ReadSinglePassProbe(peer+0xEF0,historyCheck.bytes.data(),historyCheck.bytes.size()) || historyCheck.bytes!=history.bytes){row.reserved=13;return;}
+        if(current.Read<uint32_t>(0x378)!=row.width || current.Read<uint32_t>(0x37C)!=row.height ||
+            std::memcmp(current.bytes.data()+0x20,row.input.data()+0x20,0x28)){row.reserved=14;return;}
+        if(!cvr::stereo::DecodeShaderCameraHistory(current,history,previous,weight)){row.reserved=15;return;}
+        const auto inverse=reinterpret_cast<cvr::stereo::InvertShaderMatrix>(base+0x1E3EE8);
+        if(!cvr::stereo::BuildPeerShaderCamera(row.camera,current,previous,weight,inverse,row.shaderPrediction)){row.reserved=16;return;}
+        row.prediction=current.bytes;row.previousInput=previous.bytes;row.predictionCounter=current.Read<uint32_t>(0x380);
+        row.predictionValid=row.previousInputValid=row.shaderPredictionValid=1;
+        row.validShaderWords=cvr::stereo::CameraWordMask::All();row.reserved=12;return;
+    }
     uint64_t flags{};uint32_t size[2]{},counter{};uint8_t halton[3]{};
-    // MAIN's derived flags are cleared before VRCAM geometry and rebuilt later.
-    // The source view is already prepared here; MAIN still owns its size/counter.
+    // The first view is prepared. The peer owns its pose, temporal counter and
+    // history; none of these may be substituted with the first view's data.
     if(!ReadSinglePassProbe(row.view+0x17D8,&flags,sizeof(flags)) ||
-       !ReadSinglePassProbe(main+0x34,size,sizeof(size)) ||
-       !ReadSinglePassProbe(main+0x1660,&counter,sizeof(counter)) ||
-       !ReadSinglePassProbe(main+0x1E20,row.peerSourcePose.data(),row.peerSourcePose.size()) ||
+       !ReadSinglePassProbe(peer+0x34,size,sizeof(size)) ||
+       !ReadSinglePassProbe(peer+0x1660,&counter,sizeof(counter)) ||
+       !ReadSinglePassProbe(peer+0x1E20,row.peerSourcePose.data(),row.peerSourcePose.size()) ||
        !ReadSinglePassProbe(base+0x330FB48,&halton[0],1) ||
        !ReadSinglePassProbe(base+0x330FB80,&halton[1],1) ||
        !ReadSinglePassProbe(base+0x330FBB8,&halton[2],1)){row.reserved=2;return;}
@@ -1988,24 +2084,29 @@ static void PredictMainCameraInput(cvr::stereo::trace::Record& row) {
     auto rebuild=reinterpret_cast<cvr::stereo::RebuildCameraInput>(base+0x1E412C);
     struct Guarded { std::array<uint8_t,32> before; cvr::stereo::CameraInput camera; std::array<uint8_t,32> after; } local{};
     local.before.fill(0xA5);local.after.fill(0xA5);
-    if(!cvr::stereo::PrepareCameraAtPose(row.input.data(),row.peerSourcePose.data(),jitter,size[0],size[1],rebuild,local.camera)){row.reserved=5;return;}
+    // The peer's own window under the asymmetric projection (its input block, as the view producer left it).
+    cvr::stereo::PeerProjection peerProjection{};
+    const bool ownProjection=cvr::projection::Active() &&
+        ReadSinglePassProbe(peer+0x1E48,&peerProjection.aspect,4) && ReadSinglePassProbe(peer+0x1E50,&peerProjection.shiftX,8);
+    if(!cvr::stereo::PrepareCameraAtPose(row.input.data(),row.peerSourcePose.data(),jitter,size[0],size[1],rebuild,local.camera,
+        ownProjection?&peerProjection:nullptr)){row.reserved=5;return;}
     for(auto b:local.before)if(b!=0xA5){row.reserved=6;return;}
     for(auto b:local.after)if(b!=0xA5){row.reserved=6;return;}
     row.prediction=local.camera.bytes;row.predictionCounter=counter;row.predictionValid=1;
     cvr::stereo::CameraInput previous;
     uint8_t historyValid{};
-    if(!ReadSinglePassProbe(main+0x70,previous.bytes.data(),previous.bytes.size()) ||
-       !ReadSinglePassProbe(main+0xEF0,&historyValid,sizeof(historyValid))){row.reserved=7;return;}
+    if(!ReadSinglePassProbe(peer+0x70,previous.bytes.data(),previous.bytes.size()) ||
+       !ReadSinglePassProbe(peer+0xEF0,&historyValid,sizeof(historyValid))){row.reserved=7;return;}
     row.previousInput=previous.bytes;row.previousInputValid=1;
     if(!historyValid){row.reserved=8;return;}
     const auto inverse=reinterpret_cast<cvr::stereo::InvertShaderMatrix>(base+0x1E3EE8);
     if(cvr::stereo::BuildPeerShaderCamera(row.camera,local.camera,previous,0.0f,inverse,row.shaderPrediction)) {
-        // MAIN's history weight uses a later per-view frame delta. It is unknown
+        // The peer's history weight uses a later per-view frame delta. It is unknown
         // here. Only shaders whose proven read mask excludes it are eligible.
         row.validShaderWords=cvr::stereo::CameraWordMask::All();row.validShaderWords.Exclude(147);
         const uint32_t unavailable=0x7FC00000;std::memcpy(row.shaderPrediction.data()+588,&unavailable,4);
         row.shaderPredictionValid=1;row.reserved=11;
-        if(row.index!=UINT32_MAX && CyberpunkVR_SinglePassTwinUpload.load(std::memory_order_relaxed)) {
+        if(!paired && row.index!=UINT32_MAX && CyberpunkVR_SinglePassTwinUpload.load(std::memory_order_relaxed)) {
             const auto uploaded=cvr::stereo::camera_upload::Prepare(base,row.index,row.camera,row.shaderPrediction);
             row.twinCpuDescriptor=uploaded.cpuDescriptor;row.twinGpuAddress=uploaded.gpuAddress;row.twinBytes=uploaded.bytes;
         }
@@ -2014,27 +2115,368 @@ static void PredictMainCameraInput(cvr::stereo::trace::Record& row) {
 
 // Observe the bytes actually forwarded, after any existing stereo corrections.
 static void TraceCameraUpload(uint32_t index,uint32_t size,const void* src) {
-    if(size!=848 || CyberpunkVR_SinglePassTraceState.load(std::memory_order_relaxed)!=1)return;
+    if(size!=848)return;
+    const bool early=cvr::stereo::early_depth::NeedsCamera();
+    const bool pairedGeometry=cvr::stereo::paired_geometry::NeedsCamera();
+    if(!early && !pairedGeometry && CyberpunkVR_SinglePassTraceState.load(std::memory_order_relaxed)!=1)return;
     const auto base=reinterpret_cast<uintptr_t>(g_exe_base);
     const auto node=base && t_current_node_work>base?static_cast<uint32_t>(t_current_node_work-base):0;
-    cvr::stereo::trace::Camera(node,t_view_side,index,src,&PredictMainCameraInput);
+    cvr::stereo::trace::Camera(node,t_view_side,index,src,&PredictPeerCameraInput);
+    if(early){cvr::stereo::trace::Record row;row.node=node;row.side=t_view_side;row.index=index;
+        std::memcpy(row.camera.data(),src,row.camera.size());cvr::stereo::trace::CaptureNativeInputs(row);
+        if(row.inputValid)PredictPeerCameraInput(row);cvr::stereo::early_depth::Camera(row);}
+    if(pairedGeometry){cvr::stereo::trace::Record row;row.node=node;row.side=t_view_side;row.index=index;
+        std::memcpy(row.camera.data(),src,row.camera.size());cvr::stereo::trace::CaptureNativeInputs(row);
+        cvr::stereo::paired_geometry::Camera(row);}
+}
+// THE ENGINE'S HUD WARP, OFF UNDER THE ASYMMETRIC PROJECTION. The HUD composite bends the HUD about
+// each image's own centre (b6 r3.xy: x moves by cy^2*cx*k.x, y by 2*cx^2*cy*k.y, cx/cy from the centre).
+// The eyes' windows are mirror images, so one world point sits at another column in each eye and the
+// bend moves it by a different amount -- vertically too, which the eyes cannot fuse. Measured on the
+// NPC quest marker (1920x946 capture, k = 0.084242): MAIN at cx -0.21, the second view at cx +0.05,
+// MAIN 6 px higher near the top and 2 px lower at 62 % height, the warp's own numbers to 0.4 px.
+// Zero in both views keeps each in-eye marker on its point. The HUD panel keeps the engine's bend:
+// its composite takes the values kept here (HudPanel.cpp).
+extern "C" __declspec(dllexport) int32_t CyberpunkVR_HudFlatInEye = 1;
+extern "C" __declspec(dllexport) std::atomic<uint64_t> CyberpunkVR_HudFlatInEyeBlocks{0};
+extern "C" float CyberpunkVR_HudEngineCurvature[2];
+static bool FlattenHudComposite(uint32_t size,const void* src,uint8_t* out) {
+    if(size!=512 || !src || !CyberpunkVR_HudFlatInEye || !cvr::projection::Active()) return false;
+    const float* r=static_cast<const float*>(src);
+    const float w=r[16*4+2],h=r[16*4+3];
+    if(!(w>=64.0f && w<=16384.0f && h>=64.0f && h<=16384.0f)) return false;
+    if(!hud_cb_block_plausible(static_cast<const uint8_t*>(src),w,h)) return false;
+    std::memcpy(out,src,size);
+    float* o=reinterpret_cast<float*>(out);
+    CyberpunkVR_HudEngineCurvature[0]=o[3*4+0];CyberpunkVR_HudEngineCurvature[1]=o[3*4+1];
+    o[3*4+0]=0.0f;o[3*4+1]=0.0f;
+    CVR_DIAGNOSTIC(CyberpunkVR_HudFlatInEyeBlocks.fetch_add(1,std::memory_order_relaxed));
+    return true;
 }
 static int64_t ForwardBufUpload(uint32_t idx,uint32_t size,void* src) {
+    optics_shadow_snapshot(size,src);
+    optics_material_snapshot(size,src);
+    cvr::stereo::constants::RegisteredUploadScope constantScope(idx,size,src);
     if(size==848 || size==1584)cvr::stereo::ObserveFogConstants(size,src);
     TraceCameraUpload(idx,size,src);
-    return g_orig_buf_upload(idx,size,src);
+    cvr::stereo::source_cbv::UploadWriterScope writer(idx,size);
+    const auto result=g_orig_buf_upload(idx,size,src);
+    writer.CompleteNormalReturn();
+    return result;
 }
 static __int64 ForwardCbUpload(unsigned int size,void* src) {
+    optics_shadow_snapshot(size,src);
+    optics_material_snapshot(size,src);
     if(size==848 || size==1584)cvr::stereo::ObserveFogConstants(size,src);
     TraceCameraUpload(UINT32_MAX,size,src);
     return g_orig_cb_upload(size,src);
 }
 
+// THE CONE AO'S PROJECTION CENTRE, written into its own block. The cone AO (node DrawConeAO) rebuilds view
+// positions with its block's symmetric tangents, and nothing else it binds knows the asymmetric projection's
+// NDC shift, so its twins (Render/HiddenAreaShaders.cpp, tools/asym_tests/asym_ao_shaders.py) read this view's
+// centre from the block itself. The block is 208 bytes (13 rows; measured as the node's only upload, on the
+// buffer path) and ends in padding -- 12.z holds stale memory such as 1e25, different per view -- so the
+// centre goes there: 12.z = x | y << 16 in signed 1/16384 units (the pixel's NDC, y from the top, so
+// shift.x and -shift.y), 12.w = kAoCentreTag. The twins use it only when the tag is there and otherwise
+// compute what the engine's shaders do; it is written only while those twins are loaded (the same game
+// build) and CyberpunkVR_AsymAoPatch is on, which also switches the correction in the hidden-area twin.
+// CyberpunkVR_DebugAsymAoUploads says what the node uploads: [i] = size (| 0x80000000 on the constant
+// uploader), [8 + i] = count.
+extern "C" __declspec(dllexport) uint32_t CyberpunkVR_AsymAoBlockSize = 208;
+extern "C" __declspec(dllexport) uint32_t CyberpunkVR_DebugAsymAoUploads[16] = {};
+extern "C" __declspec(dllexport) float CyberpunkVR_DebugAsymAoBlock[2][64] = {};   // last engine block per view
+extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugAsymAoPatched[3] = {};  // MAIN, second view, neither
+extern "C" std::atomic<uint32_t> CyberpunkVR_AsymAoPatch;         // Render/HiddenAreaShaders.cpp
+extern "C" std::atomic<uint32_t> CyberpunkVR_AsymAoPatchLoaded;
+namespace {
+constexpr uint32_t kAoCentreRow = 12;
+constexpr uint32_t kAoCentreTag = 0x41734331u;   // asym_ao_shaders.py MAGIC
+constexpr uint32_t kAoBlockMax = 1024;
+bool ao_node_now() {
+    if (!g_exe_base) return false;
+    const uintptr_t base = reinterpret_cast<uintptr_t>(g_exe_base);
+    return t_current_node_work > base && t_current_node_work - base == CONE_AO_NODE_RVA;
+}
+void ao_upload_note(uint32_t size, bool cbPath, const void* src) {
+    const uint32_t key = size | (cbPath ? 0x80000000u : 0u);
+    for (uint32_t i = 0; i < 8; ++i) {
+        if (CyberpunkVR_DebugAsymAoUploads[i] == key) { ++CyberpunkVR_DebugAsymAoUploads[8 + i]; break; }
+        if (!CyberpunkVR_DebugAsymAoUploads[i]) {
+            CyberpunkVR_DebugAsymAoUploads[i] = key; CyberpunkVR_DebugAsymAoUploads[8 + i] = 1; break;
+        }
+    }
+    if (src && (t_view_side == 0 || t_view_side == 1) && size == CyberpunkVR_AsymAoBlockSize) {
+        __try { memcpy(CyberpunkVR_DebugAsymAoBlock[t_view_side], src, size < 256 ? size : 256); }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+}
+uint32_t ao_fixed(float v) {
+    float q = std::round(v * 16384.0f);
+    q = q < -32768.0f ? -32768.0f : (q > 32767.0f ? 32767.0f : q);
+    return static_cast<uint16_t>(static_cast<int16_t>(q));
+}
+// True with the block to ship in `out`.
+bool ao_centre_write(uint32_t size, const void* src, uint8_t* out) {
+    const uint32_t want = CyberpunkVR_AsymAoBlockSize;
+    if (!want || size != want || size > kAoBlockMax || size < (kAoCentreRow + 1) * 16 || !src) return false;
+    if (!CyberpunkVR_AsymAoPatch.load(std::memory_order_relaxed) ||
+            !CyberpunkVR_AsymAoPatchLoaded.load(std::memory_order_relaxed)) return false;
+    float c[2] = {0.0f, 0.0f};
+    cvr::projection::ViewWindow w{};
+    if ((t_view_side == 0 || t_view_side == 1) && cvr::projection::ViewWindowOf(t_view_side, &w) &&
+            std::isfinite(w.shiftX) && std::isfinite(w.shiftY)) {
+        c[0] = w.shiftX; c[1] = -w.shiftY;
+    }
+    __try { memcpy(out, src, size); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    const uint32_t packed = ao_fixed(c[0]) | (ao_fixed(c[1]) << 16);
+    memcpy(out + kAoCentreRow * 16 + 8, &packed, sizeof(packed));
+    memcpy(out + kAoCentreRow * 16 + 12, &kAoCentreTag, sizeof(kAoCentreTag));
+    ++CyberpunkVR_DebugAsymAoPatched[(t_view_side == 0 || t_view_side == 1) ? t_view_side : 2];
+    return true;
+}
+}  // namespace
+
+// THE AUTO-EXPOSURE'S VIEW CENTRE, written into its luminance image's block (node HistogramUpdate). The
+// meter samples the scene through a magnifier centred on the middle of the screen; the twins in asym_expo\
+// (tools/asym_tests/asym_expo_shaders.py) centre it on the view instead, which is what makes both eyes meter
+// the same region around the head's view. They read the centre from row 1.zw of the 24-byte block: z = x | y
+// << 16 in signed 1/16384 units (the view's NDC, y down, as for the cone AO), w = kExpoCentreTag. The block
+// ends at row 1.y, so on the constant uploader (256-byte slots) the upload grows to 32 bytes; a block that
+// arrives on the buffer uploader is left alone. CyberpunkVR_DebugExpoUploads says what the node uploads:
+// [i] = size (| 0x80000000 on the constant uploader), [8 + i] = count; CyberpunkVR_DebugExpoCentred counts
+// the blocks written for MAIN, the second view and neither.
+extern "C" __declspec(dllexport) uint32_t CyberpunkVR_ExpoCentreBlockSize = 24;
+extern "C" __declspec(dllexport) uint32_t CyberpunkVR_DebugExpoUploads[16] = {};
+extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugExpoCentred[3] = {};
+// The node's last blocks as uploaded by the engine, per view: [side][0] the luminance image's 24 bytes,
+// [1] the 28-byte blocks (last of them), [2] the adaptation's 56 bytes. 16 floats each.
+extern "C" __declspec(dllexport) float CyberpunkVR_DebugExpoBlocks[2][3][16] = {};
+extern "C" std::atomic<uint32_t> CyberpunkVR_ExposureCentre;          // Render/HiddenAreaShaders.cpp
+extern "C" std::atomic<uint32_t> CyberpunkVR_ExposureCentreLoaded;
+namespace {
+constexpr uint32_t kExpoCentreTag = 0x41734531u;   // asym_expo_shaders.py MAGIC
+constexpr uint32_t kExpoBlockMax = 256;
+bool expo_node_now() {
+    if (!g_exe_base) return false;
+    const uintptr_t base = reinterpret_cast<uintptr_t>(g_exe_base);
+    return t_current_node_work > base && t_current_node_work - base == HISTOGRAM_UPDATE_NODE_RVA;
+}
+void expo_upload_note(uint32_t size, bool cbPath, const void* src) {
+    const int slot = size == 24 ? 0 : (size == 28 ? 1 : (size == 56 ? 2 : -1));
+    if (src && slot >= 0 && (t_view_side == 0 || t_view_side == 1)) {
+        __try { memcpy(CyberpunkVR_DebugExpoBlocks[t_view_side][slot], src, size); }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+    const uint32_t key = size | (cbPath ? 0x80000000u : 0u);
+    for (uint32_t i = 0; i < 8; ++i) {
+        if (CyberpunkVR_DebugExpoUploads[i] == key) { ++CyberpunkVR_DebugExpoUploads[8 + i]; break; }
+        if (!CyberpunkVR_DebugExpoUploads[i]) {
+            CyberpunkVR_DebugExpoUploads[i] = key; CyberpunkVR_DebugExpoUploads[8 + i] = 1; break;
+        }
+    }
+}
+// True with the block to ship in `out` and its size in `ship`.
+bool expo_centre_write(uint32_t size, const void* src, bool cbPath, uint8_t* out, uint32_t* ship) {
+    if (!src || size != CyberpunkVR_ExpoCentreBlockSize || size < 24 || size > kExpoBlockMax) return false;
+    if (size < 32 && !cbPath) return false;
+    if (!CyberpunkVR_ExposureCentre.load(std::memory_order_relaxed) ||
+            !CyberpunkVR_ExposureCentreLoaded.load(std::memory_order_relaxed)) return false;
+    float c[2] = {0.0f, 0.0f};
+    cvr::projection::ViewWindow w{};
+    if ((t_view_side == 0 || t_view_side == 1) && cvr::projection::ViewWindowOf(t_view_side, &w) &&
+            std::isfinite(w.shiftX) && std::isfinite(w.shiftY)) {
+        c[0] = w.shiftX; c[1] = -w.shiftY;
+    }
+    *ship = size < 32 ? 32 : size;
+    memset(out, 0, *ship);
+    __try { memcpy(out, src, size); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    const uint32_t packed = ao_fixed(c[0]) | (ao_fixed(c[1]) << 16);
+    memcpy(out + 24, &packed, sizeof(packed));
+    memcpy(out + 28, &kExpoCentreTag, sizeof(kExpoCentreTag));
+    ++CyberpunkVR_DebugExpoCentred[(t_view_side == 0 || t_view_side == 1) ? t_view_side : 2];
+    return true;
+}
+}  // namespace
+
+// THE AUTO-EXPOSURE'S ENVIRONMENT METER (tools/asym_tests/asym_expo_shaders.py has the reasoning): the light of
+// every direction the meter has seen, kept in cells around the player (u16), and the exposure set for the
+// light reaching the eye from the hemisphere in front of it, not for the picture. Two blocks of the node:
+//  - the luminance image's (df89, after the centre write) grown to 96: row 2 MAIN's lens window (l, r, d, u
+//    tangents), rows 3-5 the camera's world right / up / forward, row 3.w kExpoAccTag -- its samples add their
+//    light to the cells of their directions;
+//  - the adaptation's 56-byte block (b059) grown to 112 (row 6.x the level offset's rate, see
+//    CyberpunkVR_ExposureLevelTime): row 3.z kExpoEnvTag, row 3.w dt over the surprise
+//    fade's time, row 4 the view's world forward and the cells' write rate, row 5 the confidence fade (time and
+//    the player's movement), the view's own part (gain, limit in natural log) and the mode (low byte; bits
+//    8-15 the lean towards the view's hemisphere, CyberpunkVR_ExposureHemisphere * 255).
+// MAIN alone meters (the second view takes MAIN's exposure, xr_expo_mirror) and has the cells bound; every other
+// view's grown blocks carry zeros -- written either way, so a constant slot never keeps a tag from an earlier
+// upload.
+extern "C" __declspec(dllexport) std::atomic<uint32_t> CyberpunkVR_ExposureMemory{1};
+// 0 = the environment; diagnostics: 1 = the meter's own reading (the cells still learn), 2 = without the view's own part.
+extern "C" __declspec(dllexport) uint32_t CyberpunkVR_ExposureMemoryMode = 0;
+extern "C" __declspec(dllexport) float CyberpunkVR_ExposureMemoryWrite = 0.25f;     // s: a cell in view takes the reading
+// A still world does not change for not being looked at: what is remembered fades with the player's movement and
+// with a light the view finds changed, time alone only as a safety (20 s made the place collapse to wherever the
+// head rested: +24 % over 28 s looking under the overpass, measured 2026-10-16).
+extern "C" __declspec(dllexport) float CyberpunkVR_ExposureMemoryAge = 600.0f;      // s: a cell out of view fades...
+extern "C" __declspec(dllexport) float CyberpunkVR_ExposureMemoryDistance = 4.0f;   // m: ...and per this many metres moved
+extern "C" __declspec(dllexport) float CyberpunkVR_ExposureMemorySurprise = 0.5f;   // s: ...and while the view reads a new light
+// s: the engine's meter against the cells' plain mean on the same samples, smoothed this slowly (the level offset).
+extern "C" __declspec(dllexport) float CyberpunkVR_ExposureLevelTime = 8.0f;
+// 0 = the sphere's mean light (the place); 1 = the view's cosine-weighted hemisphere (the light reaching the eye,
+// which under an overpass moves more with a head turn than the engine's meter does).
+extern "C" __declspec(dllexport) float CyberpunkVR_ExposureHemisphere = 0.0f;
+extern "C" __declspec(dllexport) float CyberpunkVR_ExposureGazeGain = 0.15f;        // the view's own difference taken...
+extern "C" __declspec(dllexport) float CyberpunkVR_ExposureGazeLimit = 0.3f;        // ...up to this many EV
+// [0] MAIN adaptation blocks tagged, [1] other adaptation blocks grown untagged, [2] adaptation blocks on the
+// buffer uploader (left alone), [3] the binder refused the cells, [4] cells not allocated, [5] camera
+// unreadable, [6] resets (start, a pause, a jump), [7] MAIN luminance-image blocks tagged.
+extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugExpoEnv[8] = {};
+// The last MAIN block: forward xyz, write rate, fade, metres moved, dt (s).
+extern "C" __declspec(dllexport) float CyberpunkVR_DebugExpoEnvParams[8] = {};
+namespace {
+constexpr uint32_t kExpoEnvTag = 0x41734532u;   // asym_expo_shaders.py ENV_MAGIC
+constexpr uint32_t kExpoAccTag = 0x41734533u;   // asym_expo_shaders.py ENV_ACC_MAGIC
+constexpr uint32_t kExpoAdaptBytes = 56, kExpoAdaptEnvBytes = 112, kExpoEnvBytes = 96;
+struct ExpoEnvClock { LARGE_INTEGER last{}; float position[3]{}; bool have = false; } g_expo_env;
+// The view's CameraInput (+0x70): position in 1/131072 units, orientation quaternion (x, y, z, w) at +16; the
+// camera's right, forward and up are its +X, +Y and +Z.
+bool expo_env_camera(uintptr_t view, float position[3], float forward[3], float right[3] = nullptr, float up[3] = nullptr) {
+    if (!view) return false;
+    int32_t fixed[3]{};
+    float q[4]{};
+    __try {
+        memcpy(fixed, reinterpret_cast<const void*>(view + 0x70), sizeof(fixed));
+        memcpy(q, reinterpret_cast<const void*>(view + 0x70 + 16), sizeof(q));
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    float norm = 0.0f;
+    for (float v : q) { if (!std::isfinite(v)) return false; norm += v * v; }
+    if (norm < 0.98f || norm > 1.02f) return false;
+    for (int i = 0; i < 3; ++i) position[i] = float(double(fixed[i]) / 131072.0);
+    // q v q^-1 for the camera's axes.
+    const float x = q[0], y = q[1], z = q[2], w = q[3];
+    forward[0] = 2.0f * (x * y - w * z);
+    forward[1] = 1.0f - 2.0f * (x * x + z * z);
+    forward[2] = 2.0f * (y * z + w * x);
+    if (right) {
+        right[0] = 1.0f - 2.0f * (y * y + z * z);
+        right[1] = 2.0f * (x * y + w * z);
+        right[2] = 2.0f * (x * z - w * y);
+    }
+    if (up) {
+        up[0] = 2.0f * (x * z + w * y);
+        up[1] = 2.0f * (y * z - w * x);
+        up[2] = 1.0f - 2.0f * (x * x + y * y);
+    }
+    return true;
+}
+// The luminance image's block after expo_centre_write (32 bytes in `out`) grown to 96 with its samples' frame:
+// MAIN's lens window and camera basis and kExpoAccTag on MAIN with the cells bound, zeros elsewhere.
+void expo_acc_extend(uint8_t* out, uint32_t* ship) {
+    if (*ship > 32) return;
+    memset(out + *ship, 0, kExpoEnvBytes - *ship);
+    *ship = kExpoEnvBytes;
+    if (t_view_side != 0 || !CyberpunkVR_ExposureMemory.load(std::memory_order_relaxed)) return;
+    cvr::projection::ViewWindow w{};
+    float position[3]{}, axes[3][3]{};
+    if (!cvr::projection::ViewWindowOf(0, &w) ||
+            !expo_env_camera(t_current_node_view, position, axes[2], axes[0], axes[1])) { ++CyberpunkVR_DebugExpoEnv[5]; return; }
+    if (!cvr::ssr_merge::BindExposureCells(0, CyberpunkVR_DebugExpoEnv)) return;
+    // shift = -centre / half span, in tangents
+    const float cx = -w.shiftX * w.halfX, cy = -w.shiftY * w.halfY;
+    const float window[4] = {cx - w.halfX, cx + w.halfX, cy - w.halfY, cy + w.halfY};
+    memcpy(out + 32, window, sizeof(window));
+    for (int k = 0; k < 3; ++k) memcpy(out + 48 + 16 * k, axes[k], sizeof(axes[k]));
+    memcpy(out + 60, &kExpoAccTag, sizeof(kExpoAccTag));
+    ++CyberpunkVR_DebugExpoEnv[7];
+}
+bool expo_env_write(uint32_t size, const void* src, bool cbPath, uint8_t* out, uint32_t* ship) {
+    if (!src || size != kExpoAdaptBytes) return false;
+    if (!CyberpunkVR_ExposureCentre.load(std::memory_order_relaxed) ||
+            !CyberpunkVR_ExposureCentreLoaded.load(std::memory_order_relaxed)) return false;
+    if (!cbPath) { ++CyberpunkVR_DebugExpoEnv[2]; return false; }
+    memset(out, 0, kExpoAdaptEnvBytes);
+    __try { memcpy(out, src, size); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    *ship = kExpoAdaptEnvBytes;
+    if (t_view_side != 0 || !CyberpunkVR_ExposureMemory.load(std::memory_order_relaxed)) { ++CyberpunkVR_DebugExpoEnv[1]; return true; }
+    float position[3]{}, forward[3]{};
+    if (!expo_env_camera(t_current_node_view, position, forward)) { ++CyberpunkVR_DebugExpoEnv[5]; return true; }
+    if (!cvr::ssr_merge::BindExposureCells(0, CyberpunkVR_DebugExpoEnv, true)) return true;
+    LARGE_INTEGER now{}, frequency{};
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&frequency);
+    auto& clock = g_expo_env;
+    const double dt = clock.have ? double(now.QuadPart - clock.last.QuadPart) / double(frequency.QuadPart) : 0.0;
+    float moved = 0.0f;
+    for (int i = 0; i < 3; ++i) moved += (position[i] - clock.position[i]) * (position[i] - clock.position[i]);
+    moved = std::sqrt(moved);
+    // A pause (loading, a menu) or a jump (teleport, fast travel) starts the cells afresh.
+    const bool reset = !clock.have || !(dt >= 0.0 && dt <= 2.0) || !(moved <= 30.0f);
+    clock.last = now;
+    memcpy(clock.position, position, sizeof(position));
+    clock.have = true;
+    const auto positive = [](float v, float fallback) { return std::isfinite(v) && v > 0.0f ? v : fallback; };
+    float rate = 1.0f, fade = 0.0f, surprise = 0.0f, levelRate = 1.0f;
+    if (reset) {
+        moved = 0.0f;
+        ++CyberpunkVR_DebugExpoEnv[6];
+    } else {
+        rate = float(1.0 - std::exp(-dt / positive(CyberpunkVR_ExposureMemoryWrite, 0.25f)));
+        fade = float(std::exp(-dt / positive(CyberpunkVR_ExposureMemoryAge, 600.0f) -
+                              moved / positive(CyberpunkVR_ExposureMemoryDistance, 4.0f)));
+        surprise = float(dt / positive(CyberpunkVR_ExposureMemorySurprise, 0.5f));
+        levelRate = float(1.0 - std::exp(-dt / positive(CyberpunkVR_ExposureLevelTime, 8.0f)));
+    }
+    float gain = CyberpunkVR_ExposureGazeGain, limit = CyberpunkVR_ExposureGazeLimit;
+    if (!std::isfinite(gain) || gain < 0.0f) gain = 0.0f;
+    if (!std::isfinite(limit) || limit < 0.0f) limit = 0.0f;
+    float lean = CyberpunkVR_ExposureHemisphere;
+    if (!std::isfinite(lean)) lean = 0.0f;
+    const uint32_t mode = (CyberpunkVR_ExposureMemoryMode & 255u) | (uint32_t(std::lround(std::clamp(lean, 0.0f, 1.0f) * 255.0f)) << 8);
+    const float row4[4] = {forward[0], forward[1], forward[2], rate};
+    float row5[4] = {fade, gain, limit * 0.69314718f, 0.0f};
+    memcpy(&row5[3], &mode, sizeof(mode));
+    memcpy(out + 56, &kExpoEnvTag, sizeof(kExpoEnvTag));
+    memcpy(out + 60, &surprise, sizeof(surprise));
+    memcpy(out + 64, row4, sizeof(row4));
+    memcpy(out + 80, row5, sizeof(row5));
+    memcpy(out + 96, &levelRate, sizeof(levelRate));
+    const float debug[8] = {forward[0], forward[1], forward[2], rate, fade, moved, float(dt), levelRate};
+    memcpy(CyberpunkVR_DebugExpoEnvParams, debug, sizeof(debug));
+    ++CyberpunkVR_DebugExpoEnv[0];
+    return true;
+}
+}  // namespace
+
 static int64_t __fastcall Detour_BufUpload(uint32_t idx, uint32_t size, void* src) {
+    if (ao_node_now()) {
+        ao_upload_note(size, false, src);
+        alignas(16) uint8_t centred[kAoBlockMax];
+        if (ao_centre_write(size, src, centred)) {
+            cvr::ssr_merge::PrepareConeAo(t_view_side, centred, size);   // the eyes' AO as one wide display
+            return ForwardBufUpload(idx, size, centred);
+        }
+    }
+    if (expo_node_now()) {
+        expo_upload_note(size, false, src);
+        alignas(16) uint8_t centred[kExpoBlockMax];
+        uint32_t ship = 0;
+        if (expo_centre_write(size, src, false, centred, &ship)) return ForwardBufUpload(idx, ship, centred);
+        expo_env_write(size, src, false, centred, &ship);   // counts a block it cannot grow here
+    }
     if(size==848 || size==112) {
         alignas(16) uint8_t markerConstants[848];
         if(cvr::markers::RewriteConstants(size,src,markerConstants))
             return ForwardBufUpload(idx,size,markerConstants);
+    }
+    if(size==512) {
+        alignas(16) uint8_t flat[512];
+        if(FlattenHudComposite(size,src,flat)) return ForwardBufUpload(idx,size,flat);
     }
     // The projection jitter, put in step. Keyed on the SIDE, so a reflection-probe face -- which is neither
     // eye -- is left entirely alone.
@@ -2259,52 +2701,152 @@ extern "C" __declspec(dllexport) extern uint64_t CyberpunkVR_DebugGradeVrcamUplo
 extern "C" __declspec(dllexport) extern uint64_t CyberpunkVR_DebugGradeOtherView;
 CVR_DETOUR("[sway] buffer uploader sub_1401F088C", BUF_UPLOAD_RVA, Detour_BufUpload, g_orig_buf_upload)
 
+// The pixel stage's b6 uploader (sub_140AD2254: allocate, copy, bind as PS b6). In the shadow mask node its
+// block is the contact-shadow settings, whose padding carries the wide merge's stamp and tag
+// (Render/SsrWideMerge.cpp, kShadowMask).
+using PsB6UploadFn = void(__fastcall*)(size_t, void*);
+static PsB6UploadFn g_orig_ps_b6_upload = nullptr;
+static void __fastcall Detour_PsB6Upload(size_t size, void* src) {
+    if (size == cvr::ssr_merge::kShadowBlockBytes && src && g_exe_base &&
+            t_current_node_work == reinterpret_cast<uintptr_t>(g_exe_base) + RENDER_SHADOWMASK_RVA) {
+        alignas(16) uint8_t block[cvr::ssr_merge::kShadowBlockBytes];
+        bool copied = true;
+        __try { memcpy(block, src, sizeof(block)); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { copied = false; }
+        if (copied && cvr::ssr_merge::PrepareShadowMask(t_view_side, t_current_node_view, block, sizeof(block)))
+            return g_orig_ps_b6_upload(size, block);
+    }
+    g_orig_ps_b6_upload(size, src);
+}
+CVR_DETOUR("[wide-merge] pixel-stage b6 uploader sub_140AD2254", PS_B6_UPLOAD_RVA, Detour_PsB6Upload, g_orig_ps_b6_upload)
+
 using BindCameraFn=__int64(__fastcall*)(uint32_t,uint32_t,uint32_t);
 static BindCameraFn g_original_bind_camera{};
 static __int64 __fastcall BindCameraProbe(uint32_t binding,uint32_t handle,uint32_t stages) {
     const auto result=g_original_bind_camera(binding,handle,stages);
+    for(const auto& annotation:cvr::stereo::source_cbv::ObserveBindMask(binding,handle,stages))
+        cvr::stereo::descriptors::Cbv(&annotation.view,{annotation.cpu},&annotation.origin);
+    cvr::stereo::early_depth::BoundCamera(binding,handle,stages);
+    cvr::stereo::paired_geometry::BoundCamera(t_view_side,binding,handle,stages);
+    if(CyberpunkVR_EarlyDepthNativeCamera.load(std::memory_order_relaxed) || cvr::stereo::paired_geometry::NeedsCamera())
+        cvr::stereo::camera_upload::ObserveNativeBind(reinterpret_cast<uintptr_t>(g_exe_base),binding,handle,stages);
     if(CyberpunkVR_SinglePassTwinUpload.load(std::memory_order_relaxed)) {
         const auto base=reinterpret_cast<uintptr_t>(g_exe_base);
         cvr::stereo::camera_upload::AfterNativeBind(base,binding,handle,stages,t_view_side==1 && t_current_node_work==base+0x23A938);
     }
     return result;
 }
-static bool WantNativeCameraProbe(){return cvr::stereo::native_probe::Enabled();}
+static bool WantNativeCameraProbe(){return cvr::stereo::native_probe::Enabled() || cvr::stereo::families::Enabled();}
 CVR_DETOUR_IF("[single-pass] bounded camera binding probe",0x1F4700,BindCameraProbe,g_original_bind_camera,WantNativeCameraProbe)
+
+using BindMaterialFn=__int64(__fastcall*)(uint32_t,uint32_t,uint8_t);
+static BindMaterialFn g_original_bind_material{};
+static __int64 __fastcall BindMaterialProbe(uint32_t binding,uint32_t handle,uint8_t stage){
+    const auto result=g_original_bind_material(binding,handle,stage);
+    cvr::stereo::material_binding::ObserveBind(reinterpret_cast<uintptr_t>(g_exe_base),binding,handle,stage);
+    for(const auto& annotation:cvr::stereo::source_cbv::ObserveBindStage(binding,handle,stage))
+        cvr::stereo::descriptors::Cbv(&annotation.view,{annotation.cpu},&annotation.origin);
+    return result;
+}
+static bool WantNativeMaterialProbe(){
+    return WantNativeCameraProbe() && cvr::stereo::material_binding::Compatible(reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)));
+}
+CVR_DETOUR_IF("[single-pass] native material binding",0x1F3790,BindMaterialProbe,g_original_bind_material,WantNativeMaterialProbe)
+static bool WantNativeSourceSrv(){
+    const bool wanted=GetEnvironmentVariableW(L"CVR_STEREO_SOURCE_SELECTORS",nullptr,0) &&
+        cvr::stereo::native_probe::ObserveBindings() && cvr::stereo::families::Enabled() &&
+        cvr::stereo::source_srv::Compatible() && cvr::stereo::source_srv::ConfigureXstate();
+    return wanted;
+}
+CVR_DETOUR_IF("[single-pass] current buffer SRV",0x1F5438,CvrSourceSrvIndividualDetour,CvrSourceSrvIndividualOriginal,WantNativeSourceSrv)
+CVR_DETOUR_IF("[single-pass] current cached SRV group",0x1F5354,CvrSourceSrvCachedDetour,CvrSourceSrvCachedOriginal,WantNativeSourceSrv)
 
 // Fresh native callers 0x23AEA2 and 0x1D572F1 both pass renderer,
 // render arguments and a [begin,end) span of 16-byte sorted packets.
 using RenderPacketsFn=__int64(__fastcall*)(void*,const void*,const void*);
 static RenderPacketsFn g_original_render_packets{};
+static __int64 __fastcall RenderPacketsInner(void* renderer,const void* arguments,const void* span);
+extern "C" void CyberpunkVR_WaitDeferredPresentForPackets();   // Stereo/SubmitChain.cpp
+// Single-pass stage replay wraps the whole consumer, including the probes below, so a target
+// stage it replays skips them together with the native consumer (Render/StageReplay.cpp).
 static __int64 __fastcall RenderPacketsProbe(void* renderer,const void* arguments,const void* span) {
+    CyberpunkVR_WaitDeferredPresentForPackets();
+    if(cvr::stereo::stage_replay::Active()) {
+        const auto base=reinterpret_cast<uintptr_t>(g_exe_base);
+        const auto node=base && t_current_node_work>base?uint32_t(t_current_node_work-base):0;
+        return cvr::stereo::stage_replay::Consume(t_view_side,node,renderer,arguments,span,&RenderPacketsInner);
+    }
+    return RenderPacketsInner(renderer,arguments,span);
+}
+static __int64 __fastcall RenderPacketsInner(void* renderer,const void* arguments,const void* span) {
     const bool group=CyberpunkVR_StereoGpuProbeGroup.load(std::memory_order_relaxed)!=0;
-    if(CyberpunkVR_GeometryPacketState.load(std::memory_order_relaxed)!=1 && !group)
+    if(CyberpunkVR_GeometryPacketState.load(std::memory_order_relaxed)!=1 && !group && !cvr::stereo::preparation::Pairing())
         return g_original_render_packets(renderer,arguments,span);
     const auto base=reinterpret_cast<uintptr_t>(g_exe_base);
     const auto node=base && t_current_node_work>base?uint32_t(t_current_node_work-base):0;
     const auto ticket=cvr::stereo::packets::Begin(node,t_view_side,renderer,arguments,span);
+    cvr::stereo::preparation::DrawScope drawScope(node,t_view_side,arguments);
     cvr::stereo::gpu_probe::GroupContext previous;
     if(group) {
         uint32_t plane=UINT_MAX;SIZE_T read{};
         if(arguments && node==0x23A938)ReadProcessMemory(GetCurrentProcess(),static_cast<const uint8_t*>(arguments)+0x10,&plane,4,&read);
         previous=cvr::stereo::gpu_probe::BeginGroup(read==4?t_view_side:-1,plane);
     }
+    const auto early=cvr::stereo::early_depth::Begin(node,t_view_side,renderer,arguments,span);
     const auto result=g_original_render_packets(renderer,arguments,span);
+    cvr::stereo::early_depth::End(early);
     if(group)cvr::stereo::gpu_probe::EndGroup(previous);
     cvr::stereo::packets::End(ticket);
     return result;
 }
 static bool WantNativePacketsProbe() {
-    if(!WantNativeCameraProbe())return false;
+    // CPU packet observation must not depend on the three hand-picked GPU
+    // shader variants. Recording still takes the disabled fast path by default.
     const uint8_t expected[]{0x48,0x8B,0xC4,0x4C,0x89,0x40,0x18,0x48,0x89,0x50,0x10,0x48,0x89,0x48,0x08};
     uint8_t actual[sizeof(expected)]{};SIZE_T read{};
     const auto address=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr))+0x1F1208;
-    return ReadProcessMemory(GetCurrentProcess(),reinterpret_cast<const void*>(address),actual,sizeof(actual),&read) &&
+    const bool compatible=ReadProcessMemory(GetCurrentProcess(),reinterpret_cast<const void*>(address),actual,sizeof(actual),&read) &&
         read==sizeof(actual) && std::memcmp(actual,expected,sizeof(actual))==0;
+    CyberpunkVR_GeometryPacketHookCompatible.store(compatible?1u:2u,std::memory_order_release);
+    return compatible;
 }
 CVR_DETOUR_IF("[single-pass] bounded native geometry packets",0x1F1208,RenderPacketsProbe,g_original_render_packets,WantNativePacketsProbe)
 
 static __int64 __fastcall Detour_CbUpload(unsigned int size, void* src) {
+    if (size == 512) {
+        alignas(16) uint8_t flat[512];
+        if (FlattenHudComposite(size, src, flat)) return ForwardCbUpload(size, flat);
+    }
+    // The SSR and planar-reflection traces' block, grown by the rows their wide-merge twins read
+    // (Render/SsrWideMerge.cpp).
+    if (size == cvr::ssr_merge::kEngineBlockBytes && g_exe_base) {
+        const auto node = t_current_node_work - reinterpret_cast<uintptr_t>(g_exe_base);
+        if (node == SSR_NODE_RVA || node == SSPR_NODE_RVA) {
+            alignas(16) uint8_t grown[cvr::ssr_merge::kBlockBytes];
+            uint32_t ship = 0;
+            const auto channel = node == SSR_NODE_RVA ? cvr::ssr_merge::kReflections : cvr::ssr_merge::kPlanar;
+            if (cvr::ssr_merge::Prepare(channel, t_view_side, t_current_node_view, src, size, grown, &ship))
+                return ForwardCbUpload(ship, grown);
+        }
+    }
+    if (ao_node_now()) {
+        ao_upload_note(size, true, src);
+        alignas(16) uint8_t centred[kAoBlockMax];
+        if (ao_centre_write(size, src, centred)) {
+            cvr::ssr_merge::PrepareConeAo(t_view_side, centred, size);
+            return ForwardCbUpload(size, centred);
+        }
+    }
+    if (expo_node_now()) {
+        expo_upload_note(size, true, src);
+        alignas(16) uint8_t centred[kExpoBlockMax];
+        uint32_t ship = 0;
+        if (expo_centre_write(size, src, true, centred, &ship)) {
+            expo_acc_extend(centred, &ship);
+            return ForwardCbUpload(ship, centred);
+        }
+        if (expo_env_write(size, src, true, centred, &ship)) return ForwardCbUpload(ship, centred);
+    }
     if(size==848 || size==112) {
         alignas(16) uint8_t markerConstants[848];
         if(cvr::markers::RewriteConstants(size,src,markerConstants))
@@ -2394,6 +2936,7 @@ static __int64 __fastcall Detour_CbUpload(unsigned int size, void* src) {
         }
     }
     if (!grade_up_is_target(size, src)) return ForwardCbUpload(size, src);
+    optics_grade_snapshot(src);
     // WHOSE UPLOAD THIS IS, BY THE VIRTUAL-CAMERA NAME HASH. The test used to be
     // `t_vrcam_node_active ? 1 : 0`, whose else-branch called EVERYTHING that is not the second
     // view "MAIN" -- including the flat 960x540 desktop window, which uploads a grading block of
@@ -2415,6 +2958,12 @@ static __int64 __fastcall Detour_CbUpload(unsigned int size, void* src) {
     const uint64_t vrcam_key = g_vrcam_ctx_key.load(std::memory_order_acquire);
     const bool grade_is_vrcam = (vrcam_key != 0 && t_active_view_key == vrcam_key);
     const bool grade_is_main  = (t_active_view_key == 0);
+    if(t_active_view_key==cvr::cname_hash("vr_optics_feed")) {
+        // Same LUT inputs as VRCAM. Never publish a scope upload as MAIN.
+        if(CyberpunkVR_OpticsGradeMirror && CyberpunkVR_GradeMirrorMask && g_gcu_seen[0])
+            return grade_up_mirror_call(size,src);
+        return ForwardCbUpload(size,src);
+    }
     if (!grade_is_vrcam && !grade_is_main) {
         CVR_DIAGNOSTIC(InterlockedIncrement64(
             reinterpret_cast<volatile LONG64*>(&CyberpunkVR_DebugGradeOtherView)));
@@ -2559,7 +3108,21 @@ static __int64 tonemap_call_lent(void* a1, void* a2, uintptr_t* slot, uintptr_t 
     }
 }
 
+void lut_src_build_begin();   // CommandListCensus.cpp: is MAIN's LUT source table fresh enough to lend
+
 static __int64 __fastcall Detour_TonemapLut(void* a1, void* a2) {
+    lut_src_build_begin();
+    if(CyberpunkVR_OpticsDataProbe) {
+        const int side=optics_data_side();
+        if(side>=0) {
+            const auto vd=reinterpret_cast<GradingViewDataFn>(g_exe_base+0x1ed930)(a2);
+            if(vd) {
+                InterlockedIncrement(reinterpret_cast<volatile LONG*>(&CyberpunkVR_OpticsDataSeq[side]));
+                cloud_cb_raw_copy(CyberpunkVR_OpticsViewData[side],reinterpret_cast<const void*>(vd),4096);
+                InterlockedIncrement(reinterpret_cast<volatile LONG*>(&CyberpunkVR_OpticsDataSeq[side]));
+            }
+        }
+    }
     if (CyberpunkVR_GradeCbProbe) {
         const int kind = tonemap_view_kind(a2);
         if (kind >= 0) {

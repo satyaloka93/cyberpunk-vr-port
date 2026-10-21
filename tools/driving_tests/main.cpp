@@ -107,10 +107,41 @@ void Deadzone() {
     Near(WheelSteering::Output(0,90,0),0,"zero input not neutral");
     Near(WheelSteering::Output(1.5f,90,1.5f),0,"deadzone edge not neutral");
     Near(WheelSteering::Output(2,90,1.5f),.5f/88.5f,"micro-correction is not proportional");
-    for(float limit:{30,60,90,120}) {
+    for(float limit:{30,60,90,120,180}) {
         Near(WheelSteering::Output(limit,limit,20),1,"full lock setting not honored");
         Near(WheelSteering::Output(-limit,limit,20),-1,"left full lock setting not honored");
     }
+}
+void ExtendedTravel() {
+    Near(WheelFullLockDegrees(0),180,"unset limit did not default to half-turn");
+    Near(WheelFullLockDegrees(std::numeric_limits<float>::quiet_NaN()),180,"invalid limit not sanitized");
+    Near(WheelFullLockForVehicle(180,false),90,"car range changed motorcycle input");
+    Near(WheelFullLockForVehicle(120,false),120,"valid legacy bike setting changed");
+    for(int mask:{1,2,3})for(int direction:{-1,1}) {
+        WheelSteering wheel;
+        Tick(wheel,mask,Rim(0),Rim(0,-1),180);
+        for(int angle=1;angle<=230;++angle) {
+            const float physical=float(direction*angle);
+            const float out=Tick(wheel,mask,Rim(physical),Rim(physical,-1),180);
+            Near(wheel.Angle(),physical,"visual gain leaked into physical angle");
+            if(angle==90)Near(out,direction*88.5f/178.5f,"quarter turn did not give half input");
+            if(angle>=180)Near(out,float(direction),"half-turn did not reach full lock");
+            if(angle==150) {
+                const int other=mask==1?3:1;
+                Tick(wheel,other,Rim(physical),Rim(physical,-1),180);
+                Near(wheel.Angle(),physical,"extended handoff changed physical angle");
+                Tick(wheel,mask,Rim(physical),Rim(physical,-1),180);
+            }
+        }
+        for(int angle=229;angle>=0;--angle) {
+            const float out=Tick(wheel,mask,Rim(float(direction*angle)),Rim(float(direction*angle),-1),180);
+            if(angle==0)Near(out,0,"overtravel lost neutral at extended range");
+        }
+    }
+    WheelPrediction prediction;uint64_t stamp=1000000;
+    for(int i=0;i<4;++i){stamp+=10000;prediction.Push(127.f+i,stamp);}
+    const float predicted=prediction.Angle(130,stamp,8,180,1.5f);
+    Check(predicted>130 && predicted<=130.5f,"prediction still assumes old full lock");
 }
 void GamepadRange() {
     for(float inner:{0.f,.1f,.35f,.49f})for(float outer:{.7f,.9f,1.f}) {
@@ -296,6 +327,7 @@ int main(int argc,char** argv) {
     else if(name=="two_hands")TwoHands();else if(name=="handoff")Handoff();
     else if(name=="lock_reversal")LockReversal();else if(name=="tracking_loss")TrackingLoss();
     else if(name=="rate_matrix")RateMatrix();else if(name=="deadzone")Deadzone();
+    else if(name=="extended_travel")ExtendedTravel();
     else if(name=="gamepad_range")GamepadRange();else if(name=="tracked_head_motion")TrackedHeadMotion();
     else if(name=="tracked_roundtrip")TrackedRoundtrip();else if(name=="tracked_lifetime")TrackedLifetime();
     else if(name=="prediction_constant")PredictionConstant();else if(name=="prediction_stop_reverse")PredictionStopReverse();

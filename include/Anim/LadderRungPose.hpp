@@ -1,5 +1,5 @@
 #pragma once
-// User-approved rung pose, baked from vrport.ini on 2026-09-22.
+// Approved rung pose, baked from vrport.ini on 2026-09-22.
 // Source values: tools/vrik_tests/fixtures/ladder/tuned-rung.json.
 namespace cvr::ladder::profile {
 inline constexpr float RungCurl[5]={1.0f,1.0f,1.0f,1.0f,1.0f};

@@ -1,4 +1,6 @@
 #include "Utils/DebugGate.hpp"
+#include "Framegen/NativeInputs.hpp"
+#include "Stereo/UpscalerViews.hpp"
 #include "Stereo/RenderParity.hpp"
 // Path B (Sync Sequential)  M-B1 observational CALLER1 hook. See sync_stereo.h.
 
@@ -6,6 +8,7 @@
 #include "Utils/StereoLog.hpp"
 #include "Stereo/VrcamConfig.hpp"   // vrcam.json access + CName hashing, shared with the launcher
 #include "Render/ColorBlit.hpp"   // HUD debug overlay on the mirror image
+#include "Hooks/RenderDocBridge.hpp"
 
 #include <windows.h>
 #include <d3d12.h>
@@ -46,6 +49,8 @@ extern "C" unsigned long long CyberpunkVR_DebugBarrelDotDraws;
 #include "Stereo/StereoInternal.hpp"
 #include "Stereo/EngineRvas.hpp"
 #include "Stereo/DetourRegistry.hpp"
+
+extern "C" float CyberpunkVR_HudEngineCurvature[2];   // Stereo/Hud.cpp
 
 namespace cvr {
 
@@ -294,6 +299,8 @@ thread_local bool t_mirror_src_state_seen = false;
 // Work fn of the node currently recording on this thread (set at dispatch; nested
 // dispatches clobber it -- acceptable for attribution probes).
 thread_local uintptr_t t_current_node_work = 0;
+// The view (work context +0x18) of that node, 0 for a node without one. Set and restored with it.
+thread_local uintptr_t t_current_node_view = 0;
 // True while ANY vrcam-ctx node records on this thread (view attribution for hooks).
 thread_local bool t_vrcam_node_active = false;
 
@@ -458,7 +465,7 @@ std::mutex g_upload_map_mtx;
 // weights and saturation in [0,1], aberration tiny. Nothing else in the engine's constant traffic
 // satisfies all of that at once.
 //
-// The values are graphics settings, so they change only when the user changes one: found once and
+// The values are graphics settings, so they change only when the player changes one: found once and
 // re-checked every few seconds, at a cost of a few milliseconds on the present thread.
 ID3D12Resource* g_hud_cb_copy = nullptr;   // our own 512-byte upload CB
 uint8_t* g_hud_cb_copy_ptr = nullptr;
@@ -478,9 +485,11 @@ bool hud_cb_block_plausible(const uint8_t* p, float w, float h) {
         const float bg = r[5 * 4 + 0], bl = r[5 * 4 + 1];
         if (!(bg >= 0.0f && bg <= 4.0f && bl >= 0.0f && bl <= 8.0f)) return false;
         // A block of zeros passes every range test above -- and the ring is full of them. Demand
-        // that the settings actually look set: a halo, a glow and a curvature all present.
+        // that the settings actually look set: a halo, a glow and a curvature all present. The
+        // curvature may be the port's own zero (Grading.cpp, FlattenHudComposite).
         return bg > 1e-4f && (w1 > 1e-4f || w2 > 1e-4f || w4 > 1e-4f) &&
-               (fabsf(cxk) > 1e-6f || fabsf(cyk) > 1e-6f);
+               (fabsf(cxk) > 1e-6f || fabsf(cyk) > 1e-6f ||
+                (CyberpunkVR_HudEngineCurvature[1] != 0.0f && cxk == 0.0f && cyk == 0.0f));
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
@@ -693,6 +702,7 @@ static __int64 __fastcall Detour_Resolve3D20(__int64 reg, uint32_t* out,
     const __int64 r = g_orig_resolve3d20(reg, out, idp, r9);
     if (!out || !idp) return r;
     cvr::stereo::SynchronizeFogHistory(static_cast<uintptr_t>(reg),out,idp[0],reinterpret_cast<uintptr_t>(ra));
+    cvr::framegen::ObserveNativeInput(idp[0],*out);
     const uint32_t id = idp[0];
     if ((id & 0x00FFFFFFu) != POSTCOLOR_LOW) return r;      // post-color ids only
     const bool in_fin = t_mirror_copy_node_active;          // vrcam Final2D consumer
@@ -1282,6 +1292,9 @@ static void install_desc_ring_probe() {
     }
     // Everything that has moved to the registry, installed in one pass, ascending RVA.
     InstallEngineDetours();
+    // A second-eye context for FSR 3.0 and XeSS (static imports, loaded by now). The FidelityFX API
+    // library is hooked by its loader detour, which the pass above installed.
+    cvr::stereo::upscaler_views::Install();
 
     // Frame-graph build observers (DLSS upscaler-group capture/force backup for the crop fix).
     // full-build and incr-build are registered at the bottom of this file; see
@@ -1402,7 +1415,10 @@ void sync_stereo_ensure_descriptor_probe() {
     HMODULE d3d12 = GetModuleHandleW(L"d3d12.dll");
     if (!d3d12) d3d12 = LoadLibraryW(L"d3d12.dll");
     if (!d3d12) { log("[descheap] d3d12.dll not present"); return; }
-    void* target = reinterpret_cast<void*>(GetProcAddress(d3d12, "D3D12CreateDevice"));
+    // Captures route device creation through RenderDoc's serializer. Hooking
+    // only the loader export misses that path and silently omits UI shader
+    // replacement (and its depth tags) from the captured frame.
+    void* target = cvr::RenderDocResolveHookTarget(d3d12, "D3D12CreateDevice");
     if (!target) { log("[descheap] D3D12CreateDevice not found"); return; }
     MH_STATUS st = MH_Initialize();
     if (st != MH_OK && st != MH_ERROR_ALREADY_INITIALIZED) {

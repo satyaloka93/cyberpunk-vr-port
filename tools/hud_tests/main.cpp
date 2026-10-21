@@ -1,4 +1,5 @@
 #include "Runtimes/HudFollow.hpp"
+#include "Camera/GazeCenter.hpp"
 #include "Utils/DebugGate.hpp"
 extern "C" { int CyberpunkVR_RuntimeDiagnostics=0; }
 #include "Render/ColorBlit.hpp"
@@ -8,6 +9,7 @@ extern "C" { int CyberpunkVR_RuntimeDiagnostics=0; }
 extern "C" { extern cvr::hud::PoseDebug CyberpunkVR_HudPoseDebug; extern std::atomic<uint32_t> CyberpunkVR_HudPoseDebugSeq; }
 #include "Core/LiveControls.hpp"
 #include "Runtimes/HudLayout.hpp"
+#include "Runtimes/HudCrop.hpp"
 #include <dxgi1_6.h>
 #include <iostream>
 #include <stdexcept>
@@ -28,6 +30,10 @@ Scope::Scope(const BatchPtr&,Stage) {}
 Scope::~Scope() {}
 void Submitted(BatchPtr,ID3D12CommandQueue*,ID3D12Fence*,UINT64) {}
 }
+// The optics probe rides on the HUD capture in the plugin; nothing to probe here.
+namespace cvr::optics::probe { void Capture(ID3D12Device*,ID3D12CommandQueue*) {} }
+// The engine's own HUD bend, kept by Stereo/Hud.cpp (not linked here) for the panel composite.
+extern "C" float CyberpunkVR_HudEngineCurvature[2]={0.0f,0.0f};
 constexpr float rad=0.01745329252f;
 
 LiveControls g_liveControls{};
@@ -109,6 +115,10 @@ struct Gpu {
 };
 
 void GpuTest(bool leases, const std::string& quadCase = "") {
+    // These cases exercise angular/infinity placement, regardless of the
+    // user's selected default for ordinary finite-depth HUD panels.
+    if(quadCase=="gpu_quad_basilisk" || quadCase=="gpu_quad_recenter" ||
+       quadCase=="gpu_quad_alignment" || quadCase=="gpu_quad_projection")g_liveControls.xrHudStereoDepth=0;
     Gpu gpu;
     const bool styleCase=quadCase=="gpu_style";
     testHudConstants=gpu.Buffer(512,D3D12_HEAP_TYPE_UPLOAD,D3D12_RESOURCE_STATE_GENERIC_READ);
@@ -146,7 +156,9 @@ void GpuTest(bool leases, const std::string& quadCase = "") {
         const bool interaction=quadCase=="gpu_quad_interaction" || lootCase;
         const bool basilisk=quadCase=="gpu_quad_basilisk";
         const bool sniper=quadCase=="gpu_quad_sniper";
-        const bool surveillance=quadCase=="gpu_quad_surveillance" || sniper;
+        const bool gazeCase=quadCase=="gpu_quad_gaze";
+        const bool surveillance=quadCase=="gpu_quad_surveillance" || sniper || gazeCase;
+        if(gazeCase)cvr::gaze::Publish({-.231229f,-.1931f});
         const auto channel=surveillance?cvr::hud::Channel::Surveillance:
             (basilisk?cvr::hud::Channel::Basilisk:(interaction?cvr::hud::Channel::Interaction:cvr::hud::Channel::Main));
         if(sniper)Check(cvr::hud::EntryChannel(cvr::hud::EntryHash("briefing_sequence_player"),true)==channel,
@@ -181,16 +193,21 @@ void GpuTest(bool leases, const std::string& quadCase = "") {
                           std::abs(l->pose.orientation.w-head.orientation.w)<1e-6f,"Basilisk HUD lagged, followed body, or retained a cone");
                     const float d=g_liveControls.xrHudDistance;
                     const auto& q=head.orientation;
-                    const float expectedX=head.position.x-2*(q.x*q.z+q.w*q.y)*d+eyes[0].x;
-                    const float expectedY=head.position.y-2*(q.y*q.z-q.w*q.x)*d+eyes[0].y;
-                    const float expectedZ=head.position.z-(1-2*(q.x*q.x+q.y*q.y))*d+eyes[0].z;
+                    const float gy=gazeCase?cvr::gaze::Read().tangentY*d:0;
+                    const float expectedX=head.position.x-2*(q.x*q.z+q.w*q.y)*d+eyes[0].x+2*(q.x*q.y-q.w*q.z)*gy;
+                    const float expectedY=head.position.y-2*(q.y*q.z-q.w*q.x)*d+eyes[0].y+(1-2*(q.x*q.x+q.z*q.z))*gy;
+                    const float expectedZ=head.position.z-(1-2*(q.x*q.x+q.y*q.y))*d+eyes[0].z+2*(q.y*q.z+q.w*q.x)*gy;
                     Check(std::abs(l->pose.position.x-expectedX)<1e-5f && std::abs(l->pose.position.y-expectedY)<1e-5f &&
                           std::abs(l->pose.position.z-expectedZ)<1e-5f,"Basilisk HUD centre did not follow pitch/yaw immediately");
+                    const auto* right=reinterpret_cast<const XrCompositionLayerQuad*>(quad.SecondEye());
+                    Check(std::abs((right->pose.position.x-eyes[1].x)-(l->pose.position.x-eyes[0].x))<1.e-6f &&
+                          std::abs(right->pose.position.y-l->pose.position.y)<1.e-6f,"gaze differs between eyes");
                 }
             } else if(lootCase){
                 g_liveControls.xrHudFollowMode=1;bodyYaw=1;g_liveControls.xrHudFollowDeg=5;
                 g_liveControls.xrInteractionFollowDeg=90;
-                Check(g_liveControls.xrLootFollowDeg==10,"loot default must be 10 degrees");
+                Check(g_liveControls.xrLootFollowDeg==0,"loot default must be 0 degrees (head-locked)");
+                g_liveControls.xrLootFollowDeg=10;
                 Check(cvr::hud::Latest(cvr::hud::Channel::Interaction)->lootVisible && !frame->lootVisible,
                       "loot context missing from capture or leaked into main HUD");
                 auto yaw=[&] {
@@ -220,6 +237,14 @@ void GpuTest(bool leases, const std::string& quadCase = "") {
                 Check(nextYaw>settled && nextYaw-settled<3*rad,"opening loot did not smoothly apply its own cone");
             } else if(interaction){
                 g_liveControls.xrHudFollowMode=1;bodyYaw=1;g_liveControls.xrHudFollowDeg=5;
+                Check(g_liveControls.xrInteractionFollowDeg==0 && g_liveControls.xrInteractionDistance==2 &&
+                      g_liveControls.xrInteractionFov==75,"interaction defaults must be cone 0, 2 m, 75 degrees");
+                // A zero cone is head-locked: the full HMD orientation, at once.
+                head.orientation={0,sinf(20*rad),0,cosf(20*rad)};
+                {auto l=reinterpret_cast<const XrCompositionLayerQuad*>(prepare());
+                 Check(l && std::abs(l->pose.orientation.y-head.orientation.y)<1e-6f &&
+                       std::abs(l->pose.orientation.w-head.orientation.w)<1e-6f,"zero interaction cone did not lock to the head");}
+                head.orientation={0,0,0,1};
                 g_liveControls.xrInteractionFollowDeg=90;g_liveControls.xrInteractionDistance=2;
                 Check(prepare()!=nullptr,"interaction layer missing");
                 head.orientation={0,sinf(40*rad),0,cosf(40*rad)};
@@ -409,6 +434,11 @@ int main(int argc,char** argv) try {
             Check(ElementIndex(EntryHash(entry))>ElementIndex(EntryHash("briefing_sequence_player")),
                   "camera/scanner layout missing or changed previous indices");
         }
+        Check(NeedsSeparateWindow(EntryHash("hit marker")) && EntryChannel(EntryHash("hit marker"))==Channel::HitMarker &&
+              EntryChannel(EntryHash("hit marker"),true)==Channel::HitMarker,
+              "hit/kill markers missing from their own head-locked window");
+        Check(EntryChannel(EntryHash("crosshair"))==Channel::Main && !NeedsSeparateWindow(EntryHash("crosshair")),
+              "the projected crosshair was moved with the hit markers");
         Check(NeedsSeparateWindow(EntryHash("subtitles")) && NeedsSeparateWindow(EntryHash("interactions_root")),"direct roots were not converted");
         Check(!NeedsSeparateWindow(EntryHash("crosshair")) && !NeedsSeparateWindow(EntryHash("mappins")),"world/projected widgets were converted");
         Check(!DelayedFollow(Channel::Interaction) && DelayedFollow(Channel::Main),"rest delay belongs only to main HUD");
@@ -429,6 +459,30 @@ int main(int argc,char** argv) try {
         cvr::hud::ElementSettings e;e.x=10;e.y=-5;e.scale=.5f;
         auto rect=cvr::hud::ApplyElement({100,200,400,300},e,2000,1000);
         Check(rect.x==400 && rect.y==225 && rect.width==200 && rect.height==150,"element centre/normalized offsets wrong");
+    } else if(name=="scanner_crop") {
+        for(float rootWidth:{1280.f,2648.f,2856.f,3616.f}) {
+            const float scale=rootWidth/3840.f;
+            const float textureHeight=std::floor(4000.f*scale);
+            // A controller resets the crop after a larger offscreen texture exists.
+            const cvr::hud::Rect reset{0,-32,3840,2224};
+            auto crop=cvr::hud::KeepCropCentered(reset,rootWidth,textureHeight,scale);
+            Check(std::abs((1080-crop.y)*scale-textureHeight*.5f)<.002f,"scanner centre moved inside retained texture");
+            Check(std::abs((1920-crop.x)*scale-rootWidth*.5f)<.002f,"scanner horizontal centre moved");
+            for(int i=0;i<10000;++i) {
+                auto next=cvr::hud::KeepCropCentered(reset,rootWidth,textureHeight,scale);
+                Check(next.x==crop.x && next.y==crop.y && next.width==crop.width && next.height==crop.height,"reset crop accumulated drift");
+                auto repeated=cvr::hud::KeepCropCentered(crop,rootWidth,textureHeight,scale);
+                Check(repeated.width==crop.width && repeated.height==crop.height,"crop kept growing");
+                Check(crop.height*scale<=textureHeight+.001f,"rounding requests a larger allocation");
+            }
+            const cvr::hud::Rect details{1920,1080,3840,2160};
+            const auto fixed=cvr::hud::KeepCropCentered(details,rootWidth,textureHeight,scale);
+            Check(std::abs((2160-fixed.y)*scale-textureHeight*.5f)<.002f,"details panel centre moved");
+            const auto missing=cvr::hud::KeepCropCentered(reset,0,0,scale);
+            Check(missing.y==reset.y && missing.height==reset.height,"missing texture changed crop");
+            const auto invalid=cvr::hud::KeepCropCentered(reset,rootWidth,textureHeight,0);
+            Check(invalid.y==reset.y && invalid.height==reset.height,"unknown HUD scale changed crop");
+        }
     } else if(name=="layout_config") {
         cvr::hud::LayoutSettings layout{};
         Check(cvr::hud::ParseLayoutSetting("hud_element_minimap=12,-8,0.75,0.4,1",layout),"setting not parsed");

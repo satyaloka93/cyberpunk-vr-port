@@ -14,6 +14,13 @@ public:
     bool Enabled() const { return m_enabled; }
     float Offset() const { return m_offset; }
     void Reset() { m_offset=0;m_stamp=0;m_zone.Reset(); }
+    // Feedback comes from the native adapter's committed quaternion. A missed
+    // request must not become a fictitious applied turn in the next solve.
+    void Observe(float offset, uint64_t origin) {
+        if (!std::isfinite(offset)) return;
+        if (origin != m_origin) { m_origin=origin; Reset(); }
+        m_offset=std::remainder(offset,6.28318530718f);
+    }
     float Step(float headYaw,float cone,uint64_t stamp,uint64_t origin) {
         if(!m_enabled)return 0;
         if(origin!=m_origin) { m_origin=origin;Reset();return 0; }

@@ -20,13 +20,11 @@
 #include <cstdint>
 #include <cstddef>
 
-// The follow loop and the realign accumulator (src/Hooks/BodyYawFollow.cpp).
-extern "C" float BodyYawFollowStep();
+// Physical follower lifecycle; its motion requests use a separate native source.
 extern "C" void  BodyYawFollowRelease();
 extern "C" double RecoilLastShotMs();
 // Peak |heading delta| seen within 150 ms of a shot, degrees. Non-zero means the game kicks the
-// camera through THIS channel, which is also the channel the body follower writes -- and then the
-// sideways jerk on a shot is the weapon's own recoil, not the animation and not the follower.
+// camera through this channel. Physical body motion never enters this input.
 extern "C" __declspec(dllexport) float CyberpunkVR_DebugShotHeadingKickDeg = 0.0f;
 
 extern "C" void __fastcall OnOnFootDeltaHeadCallback(float* deltaHead) {
@@ -40,7 +38,6 @@ extern "C" void __fastcall OnOnFootDeltaHeadCallback(float* deltaHead) {
     }
     if (!deltaHead || !cvr::roomscale::IsPlayerProvider(
             reinterpret_cast<const uint8_t*>(deltaHead) - 0x9C)) return;
-    const bool bodyRot=BodyYawFollowActive();
     if (cvr::input::NativeOwnsTurn(g_isInVehicle,g_vehicleState.load(std::memory_order_relaxed),cvr::ladder::Active())) {
         InterlockedExchange(&g_pendingSnapYawDeltaBits,0);
         // Native vehicle/ladder heading must not inherit a pending on-foot snap
@@ -49,13 +46,8 @@ extern "C" void __fastcall OnOnFootDeltaHeadCallback(float* deltaHead) {
         return;
     }
 
-    // Physical body rotation (F10 -> VRIK). OFF (default): no continuous body-yaw
-    // tracking from the HMD -- only the discrete snap-turn is applied (classic heading).
-    // Eligibility also follows the VRIK suspend gate. Camera readers refresh
-    // the same state when a scripted scene stops invoking this callback.
-
-    // MEASUREMENT ONLY. Cancelling the weapon's camera kick HERE was built and taken out again on the
-    // user's call: hiding it in the view leaves the game still applying it to the character, and the
+    // MEASUREMENT ONLY. Cancelling the weapon's camera kick HERE was built and taken out again on
+    // purpose: hiding it in the view leaves the game still applying it to the character, and the
     // recovery it then plays back has to be hidden too. The kick is removed at its source instead --
     // the weapons' own recoil stats. This peak-hold stays because it is what found the kick: the value
     // is read BEFORE anything of ours is added, so it is the game's own contribution and nothing else.
@@ -113,46 +105,8 @@ extern "C" void __fastcall OnOnFootDeltaHeadCallback(float* deltaHead) {
         }
     }
 
-    // bodyRot OFF (default) -> classic snap-turn only: the heading never tracks the
-    // head; the camera composes heading * FULL HMD, so a head turn moves ONLY the view.
-    if (!bodyRot) {
-        // And release the accumulator: the guard inside BodyYawFollowStep cannot, because this
-        // return is upstream of the only call to it.
-        BodyYawFollowRelease();
-        deltaHead[idx] += snap;
-        return;
-    }
-
-    // BODY REALIGN (physical body rotation ON), on foot, armed and unarmed alike.
-    //
-    // THE GAME TURNS THE CHARACTER; WE ONLY ASK IT TO. This injects into the engine's own
-    // per-frame heading delta -- the same channel the snap turn uses -- so the entity yaw,
-    // and with it the drawn mesh, the collision, the aim and the movement direction, all
-    // move together because the engine moved them.
-    //
-    // Writing the component transforms instead was tried in full. It reached the drawn
-    // body (measured: all 102 of the player's records carried the angle), and the hand
-    // symptom it was blamed for turned out to be an unrelated frame mismatch in
-    // LocateCamera -- see src/Hooks/BodyYawFollow.cpp, which carries the corrected
-    // account. What rules that route out is the gameplay half: aim, movement, cover and
-    // the collision capsule come from this heading, not from those transforms.
-    //
-    // THE RECENTER BASE IS NOT TOUCHED. The version of this that shipped before called
-    // RotateBaseYaw(step) to cancel the view, which is right in the algebra and wrong in
-    // the ORDER: the heading changes here, inside the game tick, while the base only takes
-    // effect on the next XR cycle, so for one frame the view swings by the whole step --
-    // the camera drift this feature was always reported to have. The cancellation now
-    // happens on our side of the same frame, in the camera write and in the head-offset
-    // recipe, both of which compose from (engine yaw - CyberpunkVR_BodyYawRealignRad).
-    // Recentring therefore keeps working exactly as it did with the feature off.
-    //
-    // The loop, the cone and the realign accumulator live in src/Hooks/BodyYawFollow.cpp;
-    // this file is only the door into the engine's heading.
-    if (cvr::roomscale::PhysicalBodyAllowed()) {
-        const float step = BodyYawFollowStep();         // radians, 0 when inside the cone
-        if (step != 0.0f) deltaHead[idx] += step * 57.2957795f;
-    }
-
+    // Only deliberate native/stick view turning enters DeltaHead. Physical
+    // body following is consumed separately by the movement adapter.
     if (snap != 0.0f) deltaHead[idx] += snap;
 }
 

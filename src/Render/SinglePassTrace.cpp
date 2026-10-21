@@ -10,6 +10,7 @@ __declspec(dllexport) std::atomic<uint32_t> CyberpunkVR_SinglePassTraceRequest{0
 __declspec(dllexport) std::atomic<uint32_t> CyberpunkVR_SinglePassTraceState{0};
 __declspec(dllexport) std::atomic<uint32_t> CyberpunkVR_SinglePassTraceSeq{0};
 __declspec(dllexport) std::atomic<uint32_t> CyberpunkVR_SinglePassTraceCount{0};
+__declspec(dllexport) std::atomic<uint32_t> CyberpunkVR_SinglePassTraceNodeFilter{};
 __declspec(dllexport) cvr::stereo::trace::Record CyberpunkVR_SinglePassTraceRecords[cvr::stereo::trace::Capacity]{};
 }
 namespace cvr::stereo::trace {
@@ -77,16 +78,19 @@ void FrameBoundary() {
     if(!request)return;
     CyberpunkVR_SinglePassTraceSeq.fetch_add(1,std::memory_order_acq_rel);
     CyberpunkVR_SinglePassTraceCount.store(0,std::memory_order_relaxed);
-    frame=1;limit=std::min(request,4u);epoch.fetch_add(1,std::memory_order_release);
+    frame=1;limit=std::min(request,CyberpunkVR_SinglePassTraceNodeFilter.load()==0x23A938?8u:4u);epoch.fetch_add(1,std::memory_order_release);
     CyberpunkVR_SinglePassTraceState.store(1,std::memory_order_release);
     CyberpunkVR_SinglePassTraceSeq.fetch_add(1,std::memory_order_release);
 }
 void Camera(uint32_t node,int side,uint32_t index,const void* bytes,Predict predict) {
     if(CyberpunkVR_SinglePassTraceState.load(std::memory_order_relaxed)!=1 || !bytes || side<0 || side>1)return;
+    const auto filter=CyberpunkVR_SinglePassTraceNodeFilter.load(std::memory_order_relaxed);if(filter && node!=filter)return;
     Append(1,node,side,index,nullptr,bytes,predict);
 }
+void CaptureNativeInputs(Record& row){NativeInputs(row);}
 void List(uint32_t node,int side,const void* list) {
     if(CyberpunkVR_SinglePassTraceState.load(std::memory_order_relaxed)!=1 || !list || side<0 || side>1)return;
+    const auto filter=CyberpunkVR_SinglePassTraceNodeFilter.load(std::memory_order_relaxed);if(filter && node!=filter)return;
     struct Last {uint64_t epoch{};const void* list{};uint32_t node{};int side=-1;};
     thread_local Last previous;
     const auto current=epoch.load(std::memory_order_acquire);

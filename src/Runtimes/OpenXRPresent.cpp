@@ -57,6 +57,8 @@ extern "C" __declspec(dllexport) int CyberpunkVR_PoseReadBack;
 // Split verbatim from openxr_manager.cpp (OpenXRManager method). Shared module
 // state/helpers via openxr_internal.h (inline).
 #include "Runtimes/OpenXRManager.hpp"
+#include "Render/FoveatedDlss.hpp"
+#include "Render/FixedVrs.hpp"
 #include "Runtimes/OpenXRInternal.hpp"
 #include "Utils/XrMath.hpp"
 #include "Utils/SharedSlots.hpp"
@@ -129,7 +131,7 @@ void OpenXRManager::OnPresent(IDXGISwapChain* swapChain) {
             s_pSharedHands[80] = 1.0f;
         }
         // [89]: HMD PHYSICAL height relative to the recenter base (~0 standing, negative when the
-        // user physically squats). The game FPP camera Lua samples is a FIXED eye height, so the
+        // player physically squats). The game FPP camera Lua samples is a FIXED eye height, so the
         // plugin needs this to actually lower the body / bend the knees on a real-life squat.
         // [85..88] are written by the plugin (camera->head offset) -- do not touch them here.
         // PAIR-LOCKED: use the frozen physical head height (snapshot at the pair
@@ -505,8 +507,7 @@ void OpenXRManager::OnPresent(IDXGISwapChain* swapChain) {
             // Everything below -- head centre, per-eye offset, per-eye FOV -- comes from the slot
             // published when this frame's pose was located, keyed by this present's serial. That
             // is the whole point: one identity per frame. `m_views` is only the fallback for a
-            // frame whose slot is missing, and a miss is counted rather than hidden, exactly like
-            // RealVR's "Rendering pose entry is invalid".
+            // frame whose slot is missing, and a miss is counted rather than hidden.
             OpenXRManager::XrFrameSlot slot{};
             bool slotExact = false;
             const bool haveSlot = GetFrameSlot(s_presentCount, &slot, &slotExact);
@@ -640,6 +641,19 @@ void OpenXRManager::OnPresent(IDXGISwapChain* swapChain) {
             // Source geometry from the FRAME'S slot when we have it -- the eye offsets and the
             // orientation they were located with belong to the same instant as the image. Only a
             // slot miss falls back to `m_views` as of now, which is the old mixed-timeline case.
+            // THE WINDOW EACH EYE WAS RENDERED WITH (Runtimes/AsymmetricProjection.hpp): the same
+            // function the view producer used, on the same runtime frusta, so the projection view
+            // describes exactly the rectangle that was drawn.
+            AsymEyeWindows asym{};
+            bool asymOk = false;
+            if (cvr::projection::Active()) {
+                const XrFovf f[2] = { srcViewFov ? srcViewFov[0] : m_views[0].fov,
+                                      srcViewFov ? srcViewFov[1] : m_views[1].fov };
+                const XrQuaternionf o[2] = {
+                    (srcViewPose ? srcViewPose[0] : m_views[0].pose).orientation,
+                    (srcViewPose ? srcViewPose[1] : m_views[1].pose).orientation };
+                asymOk = cvr::projection::Windows(f, o, asym.eye);
+            }
             const XrQuaternionf curHeadOri =
                 srcViewPose ? srcViewPose[0].orientation : m_views[0].pose.orientation;
             const XrQuaternionf curHeadOriInv = ConjugateQuat(curHeadOri);
@@ -665,7 +679,8 @@ void OpenXRManager::OnPresent(IDXGISwapChain* swapChain) {
                 const XrFovf srcFov0 = srcViewFov ? srcViewFov[0] : m_views[0].fov;
                 const XrFovf srcFov1 = srcViewFov ? srcViewFov[1] : m_views[1].fov;
                 XrFovf monoPairFovs[2] = { srcFov0, srcFov1 };
-                monoCapturedFovs[eye] = ApplyForcedProjectionFov(
+                monoCapturedFovs[eye] = asymOk ? cvr::projection::ToFov(asym.eye[eye])
+                    : ApplyForcedProjectionFov(
                     srcViewFov ? srcViewFov[eye] : m_views[eye].fov,
                     monoPairFovs, eye, fovWidth, fovHeight);
                 // No cant pose rotation (removed): in mono both eyes derive from ONE
@@ -686,10 +701,13 @@ void OpenXRManager::OnPresent(IDXGISwapChain* swapChain) {
         }
     }
 
+    cvr::foveated::Tick(m_d3dDevice,m_d3dQueue);
+    cvr::vrs::Tick(m_d3dDevice,m_d3dQueue);
     cvr::hud::Capture(m_d3dDevice,m_d3dQueue);
     cvr::hud::Capture(m_d3dDevice,m_d3dQueue,cvr::hud::Channel::Interaction);
     cvr::hud::Capture(m_d3dDevice,m_d3dQueue,cvr::hud::Channel::Basilisk);
     cvr::hud::Capture(m_d3dDevice,m_d3dQueue,cvr::hud::Channel::Surveillance);
+    cvr::hud::Capture(m_d3dDevice,m_d3dQueue,cvr::hud::Channel::HitMarker);
 
     std::unique_lock<std::mutex> presentLock(m_presentMutex);
         if (m_lastPresentedBackBuffer) {

@@ -22,6 +22,7 @@
 #include "Camera/SceneCameraHeading.hpp"
 #include "Camera/CameraState.hpp"
 #include "Anim/CharacterRig.hpp"  // g_VrikFrameEpoch: exact camera/entity frame pairing
+#include "Anim/WheelGrab.hpp"
 #include "Utils/LogThrottle.hpp"
 #include "Core/LiveControls.hpp"
 #include "Anim/VehiclePosePolicy.hpp"
@@ -29,6 +30,7 @@
 #include "Core/VrCoreShared.hpp"
 #include "Hooks/Hook.hpp"
 #include "Hooks/RoomscaleMove.hpp"
+#include "Hooks/BodyHeading.hpp"
 #include "Hooks/Trampoline.hpp"
 #include "Runtimes/OpenXRManager.hpp"
 #include "Utils/AobScanner.hpp"
@@ -51,6 +53,8 @@
 
 // MAIN's live ADS magnification, recovered from its own projection by the stereo module.
 extern "C" float CyberpunkVR_MainAdsZoomFactor;
+// The optics mod's sight zoom: the ADS zoom raised by the eye on a sight, without aiming.
+extern "C" int32_t CyberpunkVR_SightZoom;
 
 // ---- ADS: THE WEAPON LAYER AND THE WORLD MAGNIFIED BY DIFFERENT AMOUNTS ------------------------
 //
@@ -148,9 +152,10 @@ static void SyncAdsWeaponZoomToWorld() {
     static bool  s_saved[2] = {false, false};
     static bool  s_prevAiming = false;
 
-    if (!CyberpunkVR_AdsWeaponZoomSync) { s_prevAiming = g_isAiming; return; }
+    // The sight zoom magnifies the world the same way aiming does (NativeFunctions: SetVRSightZoom).
+    const bool aiming = g_isAiming || CyberpunkVR_SightZoom != 0;
+    if (!CyberpunkVR_AdsWeaponZoomSync) { s_prevAiming = aiming; return; }
 
-    const bool aiming = g_isAiming;
     const uintptr_t cams[2] = { g_camObjMain.load(std::memory_order_acquire),
                                 g_camObjVrcam.load(std::memory_order_acquire) };
     // Per-camera saved state, because the two objects can be latched at different times and can hold
@@ -249,13 +254,19 @@ void RefreshPlayerCameraState() {
             if (playerQueried) cvr::roomscale::SetPlayer(reinterpret_cast<uintptr_t>(playerHandle.instance));
 
             g_isInVehicle=false;
+            bool mountedCar=false;
             uintptr_t mountedIdentity=0;
             if (playerHandle && g_mountedVehicleProp) {
                 auto mountedVehicle = g_mountedVehicleProp->GetValue<RED4ext::WeakHandle<RED4ext::IScriptable>>(playerHandle.instance);
                 const auto mounted=mountedVehicle.Lock();
                 mountedIdentity=reinterpret_cast<uintptr_t>(mounted.GetPtr());
                 g_isInVehicle = mountedIdentity!=0;
+                if(mounted) {
+                    static const auto* carClass=RED4ext::CRTTISystem::Get()->GetClass("vehicleCarBaseObject");
+                    mountedCar=carClass && mounted->GetType()->IsA(carClass);
+                }
             }
+            cvr::anim::WheelSetMountedCar(mountedCar);
             s_mountedVehicleIdentity.store(mountedIdentity,std::memory_order_release);
 
             // PlayerPuppet::vehicleState mirrors PSM.Vehicle. Combat is passenger
@@ -388,7 +399,6 @@ extern "C" void __fastcall OnLocateCameraCallback(float* rbxPtr, float xmm0_val)
 
     RefreshPlayerCameraState();
 
-    const float bodyYawOffset=BodyYawFollowOffset();
 
     // SNAP HOLDBACK REMOVED. It held the view yaw one snap-delta back for the locates of a snap
     // tick, arming off a counter in shared[147] and reading [146]/[149]/[99] beside it. Two things
@@ -470,18 +480,8 @@ extern "C" void __fastcall OnLocateCameraCallback(float* rbxPtr, float xmm0_val)
     float camera_qz = quat[2];
     float camera_qw = quat[3];
 
-    // SKIP-HMD test (decoupled-aim experiment): the plugin publishes a shot-frame flag
-    // [57] and a master mode [58] to shared mem. mode 1 = always skip the HMD orientation
-    // overwrite (view follows the game's stick/mouse aim, no head); mode 2 = skip only on
-    // the shot frame (let the engine's native snap-to-aim through -> bullet should follow
-    // AIM not the head). When skipping, we leave the game's camera quat untouched.
+    // When set, the game's camera quat is left untouched (no HMD orientation written).
     bool skipHmdOrientation = false;
-    if (float* sh = GetShotShared()) {
-        const uint32_t mode = reinterpret_cast<volatile uint32_t*>(sh)[58];
-        const uint32_t shotFrame = reinterpret_cast<volatile uint32_t*>(sh)[57];
-        if (mode == 1u) skipHmdOrientation = true;
-        else if (mode == 2u && shotFrame != 0u) skipHmdOrientation = true;
-    }
     // Menu stability: in a full-screen menu (e.g. the world map),
     // do NOT drive the game camera with the HMD orientation, otherwise the menu/
     // map SWIMS as you turn your head. Leave the game camera quat untouched so the
@@ -521,35 +521,13 @@ extern "C" void __fastcall OnLocateCameraCallback(float* rbxPtr, float xmm0_val)
     float bodyGameForwardX = 2.0f * (baseQx * baseQy - baseQz * baseQw);
     float bodyGameForwardY = 1.0f - 2.0f * (baseQx * baseQx + baseQz * baseQz);
 
-    // FROM HERE ON THIS IS THE VIEW'S FORWARD, NOT THE BODY'S -- and that distinction is the whole
-    // bug the physical body rotation had.
-    //
-    // The vector above comes from the camera component, which inherits the ENTITY's yaw, so with the
-    // body follower on it carries the realign we injected into the engine's heading. Everything this
-    // hook derives from it describes the VIEW, not the body: the composed camera quaternion (which is
-    // also published as the render-view pose the solve builds its hand targets from), the heading in
-    // [141], the level matrix that takes the player's room position into the world, and the controller
-    // aim quaternion for the shot. The rendered camera itself is composed in PatchCamera from
-    // (engine yaw - realign), so leaving the realign in here made the PUBLISHED view orientation
-    // disagree with the DRAWN one by exactly that angle.
-    //
-    // What that looked like: the hand offset from the head came out rotated about the vertical by the
-    // realign, so at 92.7 deg of body turn the avatar's hand sat beside and behind the headset while
-    // the controller was in front of the chest. Measured to the degree -- the body's transforms all
-    // carried +50.69 (the same value the solve converted with, so the frames agreed) while the
-    // published view carried +50.69 too, when the drawn view was at -42.00.
-    //
-    // Taking it out once, here, fixes every consumer at the source instead of one at a time.
-    if (bodyYawOffset != 0.0f) {
-        const float ra = -bodyYawOffset;
-        const float cr = cosf(ra), sr = sinf(ra);
-        const float fx = bodyGameForwardX * cr - bodyGameForwardY * sr;
-        const float fy = bodyGameForwardX * sr + bodyGameForwardY * cr;
-        bodyGameForwardX = fx;
-        bodyGameForwardY = fy;
+    // The view is based on the independent tracking reference. Physical body
+    // requests never enter this heading, so no inverse turn is applied here.
+    float trackingYaw{};
+    if(ReadBodyTrackingYaw(&trackingYaw)) {
+        bodyGameForwardX=-std::sin(trackingYaw);
+        bodyGameForwardY=std::cos(trackingYaw);
     }
-
-
 
     // POSE PAIR LOCKING: fetch the render eye FIRST, then take a pair-locked head
     // pose — eye0 samples live + freezes, eye1 replays eye0's pose. Both eyes of
@@ -567,7 +545,7 @@ extern "C" void __fastcall OnLocateCameraCallback(float* rbxPtr, float xmm0_val)
     // xr_pair_lock (vrport.ini): 0 disables the pose-pair-lock and samples the LIVE
     // head pose every camera-locate instead of the per-pair frozen snapshot, trading
     // pair-consistent body alignment for a small per-eye skeleton tear.
-    // REVERTED (user order): live sampling exactly as the long-tested build. The
+    // REVERTED: live sampling exactly as the long-tested build. The
     // one-sample-per-frame boundary freeze (20:08) did not remove the hand trail
     // and made the snap double WORSE (frozen heading delayed the view a frame
     // behind the game world). AER keeps the pair-locked snapshot; mono samples live.
@@ -622,7 +600,7 @@ extern "C" void __fastcall OnLocateCameraCallback(float* rbxPtr, float xmm0_val)
         // pair's animation.
 
         // Mouse/controller yaw is always the body heading. The game's PITCH is added only when
-        // the user has asked for it: by default the headset supplies vertical look, and mouse-Y
+        // the player has asked for it: by default the headset supplies vertical look, and mouse-Y
         // pitch also drags a constrained pivot offset that moves the head relative to the body.
         const float gameYaw = atan2f(-bodyGameForwardX, bodyGameForwardY);
         const float gamePitch = g_liveControls.xrDisableMouseY != 0 ? 0.0f : g_gamePitchRadians;
@@ -717,12 +695,8 @@ extern "C" void __fastcall OnLocateCameraCallback(float* rbxPtr, float xmm0_val)
         const float xrGameZ = xrPose.oriY;
         const float xrGameW = xrPose.oriW;
 
-        // Camera = heading * FULL HMD orientation in EVERY on-foot mode. With physical
-        // body rotation ON, body-realign (OnOnFootDeltaHead) turns the game HEADING only
-        // on a PHYSICAL body turn and rotates the recenter base by the same angle, so a
-        // head-only turn moves the VIEW but leaves the body/heading put. (The old unarmed
-        // branch stripped the HMD yaw and glued the heading to it, which rotated the body
-        // on every head turn -- replaced by the realign model.)
+        // Camera = tracking reference * full HMD orientation. The native body
+        // motion source changes only the character's movement-controller state.
         // yaw * pitch * HMD. Pitch after yaw, so it tilts about the camera's own right axis
         // rather than a world axis; identity whenever the option leaves gamePitch at zero, which
         // makes the default path bit-identical to what it was.
@@ -980,7 +954,7 @@ extern "C" void __fastcall OnLocateCameraCallback(float* rbxPtr, float xmm0_val)
     // head shifts the rendered map background while its pins are projected for a
     // fixed position -> pins drift off the map.
     if (hasXR && !menuOpen) {
-        // "Fix Head" (xr3DofMovement) is gone -- removed on the user's instruction, and it was
+        // "Fix Head" (xr3DofMovement) is gone -- removed on purpose, and it was
         // wrong on its own terms: it dropped the head translation AND every Tracking/Camera
         // offset with it, so the sliders it hid were the ones people needed. Positional
         // tracking is not an option in a 6DoF port; the honest knob is world scale, which
@@ -1019,7 +993,7 @@ extern "C" void __fastcall OnLocateCameraCallback(float* rbxPtr, float xmm0_val)
             if (allowGameCameraTranslation) {
                 if (!g_isInVehicle && shEye[119] == 1.0f) { eyeBake[0] = shEye[116]; eyeBake[1] = shEye[117]; eyeBake[2] = shEye[118]; }
                 // Publish the TOTAL view offset actually applied ([120..123]) so hand
-                // targets stay consistent with whatever the user tunes the view to.
+                // targets stay consistent with whatever the view is tuned to.
                 shEye[120] = g_liveControls.xrHeadOffsetX + camBake[0] + eyeBake[0] + vehOff[0];
                 shEye[121] = g_liveControls.xrHeadOffsetY + camBake[1] + eyeBake[1] + vehOff[1];
                 shEye[122] = g_liveControls.xrHeadOffsetZ + camBake[2] + eyeBake[2] + vehOff[2];
@@ -1061,7 +1035,7 @@ extern "C" void __fastcall OnLocateCameraCallback(float* rbxPtr, float xmm0_val)
             float wz = CyberpunkVR_EngineBodyYawZ, ww = CyberpunkVR_EngineBodyYawW;
             if (ww < 0.0f) { wz = -wz; ww = -ww; }
             if (wz != 0.0f || ww != 0.0f)
-                flatYaw = cvr::roomscale::TrackingYaw(2.0f * atan2f(wz, ww), bodyYawOffset);
+                flatYaw = BodyTrackingYaw(2.0f * atan2f(wz, ww));
         }
         // MOUNTED, TAKE THE YAW THE VIEW WAS ACTUALLY COMPOSED WITH. The note above is explicit that this
         // matrix belongs in the VIEW's frame -- "two consumers, two headings, and they are no longer the
@@ -1076,26 +1050,26 @@ extern "C" void __fastcall OnLocateCameraCallback(float* rbxPtr, float xmm0_val)
         if (g_isInVehicle && CyberpunkVR_VehicleAnchorFromViewYaw && g_viewYawUsedValid) {
             flatYaw = g_viewYawUsedRad;
         }
-        // (The realign is already out of bodyGameForward at the top of this function, so this matrix
-        // is the VIEW's heading -- which is what takes the room position into the world without
-        // swinging the play space every time the body comes around.)
+        // Physical tracking and body-space calibration keep separate bases.
         // Manual camera alignment is a body-space calibration on foot too.
         // PID25404: a 15-degree body turn with (-.012,.174) manual XY changed
         // camera/head alignment by45.516mm, matching the wrong-basis prediction.
-        const auto anchor=cvr::camera::MakeAnchorRecipe(
+        auto anchor=cvr::camera::MakeAnchorRecipe(
             {g_liveControls.xrHeadOffsetX,g_liveControls.xrHeadOffsetY,g_liveControls.xrHeadOffsetZ},
             {vehOff[0],vehOff[1],vehOff[2]},
             {camBake[0]+eyeBake[0],camBake[1]+eyeBake[1],camBake[2]+eyeBake[2]},
             g_isInVehicle,posScale,flatYaw,cvr::camera::BodyAnchorYaw(flatYaw));
+        anchor.bodyOrbit=cvr::roomscale::PhysicalBodyHeadingOwned();
+        anchor.centreYaw=BodyCentreYaw(anchor.modelYaw);
         cvr::camera::AnchorRecipePublish(anchor);
         // The recipe above contains calibration only. Every consumer subtracts
         // the same native-physics ledger using its own sample's origin generation.
         const auto consumed = CyberpunkVR_OneSamplePerFrame ? xrConsumed : cvr::roomscale::CameraConsumed(xrPose.originSerial);
         localRight -= consumed.x * posScale;
         localForward -= consumed.y * posScale;
-        const auto delta=cvr::camera::ComposeAnchorTranslation(
+        const auto delta=cvr::camera::ComposeViewTranslation(
             {(xrPose.posX-consumed.x)*posScale,(-xrPose.posZ-consumed.y)*posScale,xrPose.posY*posScale},
-            anchor.trackingOffset,anchor.modelOffset,anchor.trackingYaw,anchor.modelYaw);
+            anchor,anchor.trackingYaw,anchor.modelYaw);
         const float worldDeltaX=delta.x, worldDeltaY=delta.y, worldDeltaZ=delta.z;
 
         // WorldPosition fixed-point is int32 * (2<<16) = 131072 (17 fractional bits) --
@@ -1104,9 +1078,9 @@ extern "C" void __fastcall OnLocateCameraCallback(float* rbxPtr, float xmm0_val)
         // only HALF of every offset here (head translation 0.5:1, half-applied bakes and
         // sliders). Now 1:1: real meters in, real meters rendered.
         //
-        // NATIVE-VR VIEW BASE (on foot). The user's directive, verbatim: "HMD = Camera,
-        // перезаписывается каждый раз, игра не должна её трогать; всё идёт от HMD и
-        // контроллеров как в нативных играх". So the main FPP camera's translation is
+        // NATIVE-VR VIEW BASE (on foot). The rule: the HMD IS the camera,
+        // overwritten every time, the game must not touch it; everything comes from the HMD and
+        // the controllers, as in native VR games. So the main FPP camera's translation is
         // REPLACED outright: view = entity + clean pair + worldDelta -- the EXACT
         // expression the hand/body anchors use (ResolveViewPos), same push, same tick.
         // The engine's located translation (procedural lean/bob/kick/neck-pivot) does
@@ -1152,7 +1126,7 @@ extern "C" void __fastcall OnLocateCameraCallback(float* rbxPtr, float xmm0_val)
         g_headDeltaFP[2].store(deltaFPz, std::memory_order_relaxed);
         g_headDeltaValid.store(1, std::memory_order_release);
         // [104..111] RENDER-VIEW POSE v2 (game world axes) + [141..142] heading,
-        // seqlocked by [143]. REVERTED to the render-stage writer (user order): the
+        // seqlocked by [143]. REVERTED to the render-stage writer: the
         // boundary publisher experiment did not remove the trail and worsened snap.
         if (float* shView = GetShotShared()) {
             static uint32_t s_vpSeqCtr = 0;

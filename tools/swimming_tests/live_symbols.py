@@ -16,6 +16,23 @@ class Symbol(c.Structure):
         ('value',c.c_ulonglong),('address',c.c_ulonglong),('register',w.ULONG),
         ('scope',w.ULONG),('tag',w.ULONG),('length',w.ULONG),('maxLength',w.ULONG),('name',c.c_char*1024)]
 
+def loaded_module(pid,name):
+    """Path of the module `name` as the process actually loaded it, or None."""
+    k=c.WinDLL('kernel32',use_last_error=True)
+    k.CreateToolhelp32Snapshot.argtypes=[w.DWORD,w.DWORD];k.CreateToolhelp32Snapshot.restype=w.HANDLE
+    k.Module32FirstW.argtypes=[w.HANDLE,c.POINTER(Module)];k.Module32NextW.argtypes=k.Module32FirstW.argtypes
+    k.CloseHandle.argtypes=[w.HANDLE]
+    snap=k.CreateToolhelp32Snapshot(0x18,pid)
+    if snap==c.c_void_p(-1).value:raise c.WinError(c.get_last_error())
+    m=Module();m.size=c.sizeof(m)
+    try:
+        more=k.Module32FirstW(snap,c.byref(m))
+        while more:
+            if m.name.lower()==name.lower():return Path(m.path)
+            more=k.Module32NextW(snap,c.byref(m))
+    finally:k.CloseHandle(snap)
+    return None
+
 def resolve(pid,dll,names):
     k=c.WinDLL('kernel32',use_last_error=True)
     k.CreateToolhelp32Snapshot.argtypes=[w.DWORD,w.DWORD];k.CreateToolhelp32Snapshot.restype=w.HANDLE

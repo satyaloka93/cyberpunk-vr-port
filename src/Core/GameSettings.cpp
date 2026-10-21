@@ -11,10 +11,15 @@ namespace {
 bool InGroup(std::string_view group,std::string_view root) {
     return group==root || (group.starts_with(root) && group.size()>root.size() && group[root.size()]=='/');
 }
+// The player's own: language, sound, difficulty, gallery, telemetry and cloud saves, and the picture
+// calibration -- brightness, gamma and the HDR brightness levels are set for the player's eyes and
+// display, so the VR preset never carries or overwrites them (the HDR mode itself stays in it).
 bool Preserve(std::string_view group,std::string_view name) {
     return InGroup(group,"/language") || InGroup(group,"/audio") ||
-        InGroup(group,"/gameplay/difficulty") || InGroup(group,"/gallery") ||
-        (group=="/gameplay/misc" && (name=="EnableTelemetry" || name=="EnableCloudSaves"));
+        InGroup(group,"/gameplay/difficulty") || InGroup(group,"/gallery") || InGroup(group,"/brightness") ||
+        (group=="/gameplay/misc" && (name=="EnableTelemetry" || name=="EnableCloudSaves")) ||
+        (group=="/video/display" && (name=="Gamma" || name=="PaperWhiteLevel" ||
+                                     name=="MaxMonitorBrightness" || name=="TonemappingMidpoint"));
 }
 bool Parse(std::string_view text,Json::Value& root,std::string& error) {
     Json::CharReaderBuilder builder;Json::CharReaderBuilder::strictMode(&builder.settings_);

@@ -1,4 +1,6 @@
 #pragma once
+#include "Runtimes/AsymmetricProjection.hpp"
+struct AsymEyeWindows { cvr::projection::EyeWindow eye[2]; };
 #include "Runtimes/SteamFrameInput.hpp"
 #include "Framegen/Presenter.hpp"
 #include "Framegen/StatsOverlay.hpp"
@@ -17,8 +19,10 @@
 #include <openxr/openxr_platform.h>
 
 #include "Render/DepthResolve.hpp"
+#include "Render/StereoDepth.hpp"
 #include "Render/SharpenPass.hpp"
 #include "Render/ColorBlit.hpp"
+#include "Render/SrgbToLinearPass.hpp"
 #include "Runtimes/HudQuad.hpp"
 #include "Runtimes/RoomscaleMovement.hpp"
 #include "Runtimes/TrackingReset.hpp"
@@ -27,6 +31,7 @@
 #include "Runtimes/CaptureBufferLeases.hpp"
 #include "Anim/BodyBend.hpp"
 #include "Runtimes/TrackedBodyYaw.hpp"
+#include "Runtimes/PhysicalCrouch.hpp"
 #include "Hooks/SwimmingInput.hpp"
 #include "Hooks/LadderInput.hpp"
 
@@ -44,6 +49,8 @@ struct OpenXRHeadPose {
     // Recenter/reference-space generation of this exact sample.
     uint64_t originSerial{};
     cvr::body::BendSample bodyBend{};
+    float crouchDepth{};
+    bool physicalCrouch{};
 };
 
 // Aggregated VR-controller snapshot, queried each frame from the XInput hook
@@ -238,10 +245,7 @@ public:
 
     // THE pose of a specific frame, bound the same way its depth is.
     //
-    // Everything before this guessed how far the engine renders ahead -- a lag counted in
-    // presents, tuned by hand. RealVR never guesses: the pose rides in the queue slot next to
-    // the image, keyed by the frame's own index, so the two cannot come apart. We have the
-    // same anchor available: the barrier that makes the frame's depth readable runs INSIDE
+    // Bind the pose to the image's frame index. The barrier that makes the depth readable runs INSIDE
     // that frame, on the render thread, and the depth stage taken there is already stamped
     // with the present that will show it -- and the depth matches perfectly as a result.
     // Recording the head pose at that same instant gives the image, its depth and its pose
@@ -263,7 +267,7 @@ public:
     // xrLocateViews fills m_views in that same local space. Handing the layer a
     // recenter-relative pose is therefore a space error the size of the recenter -- invisible
     // while the base is identity (a fresh LOCAL space usually is), and a rotated world the
-    // moment the user recenters facing anywhere else.
+    // moment the player recenters facing anywhere else.
     void GetRecenterBase(XrPosef* out) const {
         if (!out) return;
         out->orientation.x = m_baseOriX.load(std::memory_order_relaxed);
@@ -299,12 +303,10 @@ public:
     // from `m_views` as of Present. That mixture is what the compositor cannot reconcile -- it
     // re-projects away a translation that is already in the pixels, one frame late, every frame.
     //
-    // Both reference mods solve it the same way and it is worth naming: UEVR keeps
+    // UEVR keeps
     // `PipelineState[6]` indexed by the engine's frame_count, holding frame_state +
     // view_space_location + stage_views, and its end_frame reads pose, fov AND displayTime out of
-    // that one slot. RealVR keeps a 4-slot pose ring in which every slot stores its own frame
-    // index and refuses to use a slot whose index does not match ("Rendering pose entry is
-    // invalid"). Same shape, same reason. This is that structure for us.
+    // that one slot. This structure likewise carries the frame index with its pose and projection.
     struct XrFrameSlot {
         uint64_t serial = 0;          // the present that will show the frame built with this
         XrTime   displayTime = 0;     // what the locate was aimed at
@@ -373,8 +375,8 @@ public:
     // older slot is precisely the right answer -- it carries the pose, the eye offsets and the
     // FOV that the image actually holds.
     //
-    // RealVR has exactly this branch: when its render counter outruns the pose high-water mark it
-    // reuses the last sampled pose from the ring rather than fetching a fresh one. `exact` is
+    // When the render counter outruns the pose high-water mark, reuse the last sampled pose.
+    // `exact` is
     // reported back so the two cases stay separately countable; a slot NEWER than the request is
     // never acceptable, since that pose is not in the pixels yet.
     bool GetFrameSlot(uint64_t serial, XrFrameSlot* out, bool* exact = nullptr) const {
@@ -406,11 +408,9 @@ public:
     // rates beat against each other continuously, and that beat is what a fixed +N-period fudge
     // cannot follow.
     //
-    // RealVR measures the relationship instead of assuming it: sub_18030D480, called every frame
-    // from vr_render_frame_step, is a rolling 100-sample least-squares fit of
-    // displayTime = k*frameIndex + b (accumulating means, Sxx and Sxy, double-buffered so the
-    // window restarts without a discontinuity), and its slope/intercept become the `period`/`base`
-    // that its pose fetch predicts with. This is the same fit.
+    // Measure displayTime = k*frameIndex + b with a rolling least-squares fit.
+    // Accumulate means, Sxx and Sxy; double-buffer the window to avoid discontinuities.
+    // The resulting slope/intercept supply the period/base used for pose prediction.
     //
     // Conditioning matters here: serials reach six figures and XrTime is ~1e18 ns, so the window
     // is re-anchored on every restart and the published line is kept as (anchor point + slope)
@@ -554,8 +554,7 @@ public:
         {
             if (m_frameSampleEpoch != epoch || !m_frameSample.valid ||
                 m_frameSample.originSerial != p.originSerial) {
-                p.bodyBend=m_bodyBendTracker.Update({p.posX,p.posY,p.posZ},
-                    {p.oriX,p.oriY,p.oriZ,p.oriW},p.originSerial,cvr::swimming::Active() || cvr::ladder::Active());
+                UpdateBodyPosture(p);
                 m_frameSample = p;
                 m_frameSampleEpoch = epoch;
                 ++m_frameSampleSequence;
@@ -569,6 +568,9 @@ public:
         }
         return out->valid;
     }
+
+    bool PhysicalCrouchRequested();
+    void SetPhysicalCrouchBridgeReady(bool ready);
 
     // ---- THE POSE THAT IS ACTUALLY IN THE FRAME, READ BACK FROM THE ENGINE -------------------
     //
@@ -688,6 +690,11 @@ public:
         return false;
     }
 
+    // One vibration segment on one controller (hand 0 = left, 1 = right), amplitude 0..1. XR frame
+    // thread only -- Runtimes/Haptics.cpp queues the events and plays them from there. Returns the
+    // XrResult, or -1 when there is no haptic action or no running session.
+    int ApplyHaptic(int hand, float amplitude, float durationSec);
+
     // Write hand positions/orientations + HMD orientation to shared memory.
     // Called from OnLocateCameraCallback (BEFORE render) to eliminate the 1-frame
     // hand lag that causes hand displacement artifacts.
@@ -715,7 +722,7 @@ public:
                             cvr::roomscale::Vec2* consumed=nullptr) const;
     bool AcquireCameraPoseFrame(OpenXRHeadPose* head,cvr::roomscale::Vec2* consumed,uint64_t* sequence=nullptr);
     bool GetPublishedHandFrame(OpenXRHeadPose* head,OpenXRHeadPose hands[2]) const;
-    bool GetGestureHandFrame(OpenXRHeadPose* head,OpenXRHeadPose hands[2],uint64_t* sequence,uint64_t* stampUs) const;
+    bool GetGestureHandFrame(OpenXRHeadPose* head,OpenXRHeadPose hands[2],uint64_t* sequence,uint64_t* stampUs,bool rawMelee=false) const;
     void SetWeaponOffsets(float pitch, float yaw, float roll, float dx, float dy, float dz);
 
     // VR hand-tracking activation, driven from the in-headset overlay menu. The
@@ -736,7 +743,7 @@ public:
     // BOUND = 256: the mapping is 1024 bytes = 256 floats. The old `< 128` bound silently
     // no-opped BOTH sides of the weapon flag when it moved from [126] to [144] (the barrel
     // laser dot died that day: write dropped, read returned 0). Audit find (gpt-5.5) --
-    // and the user called the <128 boundary from memory before the audit confirmed it.
+    // and the <128 boundary was called from memory before the audit confirmed it.
     float GetSharedSlot(int i) const { float* p = m_sharedHandsPtr; return (p && i >= 0 && i < 256) ? p[i] : 0.0f; }
     // Write a shared-mem slot (XInput merge publishes the melee power-trigger flag to [30]).
     void SetSharedSlot(int i, float v) { float* p = m_sharedHandsPtr; if (p && i >= 0 && i < 256) p[i] = v; }
@@ -758,7 +765,7 @@ public:
     }
 
     // ==== AUTO-CALIBRATION ====
-    // T-pose calibration: user holds arms straight out sideways and stands straight.
+    // T-pose calibration: the player holds arms straight out sideways and stands straight.
     // We sample the live HMD + controller positions over `secs` seconds and compute:
     //   * playerHeight    = HMD Y in world (above floor)
     //   * armSpan         = max(|leftCtrl - rightCtrl|) during the sample
@@ -808,7 +815,7 @@ public:
     // Persist current calibration (everything: scales, heights, swings, poles, wrists, shoulder
     // offsets) to a file next to dxgi.dll. Returns true on success.
     bool SaveCalibrationToFile();
-    bool LoadCalibrationFromFile();   // restored at startup so the user doesn't recalibrate each launch
+    bool LoadCalibrationFromFile();   // restored at startup so the player doesn't recalibrate each launch
     // Monotonic counter: the plugin dumps a diag whenever the published value changes.
     void RequestVRDiag() { m_logDiagReq.fetch_add(1, std::memory_order_relaxed); }
 
@@ -850,6 +857,9 @@ public:
     void MaybeLogRuntimeFovDetails(const XrFovf& left, const XrFovf& right, float runtimeHfovDeg, float runtimeVfovDeg, float runtimeIpdMeters);
     bool GetCurrentEyeCenterOffset(int eye, XrVector3f* out);
     bool GetCurrentEyeFov(int eye, XrFovf* out);
+    // Both eyes' rendered windows for the asymmetric projection (Runtimes/AsymmetricProjection.hpp),
+    // from the same views GetCurrentEyeFov reads. Indexed by runtime eye (0 left, 1 right).
+    bool GetAsymmetricEyeWindows(struct AsymEyeWindows* out, bool fitTarget = true);
     
     bool GetRecommendedRenderTargetSize(uint32_t* width, uint32_t* height) const;
 
@@ -879,6 +889,7 @@ private:
     bool EnsureMonoSubmitResources();
     bool EnsureMonoCaptureResource(const D3D12_RESOURCE_DESC& sourceDesc);
     bool EnsureDepthSnapshot(ID3D12Resource* gameDepth);
+    bool EnsureStereoDepthSwapchains(const cvr::depth::Plan& plan);
 
     // Records barriers + (copy OR shader resolve) into m_captureCmdList that
     // captures the current frame's scene depth into m_depthSnapshot. Uses a
@@ -927,6 +938,7 @@ private:
     XrAction m_secondaryButtonAction = XR_NULL_HANDLE;   // Bool, per hand (Y / B)
     XrAction m_menuButtonAction = XR_NULL_HANDLE;        // Bool, global menu/start action
     XrAction m_psvr2TriangleTouchAction = XR_NULL_HANDLE;
+    XrAction m_hapticAction = XR_NULL_HANDLE;            // Vibration OUTPUT, per hand
     cvr::input::SteamFrameActions m_steamFrameActions{};
     XrPath m_handPaths[2] = { XR_NULL_PATH, XR_NULL_PATH };
     XrSpace m_handSpaces[2] = { XR_NULL_HANDLE, XR_NULL_HANDLE };
@@ -1051,6 +1063,8 @@ private:
         std::vector<XrSwapchainImageD3D12KHR> images;
         std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> rtvs;
         XrSwapchain depthHandle = XR_NULL_HANDLE;
+        uint32_t depthWidth{},depthHeight{},depthPendingIndex{};
+        bool depthPending{}; // acquired but xrWaitSwapchainImage has not succeeded yet
         std::vector<XrSwapchainImageD3D12KHR> depthImages;
     };
     struct CapturedMonoFrame {
@@ -1077,13 +1091,14 @@ private:
     std::vector<EyeSwapchain> m_eyeSwapchains;
     CapturedMonoFrame m_monoCapturedFrame;
     cvr::framegen::Presenter m_framegen;
+    cvr::depth::Renderer m_stereoDepth;
     cvr::framegen::StatsOverlay m_framegenOverlay;
     // [DEPTH] Game scene-depth snapshot for the XR depth layer (parallel to color).
     ID3D12Resource* m_depthSnapshot = nullptr;
     uint32_t m_depthSnapshotW = 0;
     uint32_t m_depthSnapshotH = 0;
-    // A POOL of snapshot buffers, rotated by the producer -- RealVR's 3-slot queue, and it
-    // is not decoration. With a single buffer the producer must either block until the
+    // A pool of snapshot buffers, rotated by the producer.
+    // With a single buffer the producer must either block until the
     // consumer finishes (which puts the compositor's pacing on the game's Present) or skip
     // the capture (which starves the headset of new frames while the game itself runs fine
     // -- smooth on the monitor, freezing in the HMD). With three, the producer always writes
@@ -1195,6 +1210,9 @@ private:
     // One head sample per aim epoch -- see AcquireFrameHeadSample().
     std::mutex            m_frameSampleMutex;
     cvr::body::BendTracker m_bodyBendTracker;
+    cvr::body::PhysicalCrouch m_physicalCrouch;
+    std::atomic<uint64_t> m_crouchBridgeStampUs{0};
+    void UpdateBodyPosture(OpenXRHeadPose& pose);
     uint64_t              m_frameSampleEpoch = ~0ull;
     uint64_t              m_frameSampleSequence = 0;
     uint64_t              m_frameSampleStampUs = 0;
@@ -1234,10 +1252,13 @@ private:
     // else — which prevents compositor positional async-timewarp.
     std::unique_ptr<DepthResolve> m_depthResolve;
 
-    // CAS sharpen pass. Records onto the submit command list right where the eye
-    // image is written to the swapchain when xr_sharpness > 0.
+    // CAS Sharpening on owned real captures, before frame generation.
     std::unique_ptr<SharpenPass> m_sharpenPass;
-    bool m_sharpenReady = false;
+
+    // The eye swapchain is not the eye images' bit-compatible sRGB format (PickMonoSwapchainFormat in
+    // OpenXRInternal.hpp): each eye is drawn through the decode instead of copied. Set with the swapchains.
+    std::unique_ptr<SrgbToLinearPass> m_srgbToLinearPass;
+    bool m_convertForSwapchain = false;
 
     // Reuse-last-frame path: persistent "last good" eye images + their pose/fov.
     // On a stale tick we re-present these with the stashed pose so the runtime
@@ -1283,6 +1304,7 @@ private:
     cvr::tracking::HandPublicationGate m_handPublicationGate; // m_handMutex
     OpenXRHeadPose m_publishedHandHead{},m_publishedHands[2]{}; // same mutex
     OpenXRHeadPose m_publishedGestureHands[2]{}; // same sample, before weapon-hand offsets
+    OpenXRHeadPose m_publishedRawMeleeHands[2]{}; // ordinary melee, before visual hand filtering
     uint64_t m_publishedHandSequence{},m_publishedHandStampUs{};
     XrTime m_publishedHandAim{};
     cvr::roomscale::Vec2 m_publishedHandConsumed{};
@@ -1358,6 +1380,7 @@ private:
     cvr::hud::Quad m_interactionQuad{cvr::hud::Channel::Interaction};
     cvr::hud::Quad m_basiliskQuad{cvr::hud::Channel::Basilisk};
     cvr::hud::Quad m_surveillanceQuad{cvr::hud::Channel::Surveillance};
+    cvr::hud::Quad m_hitMarkerQuad{cvr::hud::Channel::HitMarker};
     cvr::vrui::Panel m_settingsPanel;
     cvr::hud::Follow m_menuFollow;
     cvr::hud::DisplayClock m_menuClock;

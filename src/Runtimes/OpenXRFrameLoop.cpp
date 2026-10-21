@@ -1,12 +1,16 @@
 #include "Utils/DebugGate.hpp"
+#include "Hooks/Psvr2Input.hpp"
 #include "Runtimes/Psvr2HapticChannel.hpp"
+#include "Utils/RunAudit.hpp"
+#include "Core/LiveControls.hpp"
 #include "Render/CommandResources.hpp"
 #include "Render/GpuStageProfile.hpp"
 // openxr_frameloop.cpp - the XR frame loop (PumpInlineFrame / FrameThreadMain).
 // Split verbatim from openxr_manager.cpp; this is an OpenXRManager method. Shared
 // module state/helpers come from openxr_internal.h (inline, single instance).
 #include "Runtimes/OpenXRManager.hpp"
-#include "Hooks/Psvr2Input.hpp"
+#include "Runtimes/Haptics.hpp"
+#include "Runtimes/WristBase.hpp"
 #include "Camera/ImagePoseIdentity.hpp"
 #include "Runtimes/RoomscaleTracking.hpp"
 #include "Runtimes/SimulatorRecenter.hpp"
@@ -16,6 +20,9 @@
 #include "Utils/XrMath.hpp"
 #include "Utils/SharedSlots.hpp"
 #include "Runtimes/RuntimeFovCorrection.hpp"
+#include "Camera/GazeCenter.hpp"
+#include "Runtimes/PipelinePrediction.hpp"
+#include "Runtimes/DepthSwapchainImage.hpp"
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -34,6 +41,7 @@
 
 // Shared physical-body heading in tracking space; the getter refreshes suspension state.
 extern float BodyYawFollowOffset();
+extern float GetWorldScale();
 
 // Run the XR cycle on every display frame and let xrWaitFrame pace it, re-submitting the
 // last snapshot with ITS OWN pose when the game has not produced a new one. 0 restores the
@@ -41,8 +49,8 @@ extern float BodyYawFollowOffset();
 //
 // This matches how the established injected-VR mods structure it: fholger's crysis_vrmod
 // runs AwaitFrame (xrWaitFrame -> xrBeginFrame -> xrLocateViews) -> game renders ->
-// FinishFrame (xrEndFrame) once per frame and never skips the cycle, and RealVR's CP2077
-// loop is the same shape. The invariant they both keep is that the pose in the projection
+// FinishFrame (xrEndFrame) once per frame and never skips the cycle.
+// The invariant is that the pose in the projection
 // layer is the one the image was rendered against -- not one located at submit time.
 extern "C" __declspec(dllexport) int CyberpunkVR_XrPaceByRuntime = 1;
 
@@ -380,7 +388,7 @@ void XrAccumulateCycle(double waitEnterMs, double waitMs, long long periodNs) {
 //
 // 0 = this cycle's predictedDisplayTime (what it always was).
 // 1 = predictedDisplayTime + period * PosePredictScale -- a constant offset (the UEVR shape).
-// 2 = the measured fit (the RealVR shape): predict the display time of the frame the game is
+// 2 = the measured fit: predict the display time of the frame the game is
 //     building right now from the rolling regression, and locate everything at that.
 //
 // 2 is the default because there is no constant to pick: the XR loop is paced by xrWaitFrame at
@@ -391,14 +399,14 @@ extern "C" __declspec(dllexport) int   CyberpunkVR_PosePredictMode  = 2;
 extern "C" __declspec(dllexport) float CyberpunkVR_PosePredictScale = 1.0f;
 // How much of the measured frame-ahead offset to actually lead by, 0..1.
 //
-// 0 = aim exactly at the runtime's own predictedDisplayTime and add nothing. Strict: you turn
-// your head, the world turns, and no part of the image was ever drawn from a viewpoint the head
-// did not occupy. What latency remains is the compositor's job, and reprojection does it well.
-// 1 = lead by a full game frame, which is textbook for an app that renders inside its own XR
-// frame, and is what made the camera over-rotate here: we render one frame late, so leading on
-// top of that pushes xrLocateSpace into 40-50 ms of extrapolation and it overshoots on direction
-// changes. Raise it only if the world feels laggy AND the overshoot does not come back.
-extern "C" __declspec(dllexport) float CyberpunkVR_PoseAimScale = 0.0f;
+// 1 = aim the render camera at its measured real presentation slot, with a bounded/slewed horizon.
+// 0 retains the current XR-cycle target for diagnostic A/B. A correct submitted pose label does not
+// compensate for missing edge pixels when a camera was rendered for an earlier display interval.
+extern "C" __declspec(dllexport) float CyberpunkVR_PoseAimScale = 1.0f;
+// Last target calculation: XR display time, camera target time, fitted time, building serial, valid fit.
+extern "C" __declspec(dllexport) int64_t CyberpunkVR_PoseTargetDebug[5]{};
+extern "C" __declspec(dllexport) char CyberpunkVR_StereoDepthReport[768]{};
+extern "C" __declspec(dllexport) std::atomic<uint32_t> CyberpunkVR_StereoDepthReportSeq{};
 // Diagnostics: the measured game-frame period in microseconds, and how often the fit was used
 // versus fell back. A slope that does not settle near the real frame time means the fit is being
 // fed garbage and mode 1 is the honest choice.
@@ -421,7 +429,7 @@ extern "C" __declspec(dllexport) int CyberpunkVR_EnginePipelineDepth = 0;
 // Live-switchable so the two can be compared inside one session.
 // 3 = the same fixed time-constant lerp the view path uses (CyberpunkVR_PoseLerpSpeed), so the
 // hands' head reference and the view lag identically. See the use site.
-extern "C" __declspec(dllexport) int CyberpunkVR_HeadFilter = 3;
+extern "C" __declspec(dllexport) int CyberpunkVR_HeadFilter = 0;
 extern "C" float CyberpunkVR_PoseLerpSpeed;   // defined in OpenXRManager.cpp
 // How the submitted centre pose was obtained. Written = the exact sample the camera was built
 // from (correct). Slot = the frame loop's own locate (a different sample; only right when the
@@ -466,7 +474,7 @@ extern "C" __declspec(dllexport) int CyberpunkVR_MainIsRightEye = 1;
 // Collapse the two submitted eye poses to one orientation and the midpoint position whenever both
 // eyes are shown a single image. On a canted headset the runtime's per-eye orientations differ, and
 // anchoring one image at both of them pushes the copies apart in the direction the eyes cannot
-// follow. 1 = collapse (the R.E.A.L.-VR-for-Witcher-3 shape), 0 = submit the runtime's pair.
+// follow. 1 = collapse, 0 = submit the runtime's pair.
 extern "C" __declspec(dllexport) int CyberpunkVR_MonoCyclopeanPose = 1;
 // HOW FAR THE RIGHT STICK MUST GO IN THE D-PAD CHORD. To the stop, like every other gesture in
 // this port: the snap turn, the sprint detent, the crouch and the dash all fire at 0.90, and for
@@ -852,16 +860,15 @@ DWORD OpenXRManager::FrameThreadMain() {
     if (!s_frameStartupDone) {
         s_frameStartupDone = true;
         Log("OpenXRManager: Inline frame pump started.\n");
-        // Try to restore the user's saved VRIK calibration once on startup. If no file,
+        // Try to restore the saved VRIK calibration once on startup. If no file,
         // seed m_calib[] with plugin defaults so later calibration stays sensible.
         if (!LoadCalibrationFromFile()) {
             m_calib[0].store(1.05f, std::memory_order_relaxed);
             m_calib[1].store(1.06f, std::memory_order_relaxed);
             m_calib[4].store(1.0f,  std::memory_order_relaxed);
             m_calib[5].store(1.0f,  std::memory_order_relaxed);
-            m_calib[9].store(-90.0f,  std::memory_order_relaxed); // wRy
-            m_calib[11].store(-180.0f,std::memory_order_relaxed); // wLp
-            m_calib[12].store(-90.0f, std::memory_order_relaxed); // wLy
+            for (int i = 0; i < 6; ++i)   // the wrists on the baked base (Runtimes/WristBase.hpp)
+                m_calib[8 + i].store(cvr::calib::kWristBase[i], std::memory_order_relaxed);
         }
     }
 
@@ -1004,7 +1011,7 @@ DWORD OpenXRManager::FrameThreadMain() {
         // (m_monoCapturedFrame.poses) rather than being located afresh at submit time. The
         // runtime sees an unchanged pose on a repeat and reprojects it itself -- which is
         // what makes 45 fps look smooth on a 90 Hz display, and it leaves the choice of
-        // ASW/reprojection where it belongs, with the runtime and the user.
+        // ASW/reprojection where it belongs, with the runtime and the player.
         //
         // The old wait is kept behind the flag: its comment was written when the pose WAS
         // re-located per submit, and under that condition it was right.
@@ -1069,7 +1076,8 @@ DWORD OpenXRManager::FrameThreadMain() {
         XrMark('W');
         CVR_DIAGNOSTIC(CyberpunkVR_DebugXrWaits.fetch_add(1, std::memory_order_relaxed));
         const double waitEnterMs = CyberpunkVR_XrRateLog ? XrDiagNowMs() : 0;
-        XrResult res = xrWaitFrame(m_session, &waitInfo, &frameState);
+        XrResult res;
+        {cvr::audit::Span auditWait(cvr::audit::XrWait);res = xrWaitFrame(m_session, &waitInfo, &frameState);}
         const double waitMs = CyberpunkVR_XrRateLog ? XrDiagNowMs() - waitEnterMs : 0;
         CVR_DIAGNOSTIC(CyberpunkVR_DebugXrWaitsReturned.fetch_add(1, std::memory_order_relaxed));
         if (XR_FAILED(res)) {
@@ -1084,7 +1092,7 @@ DWORD OpenXRManager::FrameThreadMain() {
         // ping-pong the synth scratch slot + stride logs). The blendFactor itself
         // is computed from QPC capture timestamps, not this counter.
         ++displayFrameIndex;
-        cvr::psvr2::Haptics().Heartbeat();
+        if (IsRuntimePsvr2()) cvr::psvr2::Haptics().Heartbeat();
         if (frameState.predictedDisplayPeriod > 0) {
             cvr::framegen::DisplayPeriod(frameState.predictedDisplayPeriod);
             m_predictedDisplayPeriodNs.store(frameState.predictedDisplayPeriod, std::memory_order_relaxed);
@@ -1124,32 +1132,37 @@ DWORD OpenXRManager::FrameThreadMain() {
         // Reused 0, Miss 0) that switching was the whole remaining spread: the measured
         // render->live gap sat at avg ~1.2 deg with excursions to 6.
         //
-        // So the fit contributes an OFFSET, smoothed, and the aim is always
-        // `predictedDisplayTime + offset*scale`. When the fit is rejected the offset simply
-        // persists; nothing jumps, because there is no other formula to jump to.
-        //
-        // Scale defaults to 0: aim exactly where the runtime says the frame will be shown, and
-        // add no lead of our own. Leading further is what produced "the camera over-rotates" --
-        // xrLocateSpace extrapolating 40-50 ms overshoots on a direction change and draws the
-        // world from a viewpoint the head never occupied, which reprojection cannot undo. The
-        // residual latency of NOT leading is exactly what the compositor's reprojection is for.
-        static double s_aimOffsetNs = 0.0;
+        // Use a continuous, bounded lead toward the measured REAL frame's display slot. The
+        // midpoint's earlier slot is not a sample for its real endpoint. Invalid fits decay to
+        // zero; tracking-origin and FG cadence changes discard the previous regression.
+        static cvr::tracking::PipelinePrediction pipelinePrediction;
+        static uint64_t predictionOrigin = 0;
+        static bool predictionFg = false;
+        const uint64_t currentOrigin = GetTrackingOriginSerial();
+        const bool currentFg = cvr::framegen::Enabled();
+        if(predictionOrigin!=currentOrigin || predictionFg!=currentFg) {
+            pipelinePrediction.Reset();predictionOrigin=currentOrigin;predictionFg=currentFg;
+            std::lock_guard lock(m_fitMutex);
+            m_fitAnchored=m_fitValid=false;
+            m_fitN=m_fitSx=m_fitSy=m_fitSxx=m_fitSxy=0;
+        }
         XrTime locateTime = frameState.predictedDisplayTime;
         if (CyberpunkVR_PosePredictMode == 2) {
             XrTime fitted = 0;
             const XrTime per = static_cast<XrTime>(frameState.predictedDisplayPeriod);
-            if (FitPredictDisplayTime(buildingSerial, &fitted) && per > 0 &&
-                fitted > frameState.predictedDisplayTime - per &&
-                fitted < frameState.predictedDisplayTime + per * 4) {
-                const double raw = static_cast<double>(fitted - frameState.predictedDisplayTime);
-                s_aimOffsetNs = s_aimOffsetNs * 0.90 + raw * 0.10;   // slow, so it cannot jitter
+            const bool fittedValid = FitPredictDisplayTime(buildingSerial, &fitted);
+            if (fittedValid) {
                 CVR_DIAGNOSTIC(++CyberpunkVR_DebugFitUsed);
             } else {
-                CVR_DIAGNOSTIC(++CyberpunkVR_DebugFitMissed);                        // keep the last offset
+                CVR_DIAGNOSTIC(++CyberpunkVR_DebugFitMissed);
             }
             CyberpunkVR_DebugFitSlopeUs = static_cast<unsigned int>(FitSlopeNs() / 1000.0);
-            locateTime = frameState.predictedDisplayTime +
-                static_cast<XrTime>(s_aimOffsetNs * CyberpunkVR_PoseAimScale);
+            locateTime = pipelinePrediction.Target(frameState.predictedDisplayTime,per,fitted,fittedValid,
+                CyberpunkVR_PoseAimScale);
+            CVR_DIAGNOSTIC(CyberpunkVR_PoseTargetDebug[0]=frameState.predictedDisplayTime;
+                CyberpunkVR_PoseTargetDebug[1]=locateTime;CyberpunkVR_PoseTargetDebug[2]=fitted;
+                CyberpunkVR_PoseTargetDebug[3]=static_cast<int64_t>(buildingSerial);
+                CyberpunkVR_PoseTargetDebug[4]=fittedValid?1:0);
         } else if (CyberpunkVR_PosePredictMode == 1) {
             locateTime = frameState.predictedDisplayTime +
                 static_cast<XrTime>(frameState.predictedDisplayPeriod *
@@ -1202,6 +1215,12 @@ DWORD OpenXRManager::FrameThreadMain() {
                 m_runtimeHorizontalFovDeg.store((hfov0 + hfov1) * 0.5f, std::memory_order_relaxed);
                 m_runtimeVerticalFovDeg.store((vfov0 + vfov1) * 0.5f, std::memory_order_relaxed);
                 m_runtimeIpd.store(ipd, std::memory_order_relaxed);
+                cvr::projection::EyeWindow gazeWindows[2];
+                const XrFovf gazeFovs[]{m_views[0].fov,m_views[1].fov};
+                const XrQuaternionf gazeEyes[]{m_views[0].pose.orientation,m_views[1].pose.orientation};
+                cvr::gaze::Publish(cvr::projection::Active() && cvr::projection::Windows(gazeFovs,gazeEyes,gazeWindows)
+                    ? cvr::gaze::FromWindows(gazeWindows[0].u,gazeWindows[0].d,gazeWindows[1].u,gazeWindows[1].d)
+                    : cvr::gaze::Center{});
                 MaybeLogRuntimeFovDetails(
                     m_views[0].fov,
                     m_views[1].fov,
@@ -1260,7 +1279,7 @@ DWORD OpenXRManager::FrameThreadMain() {
                 if (!m_basePoseSet || m_recenterRequested.exchange(false, std::memory_order_relaxed) ||
                     m_externalPoseReset.Pending()) {
                     // YAW-ONLY BASE (native-VR recenter semantics). The old code captured the
-                    // FULL HMD orientation -- whatever pitch/roll the user's head held at that
+                    // FULL HMD orientation -- whatever pitch/roll the player's head held at that
                     // moment got baked into the base, and conj(base)*pose then TILTED THE WORLD
                     // HORIZON for the whole session (recenter while glancing down = permanently
                     // sloped world). OpenXR runtimes recenter LOCAL space around gravity only
@@ -1427,6 +1446,8 @@ DWORD OpenXRManager::FrameThreadMain() {
                 syncInfo.countActiveActionSets = 1;
                 syncInfo.activeActionSets = &activeActionSet;
                 XrResult syncRes = xrSyncActions(m_session, &syncInfo);
+                // Vibration queued since the last frame, played where the actions are synced.
+                if (XR_SUCCEEDED(syncRes)) cvr::haptics::Tick();
                 
                 if (doHandLog) {
                     Log("OpenXRManager[Hands]: syncRes=%d sessionState=%d\n", syncRes, (int)m_sessionState);
@@ -1838,19 +1859,17 @@ DWORD OpenXRManager::FrameThreadMain() {
         if (monoReady && viewCountOutput == m_eyeSwapchains.size()) {
             {
                 ID3D12Resource* monoSource = nullptr;
-                ID3D12Resource* monoDepthSource = nullptr;
                 ID3D12Resource* vrcamEye=nullptr;
                 uint64_t capturedReadFence=0;
                 uint64_t presentSerial = 0;
-                uint64_t monoDepthFence = 0;   // writer-queue fence guarding monoDepthSource
                 XrPosef monoPoses[2]{};
                 uint64_t monoPoseIds[2]{};
                 double monoCaptureMs = 0.0;   // when the frame below was captured; see the age counters
                 XrFovf monoFovs[2]{};
                 bool monoHasView[2] = {};
-                bool monoHasDepth = false;
                 cvr::framegen::Frame fgFrame;
                 cvr::framegen::Selection fgSelection;
+                m_stereoDepth.Poll();
                 bool fgSelected=false;
                 {
                     std::lock_guard<std::mutex> lock(m_presentMutex);
@@ -1864,7 +1883,7 @@ DWORD OpenXRManager::FrameThreadMain() {
                         presentSerial = m_monoCapturedFrame.serial;
                         monoCaptureMs = m_monoCapturedFrame.captureMs;
                         for (int eye = 0; eye < 2; ++eye) {
-                            if(!cvr::framegen::Enabled())m_monoCapturedFrame.framegenInputs[eye].reset();
+                            if(!cvr::framegen::CaptureInputsEnabled())m_monoCapturedFrame.framegenInputs[eye].reset();
                             monoPoses[eye] = m_monoCapturedFrame.poses[eye];
                             monoPoseIds[eye]=m_monoCapturedFrame.poseIds[eye];
                             monoFovs[eye] = m_monoCapturedFrame.fovs[eye];
@@ -1878,31 +1897,7 @@ DWORD OpenXRManager::FrameThreadMain() {
                                 &monoPoses[eye],&monoFovs[eye],&monoPoseIds[eye],&reused);
                             if(reused)CVR_DIAGNOSTIC(CyberpunkVR_DebugVrcamEyeReused.fetch_add(1,std::memory_order_relaxed));
                         }
-                        // Accept a slightly older depth snapshot instead of dropping the
-                        // layer for that frame.
-                        //
-                        // The snapshot is only taken while the game depth is shader-readable;
-                        // measured with VRCAM on, at Present it is often still in DEPTH_WRITE
-                        // (state 0x10 rather than 0xE0), so an exact serial match makes the
-                        // depth layer appear and disappear between frames. A compositor that
-                        // gets depth on one frame and none on the next keeps switching
-                        // reprojection modes, which is worse than never sending it. Depth is a
-                        // reprojection hint, and one a few frames old is still a good one --
-                        // the camera has barely moved -- so the layer stays present and
-                        // consistent.
-                        const uint64_t depthAge =
-                            m_monoCapturedFrame.serial >= m_depthSnapshotSerial
-                                ? m_monoCapturedFrame.serial - m_depthSnapshotSerial
-                                : 0;
-                        if (m_depthLayerSupported &&
-                            m_depthSnapshot &&
-                            m_depthSnapshotSerial != 0 &&
-                            depthAge <= 8) {
-                            monoDepthSource = m_depthSnapshot;
-                            monoDepthSource->AddRef();
-                            monoDepthFence = m_depthSnapshotWriterFence;
-                            monoHasDepth = true;
-                        }
+
                     }
                 }
 
@@ -1915,9 +1910,7 @@ DWORD OpenXRManager::FrameThreadMain() {
                 // delivery, i.e. judder, and it is self-inflicted: it appeared when the mono
                 // submit moved onto this thread.
                 //
-                // RealVR avoids the whole class of problem with a 3-slot queue where producer
-                // and consumer never touch the same buffer. The same effect, far less code:
-                // announce that the snapshot is being read, and let the producer SKIP its
+                // Announce that the snapshot is being read, and let the producer SKIP its
                 // capture for that frame instead of blocking. A skipped capture costs
                 // nothing now -- the previous frame is re-submitted with its own pose, which
                 // is exactly what the runtime wants anyway.
@@ -1926,6 +1919,7 @@ DWORD OpenXRManager::FrameThreadMain() {
                 ID3D12CommandAllocator* currentAllocator = m_cmdAllocators[m_cmdAllocatorIndex];
                 if (m_fenceValue >= 3 && m_fence->GetCompletedValue() < m_fenceValue - 2) {
                     m_fence->SetEventOnCompletion(m_fenceValue - 2, m_fenceEvent);
+                    cvr::audit::Span auditFence(cvr::audit::XrFence);
                     WaitForSingleObject(m_fenceEvent, 50);   // 50 ms, not 1000: a display frame is ~11 ms, so a
                     // full second of waiting here IS the freeze it was meant to prevent. On
                     // timeout Reset fails, this cycle skips, and the next one submits again.
@@ -1963,7 +1957,8 @@ DWORD OpenXRManager::FrameThreadMain() {
                         fgFrame.pose[eye]=monoPoses[eye];fgFrame.fov[eye]=monoFovs[eye];fgFrame.identity.pose[eye]=monoPoseIds[eye];
                         if(fgFrame.inputs[eye]) {
                             fgFrame.identity.nativeFrame=fgFrame.inputs[eye]->frameId;
-                            fgFrame.identity.inputs=fgFrame.identity.inputs && fgFrame.inputs[eye]->poseId==monoPoseIds[eye] &&
+                            fgFrame.identity.inputs=fgFrame.identity.inputs && fgFrame.inputs[eye]->hasDepth && fgFrame.inputs[eye]->hasMotion &&
+                                 fgFrame.inputs[eye]->poseId==monoPoseIds[eye] &&
                                 fgFrame.inputs[eye]->origin==fgFrame.identity.origin;
                             fgFrame.identity.reset=fgFrame.identity.reset || fgFrame.inputs[eye]->camera.reset;
                         }
@@ -1987,9 +1982,10 @@ DWORD OpenXRManager::FrameThreadMain() {
                         monoPoses[eye]=fgSelection.frame.pose[eye];monoFovs[eye]=fgSelection.frame.fov[eye];
                         monoPoseIds[eye]=fgSelection.frame.identity.pose[eye];
                     }
-                    // Keep the runtime's reprojection mode constant across the pair.
-                    // These mono hint depths cannot describe synthetic stereo pixels.
-                    if(cvr::framegen::Enabled() || fgSelection.synthetic || m_framegen.Pending())monoHasDepth=false;
+                    // The selected image may be a midpoint or the pending real B while the newest
+                    // capture is already C. Timing and identity must follow the selected pixels too.
+                    presentSerial=fgSelection.frame.identity.serial;
+                    monoCaptureMs=fgSelection.frame.identity.capturedMs;
                 } else m_framegen.Reset();
                 // The image, its own pose, and its read reservation were acquired
                 // together with MAIN above. Reused VRCAM slots keep their own label.
@@ -2003,7 +1999,7 @@ DWORD OpenXRManager::FrameThreadMain() {
                     SUCCEEDED(currentAllocator->Reset()) && SUCCEEDED(m_cmdList->Reset(currentAllocator, nullptr))) {
                     auto gpuProfile = cvr::gpu::profile::Begin(m_cmdList);
                     bool copyReady = true;
-                    bool useDepthLayer = monoHasDepth && m_depthLayerSupported;
+                    bool useDepthLayer = false;
                     std::vector<bool> acquiredEyes(viewCountOutput, false);
                     std::vector<bool> acquiredDepthEyes(viewCountOutput, false);
                     std::vector<XrCompositionLayerProjectionView> projectionViews(viewCountOutput);
@@ -2047,101 +2043,31 @@ DWORD OpenXRManager::FrameThreadMain() {
 
                         {
                         cvr::gpu::profile::Scope colorScope(gpuProfile, cvr::gpu::profile::Stage::SubmitColor);
-                        // CAS sharpen: when xr_sharpness>0, draw
-                        // the sharpened mono source straight into the swapchain image.
-                        // monoSource is always COMMON here (no synth scratch in mono).
-                        const float monoSharp = GetVrSharpness();
-                        bool doMonoSharpen = false;
-                        // DISABLED: in-submit CAS GPU-crashes; needs an
-                        // SRV scratch rework before re-enabling.
-                        if (false && monoSharp > 0.0001f && m_d3dDevice && texture && monoSource) {
-                            if (!m_sharpenPass) m_sharpenPass = std::make_unique<SharpenPass>();
-                            const D3D12_RESOURCE_DESC sd = texture->GetDesc();
-                            m_sharpenReady = m_sharpenPass->EnsureInitialized(
-                                m_d3dDevice, sd.Format,
-                                static_cast<uint32_t>(sd.Width), sd.Height);
-                            doMonoSharpen = m_sharpenReady;
-                        }
-                        if (doMonoSharpen) {
-                            // monoSource rests in COPY_SOURCE (CaptureMonoPresentedFrame).
-                            D3D12_RESOURCE_BARRIER pre[2] = {};
-                            pre[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                            pre[0].Transition.pResource = monoSource;
-                            pre[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
-                            pre[0].Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-                            pre[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                            // THE STATE THIS RUNTIME EXPECTS ITS IMAGES BACK IN.
-                            //
-                            // Every transition below used to rest the swapchain image in COMMON. The
-                            // D3D12 debug layer, forced on for this executable, then reported 2689
-                            // instances of error 527 in a minute of play: our OpenXR_submit_command_list
-                            // declaring a Before state of COMMON on an image the previous barrier had
-                            // left in RENDER_TARGET, and -- symmetrically, on a list that is not ours --
-                            // the reverse. Two components disagreeing about where these images rest.
-                            //
-                            // The other component is the runtime, and its own source settles it:
-                            // a colour image is created with ALLOW_RENDER_TARGET and therefore in
-                            // D3D12_RESOURCE_STATE_RENDER_TARGET, a depth image in DEPTH_WRITE, and
-                            // that same value is stored as the chain's releaseState12. After the app
-                            // calls xrReleaseSwapchainImage the runtime assigns it back verbatim --
-                            // imageStates12[lastReleased] = releaseState12 -- and transitions from it.
-                            // It does not query; it trusts the application to have returned the image
-                            // in that state. We were returning COMMON.
-                            //
-                            // So the mismatch is ours to fix, not the runtime's: colour images rest in
-                            // RENDER_TARGET, depth images in DEPTH_WRITE, and every barrier here is
-                            // written from that resting state and back to it.
-                            pre[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                            pre[1].Transition.pResource = texture;
-                            pre[1].Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-                            pre[1].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-                            pre[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                            m_cmdList->ResourceBarrier(2, pre);
-
-                            m_sharpenPass->RecordSharpen(m_cmdList, monoSource, texture,
-                                                         monoSharp, GetVrSharpmix());
-
-                            D3D12_RESOURCE_BARRIER post[2] = {};
-                            post[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                            post[0].Transition.pResource = texture;
-                            post[0].Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-                            post[0].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-                            post[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                            post[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                            post[1].Transition.pResource = monoSource;
-                            post[1].Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-                            post[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
-                            post[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                            m_cmdList->ResourceBarrier(2, post);
-                        } else if (eye == (CyberpunkVR_MainIsRightEye ? 0u : 1u) && vrcamEye) {
-                            {
-                                // Identical in shape to the MAIN branch below -- both operands
-                                // are ours, both already in the swapchain's format and size, so
-                                // this is a plain copy and nothing here reaches into an engine
-                                // resource. m_vrcamEyeTex rests in COPY_SOURCE between frames,
-                                // which is where the capture's own barriers leave it.
-                                D3D12_RESOURCE_BARRIER toCopyDest{};
-                                toCopyDest.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                                toCopyDest.Transition.pResource = texture;
-                                toCopyDest.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-                                toCopyDest.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-                                toCopyDest.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                                m_cmdList->ResourceBarrier(1, &toCopyDest);
-
-                                m_cmdList->CopyResource(texture,fgSelected ? fgSelection.frame.color[eye] : vrcamEye);
-
-                                D3D12_RESOURCE_BARRIER toCommon{};
-                                toCommon.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                                toCommon.Transition.pResource = texture;
-                                toCommon.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-                                toCommon.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-                                toCommon.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                                m_cmdList->ResourceBarrier(1, &toCommon);
-                                CVR_DIAGNOSTIC(++CyberpunkVR_DebugStereoEyeSubmits);
+                        const bool secondEye = eye == (CyberpunkVR_MainIsRightEye ? 0u : 1u) && vrcamEye;
+                        auto* eyeSource = fgSelected ? fgSelection.frame.color[eye] :
+                            (secondEye ? vrcamEye : monoSource);
+                        // CAS is already baked into real captures before frame generation.
+                        if (m_convertForSwapchain && m_srgbToLinearPass) {
+                            // A swapchain that does not declare the eye bytes as sRGB: draw them
+                            // through the decode instead (PickMonoSwapchainFormat). Every eye source
+                            // rests in COPY_SOURCE, the swapchain image in RENDER_TARGET.
+                            D3D12_RESOURCE_BARRIER toRead{};
+                            toRead.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                            toRead.Transition.pResource = eyeSource;
+                            toRead.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+                            toRead.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+                            toRead.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                            m_cmdList->ResourceBarrier(1, &toRead);
+                            const bool decoded = m_srgbToLinearPass->Record(
+                                m_cmdList, eyeSource, texture, m_cmdAllocatorIndex * 2 + eye);
+                            std::swap(toRead.Transition.StateBefore, toRead.Transition.StateAfter);
+                            m_cmdList->ResourceBarrier(1, &toRead);
+                            if (!decoded) {
+                                Log("OpenXRManager: sRGB decode into the swapchain failed for eye %u\n", eye);
+                                copyReady = false;
+                                break;
                             }
-                        }
-                        if (!(doMonoSharpen ||
-                              (eye == (CyberpunkVR_MainIsRightEye ? 0u : 1u) && vrcamEye))) {
+                        } else {
                             D3D12_RESOURCE_BARRIER toCopyDest{};
                             toCopyDest.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
                             toCopyDest.Transition.pResource = texture;
@@ -2150,7 +2076,7 @@ DWORD OpenXRManager::FrameThreadMain() {
                             toCopyDest.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
                             m_cmdList->ResourceBarrier(1, &toCopyDest);
 
-                            m_cmdList->CopyResource(texture,fgSelected ? fgSelection.frame.color[eye] : monoSource);
+                            m_cmdList->CopyResource(texture, eyeSource);
 
                             D3D12_RESOURCE_BARRIER toCommon{};
                             toCommon.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -2160,10 +2086,20 @@ DWORD OpenXRManager::FrameThreadMain() {
                             toCommon.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
                             m_cmdList->ResourceBarrier(1, &toCommon);
                         }
+                        if (secondEye) CVR_DIAGNOSTIC(++CyberpunkVR_DebugStereoEyeSubmits);
 
                         }
                         projectionViews[eye].pose = monoPoses[eye];
                         projectionViews[eye].fov = monoFovs[eye];
+                        // AN EYE SHOWN MAIN'S PICTURE TAKES MAIN'S WINDOW. With the asymmetric
+                        // projection the two eyes' windows are mirror images; MAIN's image was drawn
+                        // through MAIN's, so that is the frustum it has to be submitted with whichever
+                        // eye it ends up in (menus, a second view with nothing to give).
+                        const uint32_t mainEye = CyberpunkVR_MainIsRightEye ? 1u : 0u;
+                        if (cvr::projection::Active() && !fgSelected && !vrcamEye && eye != mainEye) {
+                            if (mainEye < viewCountOutput)
+                                projectionViews[eye].fov = monoFovs[mainEye];
+                        }
 
                         // ONE ORIENTATION FOR BOTH EYES WHEN THEY SHARE ONE IMAGE.
                         //
@@ -2325,103 +2261,44 @@ DWORD OpenXRManager::FrameThreadMain() {
                         projectionViews[eye].subImage.imageArrayIndex = 0;
                     }
 
-                    if (copyReady && useDepthLayer) {
-                        for (uint32_t eye = 0; eye < viewCountOutput; ++eye) {
-                            if (m_eyeSwapchains[eye].depthHandle == XR_NULL_HANDLE) {
-                                Log("OpenXRManager: [DEPTH] depthHandle missing for eye %u\n", eye);
-                                useDepthLayer = false;
-                                break;
+                    cvr::depth::Plan depthPlan;
+                    auto depthReason=cvr::depth::Reject::Missing;
+                    if(copyReady && !menuRectActive && fgSelected && GetDepthSubmit() && GetMonoDepthCapture() && m_depthLayerSupported) {
+                        depthReason=cvr::depth::Describe(fgSelection,projectionViews.data(),viewCountOutput,GetWorldScale(),depthPlan);
+                        if(depthReason==cvr::depth::Reject::None &&
+                            (std::abs(g_liveControls.xrIpdScale-1.f)>1e-4f || std::abs(g_liveControls.xrStereoScale-1.f)>1e-4f))
+                            depthReason=cvr::depth::Reject::Camera;
+                        if(depthReason==cvr::depth::Reject::None && !EnsureStereoDepthSwapchains(depthPlan))depthReason=cvr::depth::Reject::Runtime;
+                        if(depthReason==cvr::depth::Reject::None) {
+                            ID3D12Resource* depthTargets[2]{};
+                            for(unsigned eye=0;eye<2;++eye) {
+                                auto& swap=m_eyeSwapchains[eye];
+                                // On timeout retain the acquired image and wait again next cycle.
+                                // xrReleaseSwapchainImage is legal only AFTER a successful wait.
+                                const auto result=cvr::depth::WaitImage(swap.depthHandle,swap.depthPending,swap.depthPendingIndex);
+                                if(result!=XR_SUCCESS){depthReason=cvr::depth::Reject::Runtime;break;}
+                                acquiredDepthEyes[eye]=true;
+                                if(swap.depthPendingIndex>=swap.depthImages.size()){depthReason=cvr::depth::Reject::Resource;break;}
+                                depthTargets[eye]=swap.depthImages[swap.depthPendingIndex].texture;
                             }
-
-                            uint32_t depthImageIndex = 0;
-                            XrSwapchainImageAcquireInfo acquireInfo{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
-                            const XrResult acquireRes = xrAcquireSwapchainImage(m_eyeSwapchains[eye].depthHandle, &acquireInfo, &depthImageIndex);
-                            if (XR_FAILED(acquireRes)) {
-                                Log("OpenXRManager: [DEPTH] xrAcquireSwapchainImage failed for eye %u (res=%d)\n", eye, acquireRes);
-                                useDepthLayer = false;
-                                break;
+                            if(depthReason==cvr::depth::Reject::None) {
+                                cvr::gpu::profile::Scope depthScope(gpuProfile,cvr::gpu::profile::Stage::SubmitDepth);
+                                useDepthLayer=m_stereoDepth.Record(m_d3dDevice,m_cmdList,m_d3dQueue,fgSelection.frame.inputs,
+                                    depthTargets,depthPlan,m_cmdAllocatorIndex,m_fence,m_fenceValue+1);
+                                if(!useDepthLayer)depthReason=cvr::depth::Reject::Busy;
                             }
-                            acquiredDepthEyes[eye] = true;
-
-                            XrSwapchainImageWaitInfo waitInfo{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
-                            // NOT infinite: this mono depth-swapchain path was never
-                            // exercised at HEAD and froze the present thread here (log
-                            // ended right after the depth swapchain was created). A finite
-                            // timeout degrades a stuck depth image to "no depth this frame"
-                            // instead of a hard freeze. XR_TIMEOUT is a success code, so any
-                            // non-XR_SUCCESS result means "not ready" -> skip depth (the
-                            // acquired image is released by the cleanup loop below).
-                            waitInfo.timeout = 100000000; // 100 ms
-                            const XrResult waitRes = xrWaitSwapchainImage(m_eyeSwapchains[eye].depthHandle, &waitInfo);
-                            if (waitRes != XR_SUCCESS) {
-                                Log("OpenXRManager: [DEPTH] mono depth image not ready eye=%u res=%d -> skip depth this frame\n", eye, waitRes);
-                                useDepthLayer = false;
-                                break;
+                        }
+                        if(useDepthLayer) {
+                            depthInfos.resize(2);
+                            for(unsigned eye=0;eye<2;++eye) {
+                                auto& info=depthInfos[eye];const auto& v=depthPlan.eyes[eye];
+                                info={XR_TYPE_COMPOSITION_LAYER_DEPTH_INFO_KHR};
+                                info.subImage.swapchain=m_eyeSwapchains[eye].depthHandle;
+                                info.subImage.imageRect={{0,0},{int32_t(v.width),int32_t(v.height)}};
+                                info.subImage.imageArrayIndex=0;info.minDepth=0;info.maxDepth=1;
+                                info.nearZ=v.nearZ;info.farZ=v.farZ;
+                                projectionViews[eye].next=&info;
                             }
-
-                            ID3D12Resource* depthTexture = m_eyeSwapchains[eye].depthImages[depthImageIndex].texture;
-                            if (!depthTexture) {
-                                Log("OpenXRManager: [DEPTH] depth swapchain texture missing for eye %u image %u\n", eye, depthImageIndex);
-                                useDepthLayer = false;
-                                break;
-                            }
-
-                            if (!cvr::gpu::KeepCommandResources(m_cmdList, {monoDepthSource, depthTexture})) {
-                                useDepthLayer = false;
-                                break;
-                            }
-
-                            cvr::gpu::profile::Scope depthScope(gpuProfile, cvr::gpu::profile::Stage::SubmitDepth);
-                            D3D12_RESOURCE_BARRIER toCopyDest{};
-                            toCopyDest.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                            toCopyDest.Transition.pResource = depthTexture;
-                            toCopyDest.Transition.StateBefore = D3D12_RESOURCE_STATE_DEPTH_WRITE;
-                            toCopyDest.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-                            toCopyDest.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                            m_cmdList->ResourceBarrier(1, &toCopyDest);
-
-                            const D3D12_RESOURCE_DESC depthSrcDesc = monoDepthSource->GetDesc();
-                            const D3D12_RESOURCE_DESC depthDstDesc = depthTexture->GetDesc();
-                            if (depthSrcDesc.Format == depthDstDesc.Format) {
-                                m_cmdList->CopyResource(depthTexture, monoDepthSource);
-                            } else {
-                                D3D12_TEXTURE_COPY_LOCATION dstLoc{};
-                                dstLoc.pResource = depthTexture;
-                                dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-                                dstLoc.SubresourceIndex = 0;
-                                D3D12_TEXTURE_COPY_LOCATION srcLoc{};
-                                srcLoc.pResource = monoDepthSource;
-                                srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-                                srcLoc.SubresourceIndex = 0;
-                                m_cmdList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
-                            }
-
-                            D3D12_RESOURCE_BARRIER toCommon{};
-                            toCommon.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                            toCommon.Transition.pResource = depthTexture;
-                            toCommon.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-                            toCommon.Transition.StateAfter = D3D12_RESOURCE_STATE_DEPTH_WRITE;
-                            toCommon.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                            m_cmdList->ResourceBarrier(1, &toCommon);
-
-                            depthInfos[eye].subImage.swapchain = m_eyeSwapchains[eye].depthHandle;
-                            depthInfos[eye].subImage.imageRect.offset = {0, 0};
-                            depthInfos[eye].subImage.imageRect.extent = {m_eyeSwapchains[eye].width, m_eyeSwapchains[eye].height};
-                            depthInfos[eye].subImage.imageArrayIndex = 0;
-                            // OpenXR requires minDepth < maxDepth in [0,1]. Reversed-Z is encoded
-                            // by swapping nearZ/farZ (nearZ > farZ), NOT by swapping min/max depth.
-                            //
-                            // The planes are the GAME's, measured off the live view context
-                            // (ctx+0xB0 near, ctx+0xB4 far): 0.02 m and 16000 m. They used to be
-                            // 10000/0.01 -- placeholders of the right shape and the wrong size, so
-                            // every depth the compositor unprojected landed at the wrong distance.
-                            // A runtime that reprojects on this layer was being told the world ends
-                            // at ten kilometres and starts at a centimetre.
-                            depthInfos[eye].minDepth = 0.0f;
-                            depthInfos[eye].maxDepth = 1.0f;
-                            depthInfos[eye].nearZ = 16000.0f;
-                            depthInfos[eye].farZ = 0.02f;
-                            projectionViews[eye].next = &depthInfos[eye];
                         }
                     }
 
@@ -2454,15 +2331,6 @@ DWORD OpenXRManager::FrameThreadMain() {
                         }
 
                         m_cmdList->Close();
-                        // NOTE: intentionally NO m_d3dQueue->Wait on the depth-writer fence
-                        // here. Blocking the present queue on that fence deadlocks during
-                        // menu/scene loads: the game's depth-writer queue can be parked
-                        // behind its own async-compute Wait, so the fence is not reached,
-                        // the present queue stalls, and the m_fence CPU wait next present
-                        // freezes the game. The depth resolve is a REPROJECTION HINT: a
-                        // rare frame-stale/torn read is invisible, a freeze is not. So we
-                        // let the copy race (benign) instead of gating on the writer queue.
-                        (void)monoDepthFence;
                         ID3D12CommandList* cmdLists[] = {m_cmdList};
                         m_d3dQueue->ExecuteCommandLists(1, cmdLists);
                         
@@ -2581,10 +2449,36 @@ DWORD OpenXRManager::FrameThreadMain() {
                                 frameState.predictedDisplayTime,hudEyes?eyeOffsets:nullptr,hudBodyYaw)){
                                 layers[endInfo.layerCount++]=surveillance;
                                 if(const auto* other=m_surveillanceQuad.SecondEye())layers[endInfo.layerCount++]=other;
+                                if(cvr::RuntimeDiagnosticsEnabled() && hudTracked && hudEyes) {
+                                    static uint64_t lastScannerLog=0;const auto tick=GetTickCount64();
+                                    if(tick-lastScannerLog>=1000) {
+                                        lastScannerLog=tick;
+                                        const auto* quad=reinterpret_cast<const XrCompositionLayerQuad*>(surveillance);
+                                        const auto& h=hudHead.pose;const auto& q=quad->pose;
+                                        const auto& e=hudViews[0].pose;const auto& p=projectionViews[0].pose;
+                                        Log("[scanner-pose] headQ=(%.6f,%.6f,%.6f,%.6f) eyeQ=(%.6f,%.6f,%.6f,%.6f) renderQ=(%.6f,%.6f,%.6f,%.6f) panelQ=(%.6f,%.6f,%.6f,%.6f) delta=(%.6f,%.6f,%.6f) size=(%.4f,%.4f) image=%dx%d\n",
+                                            h.orientation.x,h.orientation.y,h.orientation.z,h.orientation.w,
+                                            e.orientation.x,e.orientation.y,e.orientation.z,e.orientation.w,
+                                            p.orientation.x,p.orientation.y,p.orientation.z,p.orientation.w,
+                                            q.orientation.x,q.orientation.y,q.orientation.z,q.orientation.w,
+                                            q.position.x-e.position.x,q.position.y-e.position.y,q.position.z-e.position.z,
+                                            quad->size.width,quad->size.height,quad->subImage.imageRect.extent.width,quad->subImage.imageRect.extent.height);
+                                    }
+                                }
                             }
+                            if(const auto* hitMarker=m_hitMarkerQuad.Prepare(m_session,m_localSpace,m_d3dDevice,m_d3dQueue,
+                                !menuRectActive,hudTracked,hudHead.pose,GetTrackingOriginSerial(),
+                                frameState.predictedDisplayTime,hudEyes?eyeOffsets:nullptr,hudBodyYaw)){
+                                layers[endInfo.layerCount++]=hitMarker;
+                                if(const auto* other=m_hitMarkerQuad.SecondEye())layers[endInfo.layerCount++]=other;
+                            }
+                            // NOT WHILE THE SETTINGS PANEL IS OPEN. It is submitted before the panel, but a
+                            // compositor that sorts quads by distance (the FPS layer sits at 1.25 m, the
+                            // panel at 2.3 m on the user's setup) still drew it over the panel. The panel
+                            // shows the same statistics itself.
                             if(const auto* metrics=m_framegenOverlay.Prepare(m_session,m_viewSpace,m_d3dDevice,m_d3dQueue,
                                 m_localSpace,hudTracked?&hudHead.pose:nullptr,GetTrackingOriginSerial(),frameState.predictedDisplayTime))
-                                layers[endInfo.layerCount++]=metrics;
+                                if(!cvr::vrui::Visible())layers[endInfo.layerCount++]=metrics;
                             endInfo.layers = layers;
                             if(const auto* panel=m_settingsPanel.Prepare(m_session,m_localSpace,m_d3dDevice,m_d3dQueue)){
                                 layers[endInfo.layerCount++]=panel;
@@ -2628,10 +2522,24 @@ DWORD OpenXRManager::FrameThreadMain() {
                                     CVR_DIAGNOSTIC(CyberpunkVR_DebugSubmitAgeBuckets[bucket].fetch_add(1, std::memory_order_relaxed));
                                 }
                             }
-                            const XrResult endRes = xrEndFrame(m_session, &endInfo);
+                            XrResult endRes;
+                            {cvr::audit::Span auditEnd(cvr::audit::XrEnd);endRes = xrEndFrame(m_session, &endInfo);}
+                            CVR_DIAGNOSTIC(
+                                CyberpunkVR_StereoDepthReportSeq.fetch_add(1,std::memory_order_acq_rel);
+                                std::snprintf(CyberpunkVR_StereoDepthReport,sizeof(CyberpunkVR_StereoDepthReport),
+                                    "{\"serial\":%llu,\"frame\":%u,\"synthetic\":%d,\"depth\":%d,\"reason\":%u,"
+                                    "\"pose\":[%llu,%llu],\"size\":[[%u,%u],[%u,%u]],\"planes\":[[%.9g,%.9g],[%.9g,%.9g]]}",
+                                    presentSerial,fgSelection.frame.identity.nativeFrame,fgSelection.synthetic,useDepthLayer && XR_SUCCEEDED(endRes),unsigned(XR_FAILED(endRes)?cvr::depth::Reject::Runtime:depthReason),
+                                    monoPoseIds[0],monoPoseIds[1],depthPlan.eyes[0].width,depthPlan.eyes[0].height,
+                                    depthPlan.eyes[1].width,depthPlan.eyes[1].height,depthPlan.eyes[0].nearZ,depthPlan.eyes[0].farZ,
+                                    depthPlan.eyes[1].nearZ,depthPlan.eyes[1].farZ);
+                                CyberpunkVR_StereoDepthReportSeq.fetch_add(1,std::memory_order_release);
+                            );
                             XrAccumulateCycle(waitEnterMs, waitMs,
                                               frameState.predictedDisplayPeriod);
                             if (XR_SUCCEEDED(endRes)) {
+                                if(layers[1] && !menuRectActive)
+                                    CVR_DIAGNOSTIC(CyberpunkVR_HudSubmittedFrames.fetch_add(1,std::memory_order_relaxed));
                                 for(int eye=0;eye<2;++eye)
                                     CVR_DIAGNOSTIC(CyberpunkVR_PoseIdLastSubmit[eye].store(monoPoseIds[eye],std::memory_order_relaxed));
                                 XrMark('E');
@@ -2731,17 +2639,18 @@ DWORD OpenXRManager::FrameThreadMain() {
                                 // produced. A resubmitted stale snapshot carries its old serial
                                 // against this cycle's display time, and those points do not lie
                                 // on the line -- they are the same x with a later y, which drags
-                                // the slope toward zero. RealVR samples per produced frame for
-                                // the same reason.
-                                if (presentSerial != m_lastSubmittedSerial) {
+                                // the slope toward zero.
+                                const bool realSubmission = !fgSelected || !fgSelection.synthetic;
+                                if (realSubmission && presentSerial != m_lastSubmittedSerial) {
                                     FitAddDisplayTime(presentSerial, frameState.predictedDisplayTime);
                                 }
                                 if(fgSelected)m_framegen.Submitted(fgSelection,m_fence,capturedReadFence,true);
                                 else if(cvr::framegen::MetricsEnabled())cvr::framegen::OnSubmitted(presentSerial,false,presentSerial==m_lastSubmittedSerial,cvr::framegen::NowMs());
-                                m_lastSubmittedSerial = presentSerial;
+                                // A midpoint has B's endpoint serial, but it is not B's presentation.
+                                // Record B only when its real image reaches the compositor.
+                                if (realSubmission) m_lastSubmittedSerial = presentSerial;
                                 ReleaseCapturedRead(monoSource,capturedReadFence);
                                 if (vrcamEye)ReleaseCapturedRead(vrcamEye,capturedReadFence);
-                                if (monoDepthSource) monoDepthSource->Release();
                                 if (m_frameSyncEvent) {
                                     SetEvent(m_frameSyncEvent);
                                 }
@@ -2764,9 +2673,6 @@ DWORD OpenXRManager::FrameThreadMain() {
                 }
                 if (vrcamEye) {
                     ReleaseCapturedRead(vrcamEye,capturedReadFence);
-                }
-                if (monoDepthSource) {
-                    monoDepthSource->Release();
                 }
             }
         } else if (cvr::RuntimeDiagnosticsEnabled() && monoEnabled && ((++monoWaitLogCounter % 300) == 1)) {

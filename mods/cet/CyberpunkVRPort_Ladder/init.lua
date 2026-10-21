@@ -60,24 +60,31 @@ registerForEvent("onInit", function()
         return axis ~= 0 and axis or value
     end)
 end)
+-- The field id, read once: blackboard definitions are global and live as long as the game.
+local locomotionDetailedId
+-- A plain function for pcall: `pcall(function() ... end)` would allocate a closure every frame.
+local function bridgeState(dt)
+    local player = Game.GetPlayer()
+    local state = -1
+    if player then
+        local board = player:GetPlayerStateMachineBlackboard()
+        if board then
+            locomotionDetailedId = locomotionDetailedId or GetAllBlackboardDefs().PlayerStateMachine.LocomotionDetailed
+            state = board:GetInt(locomotionDetailedId)
+        end
+    end
+    if not onLadder(state) then clear() end
+    Game.SetVRLadderState(owner or player, state, Game.GetSystemRequestsHandler():IsGamePaused() and 1 or 0, description)
+    -- Read actual finisher placement once, only from the same ladder. A
+    -- missing/different look-at target never changes the state bridge.
+    local topOk, topErr = pcall(publishTop, player, dt)
+    if not topOk and not topReportedError then
+        print('[ladder] top rail geometry unavailable: ' .. tostring(topErr))
+    end
+    topReportedError = not topOk
+end
 registerForEvent("onUpdate", function(dt)
-    local ok, err = pcall(function()
-        local player = Game.GetPlayer()
-        local state = -1
-        if player then
-            local board = player:GetPlayerStateMachineBlackboard()
-            if board then state = board:GetInt(GetAllBlackboardDefs().PlayerStateMachine.LocomotionDetailed) end
-        end
-        if not onLadder(state) then clear() end
-        Game.SetVRLadderState(owner or player, state, Game.GetSystemRequestsHandler():IsGamePaused() and 1 or 0, description)
-        -- Read actual finisher placement once, only from the same ladder. A
-        -- missing/different look-at target never changes the state bridge.
-        local topOk, topErr = pcall(publishTop, player, dt)
-        if not topOk and not topReportedError then
-            print('[ladder] top rail geometry unavailable: ' .. tostring(topErr))
-        end
-        topReportedError = not topOk
-    end)
+    local ok, err = pcall(bridgeState, dt)
     if not ok and not reportedError then
         reportedError = true;print("[ladder] state bridge unavailable: " .. tostring(err))
     elseif ok then reportedError = false end

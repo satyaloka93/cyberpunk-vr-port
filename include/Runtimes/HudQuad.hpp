@@ -7,6 +7,7 @@
 #include <vector>
 #include <memory>
 #include <array>
+#include <atomic>
 #include "Runtimes/HudFollow.hpp"
 #include "Render/HudPanel.hpp"
 
@@ -17,7 +18,9 @@ struct PoseDebug {
     float headYaw=0,panelYaw=0,dt=0,eyeError=0;
     int32_t mode=0,tracked=0,layers=0;
     XrVector3f head{},left{},right{};
+    uint64_t sourceSerial=0,sourceTick=0;
 };
+static_assert(sizeof(PoseDebug)==96 && offsetof(PoseDebug,sourceSerial)==80);
 class Quad {
 public:
     explicit Quad(Channel value=Channel::Main):channel(value){}
@@ -63,3 +66,4 @@ private:
     XrCompositionLayerQuad rightLayer{XR_TYPE_COMPOSITION_LAYER_QUAD};
 };
 }
+extern "C" __declspec(dllexport) extern std::atomic<uint64_t> CyberpunkVR_HudSubmittedFrames;

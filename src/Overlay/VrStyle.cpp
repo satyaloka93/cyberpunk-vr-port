@@ -44,7 +44,7 @@ void ApplyVrStyle(){
     c[ImGuiCol_TableBorderLight]={.43f,.13f,.17f,.55f};
     c[ImGuiCol_TableBorderStrong]={.25f,.72f,.80f,.65f};
 }
-bool DrawVrShell(LiveControlsUiState& state){
+bool DrawVrShell(LiveControlsUiState& state,bool& foveatedEditing){
     using namespace cvr::vrui;
     static int selected=6;
     const char* tabs[]={"GENERAL","FRAMEGEN","HUD","CONTROLS","STEREO","AVATAR","OVERLAY"};
@@ -105,7 +105,7 @@ bool DrawVrShell(LiveControlsUiState& state){
         ImGui::TextWrapped("Catch up after 3 seconds at rest when the offset is over 10 degrees inside the cone.");
         widgets::Section("FPS OVERLAY");
         changed|=DrawFpsOverlayControls(state);
-    }else changed=DrawLiveControls(state,selected);
+    }else changed=DrawLiveControls(state,selected,&foveatedEditing);
     ImGui::PopItemWidth();ImGui::EndChild();ImGui::EndChild();ImGui::Separator();
     ImGui::TextColored(Cyan,"TRIGGER  Select     STICK  Scroll     GRIP  Drag     GRIP + STICK  Distance");
     ImGui::TextDisabled("L3 + R3  Hold 1 sec     F10 / INSERT  Toggle     ESC  Close");

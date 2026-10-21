@@ -297,9 +297,7 @@ bool cvr::camera::CamWriteRecordFind(const float q[4], OpenXRHeadPose* out,
     }
     if (!haveBest) return false;
 
-    // Nearest-neighbour fallback. SAY SO -- a silent degrade here is a symptom with no cause, and
-    // that is the whole reason this hunt took as long as it did. RealVR does the same thing at the
-    // equivalent point ("Rendering pose entry is invalid").
+    // Count and report nearest-neighbour fallback so missing pose entries remain diagnosable.
     CVR_DIAGNOSTIC(++CyberpunkVR_DebugFinalApprox);
     {
         static uint64_t s_lastReport = 0;

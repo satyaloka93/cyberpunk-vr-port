@@ -64,6 +64,13 @@ int main(int argc,char** argv)try{
             t.hands[1].stickY=1;for(int i=0;i<500;++i)p.Update(t,s,.02f);Near(s.distance,s.maxDistance,"forward stick did not stop at far bound");
             t.hands[1].stickY=-1;for(int i=0;i<500;++i)p.Update(t,s,.02f);Near(s.distance,s.minDistance,"backward stick did not stop at near bound");
         }
+    }else if(name=="drag_rotate"){
+        // The grip carries the panel on the controller: turning the wrist swings it on the full lever.
+        Placement p;p.Update(t,s,.01f);t.hands[1].grip=1;p.Grab(1,t);
+        const float a=.3f;t.hands[1].aim.orientation={0,std::sin(-a*.5f),0,std::cos(-a*.5f)};p.Update(t,s,.01f);
+        Near(p.pose.position.x,1.1f*std::sin(a),"wrist turn did not swing the panel");
+        Near(s.distance,.3f+1.1f*std::cos(a),"wrist turn changed the lever");
+        Check(std::abs(p.pose.orientation.y)>.05f,"swung panel did not turn to face the head");
     }else if(name=="follow"){
         Placement p;p.Update(t,s,.01f);t.head.orientation={0,std::sin(.2f),0,std::cos(.2f)};
         for(int i=0;i<290;++i){p.Update(t,s,.01f);Near(p.follow.yaw,0,"cone moved before rest delay");}

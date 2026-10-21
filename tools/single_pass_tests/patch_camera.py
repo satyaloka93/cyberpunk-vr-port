@@ -11,7 +11,7 @@ from pathlib import Path
 from camera_usage import camera_usage
 
 
-def patch(source):
+def patch(source, main_first=False):
     usage=camera_usage(source)
     if '@dx.op.viewID.' in source:
         raise ValueError('Shader is already view instanced')
@@ -56,8 +56,9 @@ def patch(source):
     if len(entries) != 1:
         raise ValueError('Expected one graphics entry point')
     entry = 'define void @' + entries[0] + '() {'
-    source = source.replace(entry, entry + '\ncvr0:\n  %cvr_view = call i32 @dx.op.viewID.i32(i32 138)'
-                            + '\n  %cvr_camera_base = mul i32 %cvr_view, ' + str(stride // 16), 1)
+    selection='\n  %cvr_camera_eye = xor i32 %cvr_view, 1' if main_first else ''
+    source = source.replace(entry, entry + '\ncvr0:\n  %cvr_view = call i32 @dx.op.viewID.i32(i32 138)'+selection
+                            + '\n  %cvr_camera_base = mul i32 '+('%cvr_camera_eye' if main_first else '%cvr_view')+', ' + str(stride // 16), 1)
     source += '\ndeclare i32 @dx.op.viewID.i32(i32) nounwind readnone\n'
     old_metadata = re.search(r'(?m)^' + re.escape(md) + r' = .*$', source)[0]
     source = source.replace(old_metadata, old_metadata.replace('i32 ' + str(size) + ', null}',
@@ -91,6 +92,7 @@ def patch(source):
             raise ValueError('Expected one existing shader flags property')
         source = source.replace(flags[0], entry_properties[1] + ' = !{' + values + '}')
     return source, {'camera_register': int(register), 'space': int(space), 'original_size': size,
+                    'main_first':bool(main_first),
                     'eye_stride': stride, 'binding_size': stride * 2, 'patched_loads': serial,
                     'camera_words':usage['words'],'dynamic_camera_indices':usage['dynamicIndices']}
 
@@ -99,7 +101,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('input', type=Path)
     parser.add_argument('output', type=Path)
+    parser.add_argument('--main-first',action='store_true')
     args = parser.parse_args()
-    source, report = patch(args.input.read_text())
+    source, report = patch(args.input.read_text(),main_first=args.main_first)
     args.output.write_text(source)
     print(json.dumps(report))

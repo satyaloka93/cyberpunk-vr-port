@@ -15,9 +15,11 @@ CyberpunkVRProxy.log
 # tools/ is scratch, with one exception. Note the glob: `tools/` would exclude the directory
 # itself and git never descends into an excluded directory, so the negation below would not fire.
 tools/*
-!tools/psvr2_input_tests/
-!tools/psvr2_trigger_tests/
 !tools/roomscale_tests/
+!tools/scanner_input_tests/
+!tools/body_rotation_tests/
+!tools/body_rotation_tests/*.py
+tools/body_rotation_tests/__pycache__/
 !tools/vrik_tests/
 !tools/xr_probe/
 !tools/crash/
@@ -33,18 +35,21 @@ tools/*
 !tools/hud_submit_tests/
 !tools/single_pass_tests/
 !tools/render_parity_tests/
+!tools/asym_tests/
+tools/asym_tests/__pycache__/
 !tools/game_settings_tests/
 !tools/launcher_tests/
 !tools/steam_frame_tests/
 !tools/autograss_tests/
 releases/
 *.py
+!tools/body_rotation_tests/*.py
 !tools/autograss_tests/*.py
 !tools/single_pass_tests/*.py
 !tools/roomscale_tests/*.py
 !tools/vrik_tests/*.py
-!tools/psvr2_trigger_tests/*.py
 !tools/story_attention_tests/*.py
+!tools/asym_tests/*.py
 tools/story_attention_tests/__pycache__/
 tools/vrik_tests/__pycache__/
 tools/roomscale_tests/__pycache__/
@@ -61,11 +66,8 @@ package.json
 !.opencode/memory/*.md
 *.zip
 *.ps1
-!scripts/Start-PSVR2Bridge.ps1
-!scripts/Install-PSVR2AutoFireGrip.ps1
-!scripts/Switch-CyberpunkVRPort.ps1
-!scripts/CyberpunkVR-Switcher.Core.ps1
-!scripts/Test-CyberpunkVRSwitcher.ps1
+!tools/single_pass_tests/deploy_probe.ps1
+!tools/single_pass_tests/restart_probe.ps1
 # ...except the probe layer install scripts, which are part of the tool,
 !tools/xr_probe/*.ps1
 # the install/uninstall pair, which is how the mod is meant to be deployed,
@@ -103,8 +105,16 @@ mods/cet/**/vrik_recenter.ini
 # Release staging / packaging output
 /dist/
 
-# Release changelog is tracked; local release description remains private.
-!/CHANGELOG.md
+# PSVR2 release installer and pure input regression tests.
+!scripts/Switch-CyberpunkVRPort.ps1
+!scripts/CyberpunkVR-Switcher.Core.ps1
+!scripts/Test-CyberpunkVRSwitcher.ps1
+!scripts/Install-PSVR2AutoFireGrip.ps1
+!scripts/build_psvr2_release.ps1
+!tools/psvr2_input_tests/
+
+# Local changelog (kept on disk, not tracked)
+/CHANGELOG.md
 /description.txt
 
 # Local working backups
@@ -143,3 +153,14 @@ vr2/
 # QuickBoot emits runtime status only in the installed CET folder.
 mods/cet/CyberpunkVRPort_QuickBoot/quickboot_state.txt
 !tools/quickboot_tests/
+!tools/quickboot_tests/launch_to_save.py
+!tools/quickboot_tests/launch_to_save_test.py
+tools/quickboot_tests/__pycache__/
+!tools/sharpen_tests/
+!tools/foveated_tests/
+!tools/vrs_tests/
+!tools/mono_cascade_tests/
+!tools/hidden_area_tests/
+!tools/foveated_tests/*.py
+!tools/hidden_area_tests/*.py
+tools/foveated_tests/__pycache__/

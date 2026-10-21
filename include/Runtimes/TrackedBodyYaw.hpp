@@ -1,5 +1,6 @@
 #pragma once
 #include "Utils/XrMath.hpp"
+#include "Runtimes/BodyYawPrediction.hpp"
 #include <algorithm>
 #include <cstdint>
 
@@ -23,10 +24,11 @@ inline bool TrackingFrameFresh(const TrackingFrame& frame,uint64_t currentOrigin
 
 class TrackedBodyYaw {
     struct Observation {XrVector3f hand[2],worldHand[2];XrQuaternionf rotation[2],headRotation;};
-    Observation anchor{},filtered{};
-    uint64_t origin{},sequence{},stamp{},acquireStart{};
+    Observation anchor{},filtered{},motionWitness{};
+    uint64_t origin{},sequence{},stamp{},acquireStart{},rebaseUntil{};
     float anchorYaw{},target{},output{},evidence{};
-    bool haveAnchor=false,haveFilter=false,absoluteInitial=true;
+    bool haveAnchor=false,haveFilter=false,absoluteInitial=true,haveMotionWitness=false;
+    BodyYawPrediction prediction;
     static constexpr float pi=3.14159265359f;
     static float Wrap(float a){return std::remainder(a,2*pi);}
     static bool Newer(uint64_t a,uint64_t b){
@@ -72,7 +74,12 @@ class TrackedBodyYaw {
         }
         return true;
     }
-    void Anchor(const Observation& value){anchor=value;anchorYaw=target;haveAnchor=true;evidence=0;}
+    void Anchor(const Observation& value,bool continuous=false){
+        anchor=value;anchorYaw=target;haveAnchor=true;
+        motionWitness=value;haveMotionWitness=true;
+        rebaseUntil=continuous ? stamp+50000:0;
+        if(!continuous){evidence=0;prediction.Suspend();}
+    }
     static bool Rest(const Observation& p){
         return p.hand[0].y<-.35f && p.hand[1].y<-.35f &&
             std::abs(p.hand[0].y-p.hand[1].y)<.25f &&
@@ -80,9 +87,13 @@ class TrackedBodyYaw {
             Radius(p.hand[0])<.65f && Radius(p.hand[1])<.65f;
     }
 public:
-    void Reset(float seed=0,bool useAbsoluteInitial=true){*this={};absoluteInitial=useAbsoluteInitial;target=output=anchorYaw=std::isfinite(seed)?Wrap(seed):0;}
-    void Suspend(){haveAnchor=haveFilter=false;stamp=sequence=0;evidence=0;target=output;}
+    void Reset(float seed=0,bool useAbsoluteInitial=true){*this={};absoluteInitial=useAbsoluteInitial;target=output=anchorYaw=std::isfinite(seed)?Wrap(seed):0;prediction.Reset(output);}
+    void Suspend(){haveAnchor=haveFilter=false;stamp=sequence=0;evidence=0;target=output;prediction.Reset(output);}
     bool Ready() const{return haveAnchor;}
+    YawEstimate Predict(uint64_t nowUs) const {
+        if(!haveAnchor || !stamp || nowUs<stamp || nowUs-stamp>150000)return {output,0,false};
+        return {prediction.Sample(float(nowUs-stamp)*1e-6f),std::min(1.f,evidence/.045f),true};
+    }
     YawEstimate Update(const TrackingFrame& frame){
         if(origin && frame.origin<origin)return {output,0,false};
         if(origin && frame.origin!=origin){Reset(0,absoluteInitial);}
@@ -130,7 +141,7 @@ public:
             if(absoluteInitial && Rest(current) && Radius(centre)<.14f){
                 const auto line=Sub(current.hand[1],current.hand[0]);
                 const float yaw=std::atan2(-line.z,line.x);
-                // Do not flip a low hand line just because the user looks past
+                // Do not flip a low hand line just because the player looks past
                 // ninety degrees. Crossed/ambiguous startup hands keep the seed.
                 if(std::abs(Wrap(yaw-output))<=pi*.5f+.00001f)target=yaw;
             }
@@ -175,15 +186,39 @@ public:
             std::abs(Wrap(wristDelta[0]-wristDelta[1]))<.015f+.25f*std::abs(wristMean) &&
             headDelta*wristMean>=0 && std::abs(headDelta)>=.40f*std::abs(wristMean);
         const bool rotationsConfirm=wristConsensus && wristMax>.003f;
+        const auto rawAxis=useLine?Sub(unfiltered.hand[1],unfiltered.hand[0]):Mid(unfiltered.hand[0],unfiltered.hand[1]);
+        const bool rawGeometrySupports=std::abs(Wrap(Angle(oldAxis,rawAxis)-wristMean))<.030f;
         for(int h=0;h<2;++h){
             const float expected=Length(Sub(Rotate(anchor.hand[h],wristMean),anchor.hand[h]));
-            wristConsensus&=Length(Sub(current.hand[h],anchor.hand[h]))>=std::min(expected*.15f,.006f);
+            // Immediately after a coherent reference rebase, the positional
+            // low-pass starts from that raw instant. Use raw position witnesses
+            // for its short warm-up; ordinary gestures retain filtered witnesses.
+            // The wrist rotations refer to the current raw instant. A live
+            // movement witness below permits the matching raw positions during
+            // a turn, including crossing the old anchor on a reversal. Idle
+            // gestures keep the low-pass witness instead.
+            const auto& witness=(stamp<rebaseUntil || std::abs(prediction.Rate())>.174532925f ||
+                (rawGeometrySupports && evidence>=.045f)) ? unfiltered:current;
+            wristConsensus&=Length(Sub(witness.hand[h],anchor.hand[h]))>=std::min(expected*.15f,.006f);
             // A pair of wrists turning under an independently moving head is
             // not a torso turn. With 3 mm device noise, a 15% / 6 mm witness
             // could occasionally accept that gesture. Require a meaningful
             // fraction of the predicted orbit in world space; the threshold
             // still tends to zero with the turn, so tiny body turns have no cone.
-            wristConsensus&=Length(Sub(current.worldHand[h],anchor.worldHand[h]))>=std::min(expected*.40f,.012f);
+            wristConsensus&=Length(Sub(witness.worldHand[h],anchor.worldHand[h]))>=std::min(expected*.40f,.012f);
+            if(haveMotionWitness && !rawGeometrySupports) {
+                // Old displacement relative to the long-lived reference cannot
+                // authorize a NEW wrist/head gesture after the body has stopped.
+                const float freshYaw=RotationYaw(motionWitness.rotation[h],unfiltered.rotation[h]);
+                const auto orbit=Sub(Rotate(motionWitness.hand[h],freshYaw),motionWitness.hand[h]);
+                const auto travel=Sub(unfiltered.worldHand[h],motionWitness.worldHand[h]);
+                const float freshOrbit=Length(orbit);
+                // Require travel ALONG the predicted orbit, not just arbitrary
+                // tracker noise or a radial reach of the same magnitude.
+                const float along=travel.x*orbit.x+travel.y*orbit.y+travel.z*orbit.z;
+                const bool activeGesture=Length(travel)>.012f;
+                wristConsensus&=along>=freshOrbit*std::min(freshOrbit*.40f,.012f) || activeGesture;
+            }
         }
         bool positionMotion=true;
         for(int h=0;h<2;++h){
@@ -206,9 +241,17 @@ public:
         const float turn=useWrists?wristMean:delta;
         if(coherent){
             evidence+=std::max(0.0f,dt);
-            if(evidence>=.045f)target=Wrap(anchorYaw+turn);
+            if(evidence>=.045f) {
+                target=Wrap(anchorYaw+turn);
+                motionWitness=unfiltered;haveMotionWitness=true;
+            }
         }else {
-            evidence=0;
+            // Near the saved angle, millimetre position noise can temporarily
+            // fail the displacement witness even though raw geometry and all
+            // rotations still agree. Hold that sample without restarting the
+            // 45ms acquisition on a confirmed continuing/reversing turn.
+            // A gesture that disagrees with raw geometry loses evidence now.
+            if(!(rotationsConfirm && rawGeometrySupports && evidence>=.045f))evidence=0;
             // Hand gestures change the reference shape, not the torso heading.
             // A head-only glance keeps the reference so a later torso turn can
             // follow the already-turned head without waiting for another glance.
@@ -222,18 +265,19 @@ public:
             // and filtered geometry must have left the saved shape to replace it.
             if(!rotationsConfirm && (shapeChanged || spanChanged))Anchor(current);
         }
-        const float error=Wrap(target-output);
-        const float step=std::clamp(error*(-std::expm1(-std::min(dt,.1f)/.035f)),-12.566371f*dt,12.566371f*dt);
-        output=Wrap(output+step);
+        output=prediction.Update(target,dt,coherent && evidence>=.045f);
         // Refresh only after an accepted substantial turn. Refreshing an idle
         // reference periodically integrates independent tracker noise as drift.
         if(coherent && evidence>=.045f && std::abs(turn)>1.05f){
             // Positions have a 25 ms filter but accepted wrist rotations are
             // current. Saving that mixed-time geometry produces a permanent
             // bias when the turn reverses. Reanchor all fields at one raw time.
-            const auto rawAxis=useLine?Sub(unfiltered.hand[1],unfiltered.hand[0]):Mid(unfiltered.hand[0],unfiltered.hand[1]);
             const float rawTurn=useWrists?turn:Angle(oldAxis,rawAxis);
-            target=Wrap(anchorYaw+rawTurn);Anchor(unfiltered);
+            target=Wrap(anchorYaw+rawTurn);
+            // Rebase both observations at the same raw instant. Keeping the old
+            // positional filter here briefly puts the next sample BEHIND its
+            // new anchor and vetoes the already-confirmed continuing rotation.
+            filtered=unfiltered;Anchor(unfiltered,true);
         }
         return {output,coherent?std::min(1.0f,evidence/.045f):0,true};
     }

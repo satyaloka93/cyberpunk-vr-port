@@ -74,8 +74,8 @@ try:
             if previous_valid:row['previousInputBase64']=base64.b64encode(data[3624:4528]).decode()
             row['validShaderWordMask']=[hex(x) for x in struct.unpack_from('<4Q',data,4528)]
             if prediction_valid:row['peerSourcePoseBase64']=base64.b64encode(data[4560:4592]).decode()
-            cpu,gpu,byte_count,_=struct.unpack_from('<2Q2I',data,4592)
-            row.update(twinCpuDescriptor=hex(cpu),twinGpuAddress=hex(gpu),twinBytes=byte_count)
+            cpu,gpu,byte_count,peer_side=struct.unpack_from('<2Q2I',data,4592)
+            row.update(twinCpuDescriptor=hex(cpu),twinGpuAddress=hex(gpu),twinBytes=byte_count,predictionPeerSide=peer_side)
         rows.append(row)
     frequency=c.c_int64();k.QueryPerformanceFrequency(c.byref(frequency))
     twinDelta={name:read(symbol)-value for name,symbol,value in zip(('allocations','bindings','failures'),twinNames,beforeTwins)}

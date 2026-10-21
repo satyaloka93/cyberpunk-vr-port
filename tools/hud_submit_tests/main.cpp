@@ -14,6 +14,7 @@ using namespace cvr::hud;
 LiveControls g_liveControls{};
 extern "C" int CyberpunkVR_RuntimeDiagnostics=0;
 extern "C" std::atomic<uint32_t> CyberpunkVR_HudSubmitRing;
+extern "C" cvr::hud::PoseDebug CyberpunkVR_HudPoseDebug;
 void Log(const char*,...) {}
 void Check(bool value,const char* message) {if(!value)throw std::runtime_error(message);}
 void Hr(HRESULT value) {Check(SUCCEEDED(value),"D3D12 call failed");}
@@ -132,6 +133,22 @@ int main() try {
     mock::source=frame(10,64);CyberpunkVR_HudSubmitRing=0;Check(prepare()!=nullptr,"legacy A/B path failed");drain();
     CyberpunkVR_HudSubmitRing=1;mock::source.reset();Check(prepare()==nullptr && !mock::ready,"missing source retained HUD");
     quad.Shutdown();Check(!mock::acquired && mock::acquires==mock::releases,"unbalanced XR lifecycle");
+
+    // Readiness must distinguish preparing a cached layer from publishing a
+    // fresh source and from the frame loop successfully submitting that layer.
+    Quad mainHud;
+    CyberpunkVR_RuntimeDiagnostics=1;mock::source=frame(11,64);
+    auto mainLayer=mainHud.Prepare(reinterpret_cast<XrSession>(1),reinterpret_cast<XrSpace>(1),
+        device.Get(),queue.Get(),true,true,head,1,clock+11111111);
+    Check(mainLayer && CyberpunkVR_HudPoseDebug.sourceSerial==mock::source->serial &&
+        CyberpunkVR_HudPoseDebug.sourceTick==mock::source->stamp,"HUD source evidence missing");
+    const auto observed=CyberpunkVR_HudPoseDebug.frames;
+    drain();mainHud.Prepare(reinterpret_cast<XrSession>(1),reinterpret_cast<XrSpace>(1),
+        device.Get(),queue.Get(),true,true,head,1,clock+22222222);
+    Check(CyberpunkVR_HudPoseDebug.frames==observed+1 && CyberpunkVR_HudPoseDebug.sourceSerial==11,
+        "Cached HUD incorrectly reported a new source");
+    Check(CyberpunkVR_HudSubmittedFrames==0,"Preparation is not a successful xrEndFrame");
+    CyberpunkVR_RuntimeDiagnostics=0;drain();mainHud.Shutdown();mock::source.reset();
 
     ComPtr<ID3D12InfoQueue> info;
     if(SUCCEEDED(device.As(&info)))for(UINT64 i=0;i<info->GetNumStoredMessages();++i) {

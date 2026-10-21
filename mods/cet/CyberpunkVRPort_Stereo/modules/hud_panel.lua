@@ -3,10 +3,13 @@
 local M = { count = 0, error = nil, phoneError = nil, lootVisible = false, refreshHiddenBounds = false }
 local phoneRoots = {}
 local subtitleRoots = {}
+local gazeRoots = {}
 local scanSecond = -1
 -- CET exposes game types only after onInit, not while require() loads this file.
 local boundsType
 local topPath, lootPath
+-- Names used every frame or every scan, made once (CName.new allocates).
+local hudLayerName, virtualWindowType, mainPanelPath
 
 local function vector(x, y)
     -- CET's generated Vector2 constructor ignores positional numeric arguments.
@@ -31,26 +34,60 @@ local function identityRoot(root)
         or exactPath(root, "Main", "Pane1", "right", "right_panel", "text_up", "imprint_text") ~= nil
 end
 
+-- The per-frame upkeep below runs in the plugin (VRHudPanelUpdate) when it says so: this file then finds the
+-- roots once a second and hands them over, and about 40 calls a frame through CET are saved. Asked at every scan.
+local native = false
+local function askNative()
+    local ok, on = pcall(function() return Game.VRHudPanelRootsNative() end)
+    return ok and on == true and not M.refreshHiddenBounds
+end
+-- True when the plugin took every root; otherwise it is handed nothing and this file keeps the upkeep.
+local function handOver()
+    Game.VRHudPanelRootsBegin()
+    local all = true
+    for _, root in ipairs(gazeRoots) do
+        all = Game.VRHudPanelRoot(root, root:GetParentWidget(), nil, 8, 0) and all
+    end
+    for _, phone in ipairs(phoneRoots) do
+        all = Game.VRHudPanelRoot(phone.root, phone.window, phone.info,
+            (phone.scanner and 1 or 0) + (phone.windowOrigin and 2 or 0) + (phone.interaction and 4 or 0), phone.padding or 0) and all
+    end
+    for _, subtitle in ipairs(subtitleRoots) do
+        all = Game.VRHudPanelSubtitle(subtitle.root, subtitle.window, subtitle.info, subtitle.panel) and all
+    end
+    if not all then Game.VRHudPanelRootsBegin() end
+    return all
+end
+
 local function updatePhoneBounds(layer)
-    if not layer then phoneRoots = {}; subtitleRoots = {}; scanSecond = -1; return false end
+    if not layer then
+        phoneRoots = {}; subtitleRoots = {}; gazeRoots = {}; scanSecond = -1
+        if native then pcall(handOver) end
+        return false
+    end
     boundsType = boundsType or CName.new("inkHudEntryInfo")
     topPath = topPath or CName.new("topWidgets")
     lootPath = lootPath or CName.new("looting")
+    virtualWindowType = virtualWindowType or CName.new("inkVirtualWindow")
+    mainPanelPath = mainPanelPath or CName.new("mainPanel")
     local lootVisible = false
     local second = os.time()
     if second ~= scanSecond then
         scanSecond = second
         phoneRoots = {}
+        gazeRoots = {}
         local previousSubtitles=subtitleRoots
         subtitleRoots = {}
         for _, controller in ipairs(layer:GetGameControllers()) do
             local class = NameToString(controller:GetClassName())
-            if class == "SubtitlesGameController" then
+            if class == "CrosshairGameControllerPersistentDot" then
+                table.insert(gazeRoots, controller:GetRootWidget())
+            elseif class == "SubtitlesGameController" then
                 local root=controller:GetRootWidget()
                 local window=root and root:GetParentWidget()
                 local info=root and root:GetUserData(boundsType)
-                local panel=root and root:GetWidgetByPathName(CName.new("mainPanel"))
-                if info and panel and window and window:IsA(CName.new("inkVirtualWindow")) then
+                local panel=root and root:GetWidgetByPathName(mainPanelPath)
+                if info and panel and window and window:IsA(virtualWindowType) then
                     local bounds={x=info.offset.X,y=info.offset.Y,width=info.size.X,height=info.size.Y}
                     for _,old in ipairs(previousSubtitles) do if old.root==root then bounds=old;break end end
                     table.insert(subtitleRoots,{root=root,window=window,info=info,panel=panel,
@@ -62,7 +99,8 @@ local function updatePhoneBounds(layer)
                 or class == "scannerDetailsGameController" or class == "hudCameraController"
                 or class == "hudSniperNestController"
                 or class == "gameuiScannerGameController"
-                or class == "CustomAnimationsHudGameController" then
+                or class == "CustomAnimationsHudGameController"
+                or class == "TargetHitIndicatorGameController" then
                 local root = controller:GetRootWidget()
                 local window = root and root:GetParentWidget()
                 -- Sniper HUD is a child of the shared briefing entry's root.
@@ -73,8 +111,12 @@ local function updatePhoneBounds(layer)
                 end
                 -- Authored subtitle/audio crops are left intact. Phone,
                 -- interaction, vehicle/device HUDs, scanner data and story roots need bounds.
-                if root and NameToString(root:GetName()) == "Root" and window
-                    and window:IsA(CName.new("inkVirtualWindow"))
+                -- Hit and kill markers: a 1x1 root centred with anchorPoint (0,0). The markers are spawned
+                -- around it (200x200 holders, animated up to 2x) and weapon sway moves it by its margin,
+                -- so the window crop is a padded box around the root's place in its window.
+                local hitMarker = class == "TargetHitIndicatorGameController"
+                if root and (hitMarker or NameToString(root:GetName()) == "Root") and window
+                    and window:IsA(virtualWindowType)
                     and (class ~= "CustomAnimationsHudGameController" or identityRoot(root)) then
                     local info = root:GetUserData(boundsType)
                     if not info then
@@ -83,14 +125,21 @@ local function updatePhoneBounds(layer)
                         root:SetUserData(info)
                     end
                     table.insert(phoneRoots, { root = root, window = window, info = info,
-                        padding = class == "CustomAnimationsHudGameController" and 32 or 0,
+                        padding = class == "CustomAnimationsHudGameController" and 32 or hitMarker and 160 or 0,
                         scanner = class == "gameuiScannerGameController",
-                        windowOrigin = class == "scannerDetailsGameController" or class == "hudSniperNestController",
+                        windowOrigin = class == "scannerDetailsGameController" or class == "hudSniperNestController" or hitMarker,
                         interaction = class == "gameuiInteractionsHubGameController" })
                 end
             end
         end
+        local wasNative = native
+        native = askNative()
+        if native then
+            local okH, all = pcall(handOver)
+            native = okH and all == true
+        elseif wasNative then pcall(function() Game.VRHudPanelRootsBegin() end) end
     end
+    if native then return false end
     for _, phone in ipairs(phoneRoots) do
         -- Source roots retain their native visibility (only the final slot image
         -- is masked). Hidden panels need no crop work or redraw. Check every
@@ -212,20 +261,23 @@ local function updatePhoneBounds(layer)
     return lootVisible
 end
 
+local function tickHud()
+    hudLayerName = hudLayerName or CName.new("inkHUDLayer")
+    local system = Game.GetInkSystem()
+    local layer = system and system:GetLayer(hudLayerName)
+    local phoneOk, phoneError = pcall(updatePhoneBounds, layer)
+    M.lootVisible = phoneOk and phoneError == true
+    if phoneOk then M.phoneError = nil
+    elseif M.phoneError ~= tostring(phoneError) then
+        M.phoneError = tostring(phoneError)
+        phoneRoots = {}; subtitleRoots = {}; scanSecond = -1
+        print("[Stereo.HUD phone] " .. M.phoneError)
+    end
+    return Game.VRHudPanelUpdate(layer and layer:GetVirtualWindow() or nil, M.lootVisible)
+end
+
 function M.tick()
-    local ok, result = pcall(function()
-        local system = Game.GetInkSystem()
-        local layer = system and system:GetLayer(CName.new("inkHUDLayer"))
-        local phoneOk, phoneError = pcall(updatePhoneBounds, layer)
-        M.lootVisible = phoneOk and phoneError == true
-        if phoneOk then M.phoneError = nil
-        elseif M.phoneError ~= tostring(phoneError) then
-            M.phoneError = tostring(phoneError)
-            phoneRoots = {}; subtitleRoots = {}; scanSecond = -1
-            print("[Stereo.HUD phone] " .. M.phoneError)
-        end
-        return Game.VRHudPanelUpdate(layer and layer:GetVirtualWindow() or nil, M.lootVisible)
-    end)
+    local ok, result = pcall(tickHud)
     if ok then M.count = result; M.error = nil
     elseif M.error ~= tostring(result) then
         M.error = tostring(result)

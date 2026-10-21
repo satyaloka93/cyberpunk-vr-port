@@ -1,5 +1,6 @@
 #include "Hooks/AnalogStick.hpp"
 #include "Hooks/KeypadInput.hpp"
+#include "Hooks/WeaponTrigger.hpp"
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -8,7 +9,21 @@ void Check(bool ok,const char* message){if(!ok)throw std::runtime_error(message)
 int main(int argc,char** argv)try {
     using namespace cvr::input;
     Check(argc==2,"case required");const std::string name=argv[1];
-    if(name=="keypad_cursor") {
+    if(name=="weapon_trigger") {
+        WeaponTrigger t;
+        Check(!t.Update(true,0),"rest fired");
+        for(float v:{.2f,.5f,.849f})Check(!t.Update(true,v),"early break");
+        Check(t.Update(true,.85f),"break missed");
+        for(int i=0;i<100;++i)Check(t.Update(true,1),"automatic hold interrupted");
+        for(float v:{.84f,.5f,.201f,.9f})Check(t.Update(true,v),"hold reset early");
+        Check(!t.Update(true,.20f),"reset missed");
+        for(int i=0;i<100;++i){Check(t.Update(true,.85f),"rapid re-press missed");Check(!t.Update(true,.2f),"rapid reset missed");}
+        Check(!t.Update(false,1),"inactive fired");
+        Check(!t.Update(true,1) && !t.Update(true,.3f),"reentry with held trigger fired");
+        Check(!t.Update(true,.2f) && t.Update(true,.85f),"reentry did not rearm");
+        Check(!t.Update(true,std::numeric_limits<float>::quiet_NaN()),"invalid input fired");
+        Check(!t.Update(true,1),"tracking recovery auto-fired");
+    } else if(name=="keypad_cursor") {
         const KeypadPoint size{600,1066}, centre{300,533};
         for(int fps:{30,45,60,90,120,144}) {
             KeypadCursor cursor;
