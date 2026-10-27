@@ -1,3 +1,4 @@
+#include "Render/BarrelHit.hpp"
 // OverlayDebugDraw -- the two things drawn ON the world rather than in a panel.
 //
 // The hand locator answers "where does the plugin think the hand is", which is the first question in
@@ -447,13 +448,24 @@ void DrawBarrelCrosshair() {
     if (!(halfIpd > 0.0001f)) halfIpd = OpenXRManager::Get().GetSharedSlot(95);
     if (!(halfIpd > 0.0001f)) halfIpd = 0.0325f;
 
+    // Use the measured barrel ray's hit range for both eyes. Stale/off-axis
+    // samples are rejected after aim changes; fixed distance is only fallback.
+    float dotDistance = CyberpunkVR_BarrelDotDistM;
+    const bool surfaceHit = cvr::aim::ReadSurfaceDistance(s_mp,boreFwd,GetTickCount64(),dotDistance);
+    static unsigned hitLogs = 0;
+    static bool lastSurfaceHit = false;
+    if (surfaceHit != lastSurfaceHit && hitLogs < 8) {
+        ++hitLogs; lastSurfaceHit = surfaceHit;
+        Log("[barrel-hit] surface=%d distance=%.3f\n",int(surfaceHit),dotDistance);
+    }
+
     // Screen position of the impact point as seen from one eye. sign: -1 = MAIN/left, +1 = VRCAM.
     static float s_dbgLy[2] = {0.0f, 0.0f};
     static float s_dbgWhy = 0.0f;
     auto dotForEye = [&](float sign, ImVec2* out) -> bool {
         if (!haveWorld) { s_dbgWhy = 1.0f; return false; }
-        const float D = CyberpunkVR_BarrelDotDistM;
-        if (!(D > 0.5f)) { s_dbgWhy = 2.0f; return false; }
+        const float D = dotDistance;
+        if (!(D >= 0.1f)) { s_dbgWhy = 2.0f; return false; }
         const float ex = hcx + rgt[0] * halfIpd * sign;
         const float ey = hcy + rgt[1] * halfIpd * sign;
         const float ez = hcz + rgt[2] * halfIpd * sign;
@@ -499,7 +511,7 @@ void DrawBarrelCrosshair() {
             Log("BarrelDot: worldPath=%d why=%.0f ly=(%.3f %.3f) v=(%.3f %.3f %.3f) fwd=(%.3f %.3f %.3f) D=%.1f "
                 "ndc=(%.5f %.5f) muzzle=(%.3f %.3f %.3f) head=(%.3f %.3f %.3f) halfIpd=%.4f\n",
                 now, s_dbgWhy, s_dbgLy[0], s_dbgLy[1], vx, vy, vz, mfx, mfy, mfz,
-                CyberpunkVR_BarrelDotDistM,
+                dotDistance,
                 CyberpunkVR_BarrelDotNdcX, CyberpunkVR_BarrelDotNdcX2,
                 mpx, mpy, mpz, hcx, hcy, hcz, halfIpd);
         }

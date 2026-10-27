@@ -27,8 +27,11 @@ int RunWorldMarkerThunkTest(void*);
 void WorldMarkerTestEnd();
 }
 bool testStackHasCaller=false;
+bool testMatrixStoredBeforeCallback=false;
 extern "C" void RecordWorldMarkerStack(void* geometry) {
     WorldMarkerTestGeometry=geometry;
+    const auto* row=reinterpret_cast<const float*>(static_cast<const uint8_t*>(geometry)+0x160);
+    testMatrixStoredBeforeCallback=row[0]==1 && row[1]==1 && row[2]==1 && row[3]==1;
     void* frames[24]{};
     const auto count=CaptureStackBackTrace(0,24,frames,nullptr);
     const auto begin=reinterpret_cast<uintptr_t>(&RunWorldMarkerThunkTest);
@@ -316,14 +319,24 @@ int main(int argc,char** argv) try {
         }
         for(size_t m:{16,80,96,128})for(size_t i=0;i<16;++i)Check(out[m+i]==p[m+i],"non-canvas matrix changed");
         Check(out[188]==p[188] && out[189]==p[189],"canvas size changed");
+        std::array<float,216> expanded{};
+        std::copy(p.begin(),p.end(),expanded.begin());
+        for(size_t i=212;i<expanded.size();++i)expanded[i]=float(i)+.25f;
+        auto expandedOut=expanded;
+        Check(IsInkCamera(expanded.data(),sizeof(expanded)),"expanded native ink camera missed");
+        Check(!IsInkCamera(expanded.data(),852),"unverified camera block size accepted");
+        Check(ShiftInkCamera(expandedOut.data(),expanded.data(),sizeof(expanded),.9f,.25f,-.1f)==4,"expanded camera matrix copies missed");
+        for(size_t i=212;i<expanded.size();++i)Check(expandedOut[i]==expanded[i],"native per-view camera tail changed");
     } else if(name=="sprite" || name=="procedural") GpuProjection(name=="procedural");
     else if(name=="text") TextProjection();
     else if(name=="text_batched") BatchedTextProjection();
     else if(name=="native") {Check(argc==3,"native shader directory required");NativeParity(argv[2]);}
     else if(name=="native_link") {Check(argc==3,"native shader directory required");NativeLink(argv[2]);}
     else if(name=="abi") {
-        int geometry=123;Check(RunWorldMarkerThunkTest(&geometry)==1,"mid-function thunk changed native volatile registers/flags");
-        Check(WorldMarkerTestGeometry==&geometry,"wrong native geometry register");
+        alignas(16) std::array<uint8_t,512> geometry{};
+        Check(RunWorldMarkerThunkTest(geometry.data())==1,"mid-function thunk changed native volatile registers/flags");
+        Check(WorldMarkerTestGeometry==geometry.data(),"wrong native geometry register");
+        Check(testMatrixStoredBeforeCallback,"native matrix store was not replayed before tagging");
         Check(testStackHasCaller,"text thunk lost the native caller during stack unwinding");
         for(float x:WorldMarkerTestXmm) Check(x==1,"mid-function thunk changed XMM lanes");
     } else Check(false,"unknown case");

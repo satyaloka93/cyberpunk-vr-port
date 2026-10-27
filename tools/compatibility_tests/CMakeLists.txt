@@ -1,0 +1,11 @@
+cmake_minimum_required(VERSION 3.20)
+project(GameCompatibilityTests LANGUAGES CXX)
+enable_testing()
+
+add_executable(game_compatibility_tests main.cpp)
+add_executable(engine_camera_layout_tests camera.cpp)
+foreach(target game_compatibility_tests engine_camera_layout_tests)
+    target_include_directories(${target} PRIVATE ../../include)
+    target_compile_features(${target} PRIVATE cxx_std_20)
+    add_test(NAME ${target} COMMAND ${target})
+endforeach()

@@ -128,6 +128,8 @@ function M.eject(ctx, cyl, live)
             depth = ec.chamber or 0.048,      -- how far it has to travel before it is clear of the cylinder
             radial = { (ox / rr) * sp, (oy / rr) * sp, (oz / rr) * sp },
             mu = ec.mu or 0.25,
+            exitSpeed = ec.minExitSpeed or 0.0,
+            releaseTilt = M.tiltThreshold(ctx.cfg.dropMu),
             bias = ec.bias or 0.35,
             live = isLive,
             q = { s1, s2, s3, s4 },
@@ -206,7 +208,8 @@ function M.tick(ctx)
                 if ctx.cyl then
                     local nx, ny, nz = qrot(ctx.cyl.qi, ctx.cyl.qj, ctx.cyl.qk, ctx.cyl.qr,
                                             c.localAxis[1], c.localAxis[2], c.localAxis[3])
-                    if nz > 0.0 then nx, ny, nz = -nx, -ny, -nz end
+                    if not c.exitStarted and nz > 0.0 then nx, ny, nz = -nx, -ny, -nz end
+                    if c.exitStarted and c.exitSign == -1 then nx, ny, nz = -nx, -ny, -nz end
                     c.axis = { nx, ny, nz }
                 end
                 -- STILL IN THE CHAMBER: only the axial part of gravity can act, and friction takes its share of
@@ -234,8 +237,24 @@ function M.tick(ctx)
                 -- ...and the head start is counted from the moment it COULD move, not from when it was put in the
                 -- cylinder. Counted from the spawn it was spent while the gun was still being raised, and all six
                 -- then started together: "они как-то синхронно все выезжают".
-                if a > 0.0 then c.armed = (c.armed or 0.0) + dt end
-                if a > 0.0 and (c.armed or 0.0) < c.delay then a = 0.0 end
+                if c.exitSpeed > 0 then
+                    -- Deliberate tilt releases the extractor. Once released, finish the
+                    -- short travel even if the hand levels out to reach for a loader.
+                    if not c.exitStarted then
+                        if ctx.cyl and ct >= c.releaseTilt then c.armed = (c.armed or 0.0) + dt
+                        else c.armed = 0.0 end
+                        if (c.armed or 0.0) >= math.max(c.delay, 0.025) then
+                            c.exitStarted = true
+                            c.sv = c.exitSpeed
+                            local _, _, localZ = qrot(ctx.cyl.qi, ctx.cyl.qj, ctx.cyl.qk, ctx.cyl.qr,
+                                c.localAxis[1], c.localAxis[2], c.localAxis[3])
+                            c.exitSign = localZ > 0 and -1 or 1
+                        else a = 0.0 end
+                    end
+                else
+                    if a > 0.0 then c.armed = (c.armed or 0.0) + dt end
+                    if a > 0.0 and (c.armed or 0.0) < c.delay then a = 0.0 end
+                end
                 c.sv = (c.sv or 0.0) + a * dt
                 c.slide = c.slide + c.sv * dt
                 M.place(ctx, c)

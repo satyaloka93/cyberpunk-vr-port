@@ -92,8 +92,8 @@ function M.update(dt,player,weapon,position,forward,origin,diag)
     -- success of a queued game attack. One whoosh per stroke/reversal.
     if clock>=s.mute and soundSpeed>=tuning.whooshSpeed and s.soundArmed and clock-s.lastSound>=.12 then
         player:VRMeleeWhoosh(weapon,soundSpeed>=tuning.fastSpeed,Game.GetVRSharedSlot(160)>.5)
-        -- PR96's Toolkit swing envelope, on 0.1.8's physical tracking path.
-        -- Native is PSVR2-gated; other headsets keep upstream behavior.
+        -- Recovered swing envelope on 0.1.8's physical tracking path.
+        -- Native routes to OpenXR, or exclusively to the active Toolkit bridge.
         pcall(function()
             local amplitude=.45+(.85-.45)*math.min(1,math.max(0,(soundSpeed-tuning.whooshSpeed)/3))
             SetVRHapticPulse(1,amplitude,45)

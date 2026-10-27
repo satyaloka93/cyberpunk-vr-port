@@ -71,8 +71,11 @@ void InitRuntimePaths() {
     // The in-vehicle head offset starts at zero: it is a correction on top of the standing
     // calibration, and a default that moved the car view would be a surprise, not a feature.
     g_liveControls.xrVehHeadOffsetX = 0.0f;
+    g_liveControls.xrBikeHeadOffsetX = 0.0f;
     g_liveControls.xrVehHeadOffsetY = 0.0f;
+    g_liveControls.xrBikeHeadOffsetY = 0.0f;
     g_liveControls.xrVehHeadOffsetZ = 0.0f;
+    g_liveControls.xrBikeHeadOffsetZ = 0.0f;
 
     // DRIVING. Wheel grab ON. 0.28 m is a hand-sized reach around the animated wheel pose -- wide
     // enough that you do not have to hunt for a wheel you cannot see, tight enough that a hand

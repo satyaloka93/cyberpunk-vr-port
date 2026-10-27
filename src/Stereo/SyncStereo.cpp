@@ -8,6 +8,7 @@
 #include "Utils/StereoLog.hpp"
 #include "Stereo/VrcamConfig.hpp"   // vrcam.json access + CName hashing, shared with the launcher
 #include "Render/ColorBlit.hpp"   // HUD debug overlay on the mirror image
+#include "Render/NativeResourceLayout.hpp"
 #include "Hooks/RenderDocBridge.hpp"
 
 #include <windows.h>
@@ -48,6 +49,7 @@ extern "C" unsigned long long CyberpunkVR_DebugBarrelDotDraws;
 
 #include "Stereo/StereoInternal.hpp"
 #include "Stereo/EngineRvas.hpp"
+#include "Stereo/EngineCameraLayout.hpp"
 #include "Stereo/DetourRegistry.hpp"
 
 extern "C" float CyberpunkVR_HudEngineCurvature[2];   // Stereo/Hud.cpp
@@ -177,10 +179,11 @@ bool is_main_view(const void* view) {
     // MAIN. Without this, one bad pin silently disables every VRCAM branch that sits in an
     // `else if` after an is_main_view() test -- which is exactly how the fov write came out as
     // a no-op the first time round.
-    if (*reinterpret_cast<const uint64_t*>(p + 0x28) != 0) return false;
+    if (*reinterpret_cast<const uint64_t*>(p + cvr::stereo::camera_layout::ViewKey) != 0) return false;
     const uintptr_t cached = g_main_view_ctx.load(std::memory_order_acquire);
     if (cached) return reinterpret_cast<uintptr_t>(view) == cached;
-    return *reinterpret_cast<const float*>(p + 0x98) > 1.3f;
+    return *reinterpret_cast<const float*>(p + cvr::stereo::camera_layout::DescriptorBase +
+                                          cvr::stereo::camera_layout::Aspect) > 1.3f;
 }
 // Render resolution of the selected component, parsed from its <W>x<H> name suffix. The
 // mirror's RTV filter needs it to recognise the VRCAM target among every render target the
@@ -634,7 +637,7 @@ extern uint8_t* g_exe_base;     // defined below with the other engine globals
 extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugResolveHits = 0;
 // ROOT CAUSE / ARCHITECTURAL FIX (layer 2 = deterministic version binding).
 // The frame graph versions each logical resource; a consumer resolves "the current
-// generation" of a logical id via the per-view declare counter v7 = *(a1+24064*salt+64)
+// generation" of a logical id via the per-view declaration cursor (2.50 stride 0x70C0).
 // at the moment ITS declare runs. For MAIN the build order is fixed, so Final2D always
 // declares AFTER tonemap's write => resolves the post-tonemap (final) generation. For
 // the FORCED-DLSS vrcam view the parallel graph build is not deterministically ordered,
@@ -718,7 +721,7 @@ static __int64 __fastcall Detour_Resolve3D20(__int64 reg, uint32_t* out,
         const uint8_t st = (uint8_t)r9;
         uint32_t sv7 = 0;
         if (reg) { __try { sv7 = *reinterpret_cast<uint32_t*>(
-            reg + 24064ull * st + 64); } __except (EXCEPTION_EXECUTE_HANDLER) { sv7 = 0; } }
+            reg + cvr::stereo::resource_layout::SlotStride * st + cvr::stereo::resource_layout::Cursor); } __except (EXCEPTION_EXECUTE_HANDLER) { sv7 = 0; } }
         g_stage_idx[st] = *out;
         g_stage_v7[st]  = sv7;
         // salt70: record (caller-RVA -> resolved physical) this frame to compare the
@@ -755,7 +758,7 @@ static __int64 __fastcall Detour_Resolve3D20(__int64 reg, uint32_t* out,
         &CyberpunkVR_DebugResolveHits)));
     uint32_t v7 = 0;
     if (reg) {
-        __try { v7 = *reinterpret_cast<uint32_t*>(reg + 24064ull * (uint8_t)r9 + 64); }
+        __try { v7 = *reinterpret_cast<uint32_t*>(reg + cvr::stereo::resource_layout::SlotStride * (uint8_t)r9 + cvr::stereo::resource_layout::Cursor); }
         __except (EXCEPTION_EXECUTE_HANDLER) { v7 = 0; }
     }
     const uint32_t seq = g_pv_seq.fetch_add(1, std::memory_order_relaxed);

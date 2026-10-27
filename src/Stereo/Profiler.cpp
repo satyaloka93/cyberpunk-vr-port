@@ -174,7 +174,7 @@ void prof_node_add(uintptr_t work, int64_t dt, int64_t self, bool vrcam) {
 // RENUMBERS the whole tail. MAIN and VRCAM therefore disagree on numbering (a constant
 // shift of 3 in the tail was observed), and comparing views by rtId NUMBER produces phantom
 // "view-only passes". Passes must be matched by CONTENT instead -- hence the pair table below.
-const uint32_t SCENE_DRIVER_WORK_RVA = 0x1EC1D0;
+const uint32_t SCENE_DRIVER_WORK_RVA = 0x332D5C;
 
 // ---- HUD IN THE SECOND EYE ------------------------------------------------------------------
 //
@@ -211,8 +211,8 @@ const uint32_t SCENE_DRIVER_WORK_RVA = 0x1EC1D0;
 // right-eye capture hangs off it (RENDER_FINAL2D_WORK_RVA above, the ctx-keyed RTV redirect).
 // So the composite that would put a HUD surface on screen is present; only the node that DRAWS
 // the HUD is being refused.
-const uint32_t DRAWHUD_WORK_RVA        = 0x1EE760;   // CRenderNode_DrawHUD
-const uintptr_t VIEW_FEATURE_CHECK_RVA = 0x21BE28;   // sub_14021BE28
+const uint32_t DRAWHUD_WORK_RVA        = 0x33E388;   // CRenderNode_DrawHUD, 2.50
+const uintptr_t VIEW_FEATURE_CHECK_RVA = 0x5D8D48;   // native category subset test, 2.50
 
 // OFF -- forcing the gate CRASHES, and that is the useful result.
 //
@@ -289,7 +289,7 @@ extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugHudBlockLent    = 0;
 // bit positions rather than a theory. Those positions are what has to be set where the view is
 // created -- early enough that the engine allocates the HUD state itself, which is the whole
 // difference between this and the override that crashed.
-const uintptr_t HUD_REQUIRED_MASK_RVA = 0x3487820;   // word_143487820
+const uintptr_t HUD_REQUIRED_MASK_RVA = 0x3C1C8A0;   // 2.50 HUD category descriptor
 bool g_hud_mask_dumped_main  = false;
 bool g_hud_mask_dumped_vrcam = false;
 

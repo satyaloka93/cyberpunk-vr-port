@@ -9,30 +9,30 @@
 extern void Log(const char*,...);
 extern "C" __declspec(dllexport) std::atomic<uint64_t> CyberpunkVR_FramegenNativeStages[4]{};
 extern "C" __declspec(dllexport) std::atomic<uint64_t> CyberpunkVR_FramegenNativeDebug[2][8]{};
-// Which engine node the last native capture came from: 1 TAA, 2 FSR 2, 3 FSR 3.0, 4 FSR 3.1+, 5 XeSS.
+// Which engine node the last native capture came from: 1 TAA, 2 FSR 2, 3 reserved (removed FSR 3.0), 4 FFX API, 5 XeSS.
 extern "C" __declspec(dllexport) std::atomic<uint32_t> CyberpunkVR_FramegenNativeSource{};
 namespace cvr::framegen {
 namespace {
 // The engine nodes whose depth and motion framegen reuses when Streamline is not the upscaler. TAA
 // keeps the two SRVs it was proven on. Every temporal upscaler node is handed the same two view-salted
 // resources instead -- depth (view<<24 ^ 0x61F178D4) and velocity (view<<24 ^ 0x15EAB19C), the ones
-// sub_141D4E150 passes to FSR 3 as "depth" and "motionVectors" -- so one observer covers FSR 2 (the
-// engine's own passes), FSR 3.0, FSR 3.1/4 and XeSS. The last three are libraries that move the
+// node22873B0 passes to the FFX API as depth and motion -- so one observer covers FSR 2 (the
+// engine's own passes), the FFX API upscaler and XeSS. The latter two are libraries that move the
 // inputs into their own states, so they are captured when the library is called
 // (CaptureUpscalerInputs), not at the next draw or dispatch.
-enum class Consumer:uint32_t {None,Taa,Fsr2,Fsr3,FfxApi,Xess};
+// 2.50 removes the FSR 3.0 node/library; retain its diagnostic number as a hole.
+enum class Consumer:uint32_t {None=0,Taa=1,Fsr2=2,Fsr3Removed=3,FfxApi=4,Xess=5};
 Consumer CurrentConsumer() {
     if(!CaptureInputsEnabled() || cvr::stereo::probe::internalCommands || !cvr::detail::g_exe_base)return Consumer::None;
     switch(cvr::detail::t_current_node_work-reinterpret_cast<uintptr_t>(cvr::detail::g_exe_base)) {
-        case 0x768510:return Consumer::Taa;     // CRenderNode_ApplyTXAA
-        case 0x7772E8:return Consumer::Fsr2;    // CRenderNode_ApplyFSR2
-        case 0x1D4E8B0:return Consumer::Fsr3;   // CRenderNode_ApplyFSR3_0, ffx_fsr3_x64.dll
-        case 0x1D4BD30:return Consumer::FfxApi; // CRenderNode_ApplyFSR3, amd_fidelityfx_dx12.dll
-        case 0x76BA40:return Consumer::Xess;    // CRenderNode_ApplyXESS
+        case 0x557204:return Consumer::Taa;     // CRenderNode_ApplyTXAA
+        case 0x41CE60:return Consumer::Fsr2;    // CRenderNode_ApplyFSR2
+        case 0x22873B0:return Consumer::FfxApi; // CRenderNode_ApplyFSR3, amd_fidelityfx_loader_dx12.dll
+        case 0xD6C0C0:return Consumer::Xess;    // CRenderNode_ApplyXESS
         default:return Consumer::None;
     }
 }
-bool Library(Consumer c) {return c==Consumer::Fsr3 || c==Consumer::FfxApi || c==Consumer::Xess;}
+bool Library(Consumer c) {return c==Consumer::FfxApi || c==Consumer::Xess;}
 int InputType(Consumer c,uint32_t key) {
     // ApplyTXAA's contiguous SRVs: current color, history, velocity (917D8BC9),
     // resolved depth (DEBF0C27), mask. The raw G-buffer velocity is not sampled.
@@ -63,16 +63,17 @@ bool Describe(uintptr_t pool,uint32_t handle,uint32_t type,uint32_t state,InputT
 // engine's ledger has no entry for it. Zero refuses such a resource.
 bool ReadTag(uint32_t handle,uint32_t type,InputTag& tag,uint32_t unused=0) {
     auto& debug=CyberpunkVR_FramegenNativeDebug[type];debug[0]=handle;
-    // 2.31 resource table and command-context state ledger, the same records
-    // consumed by native SRV binding +1FABD0 and barrier tracking +1F41F8.
+    // 2.50 resource table and command-context state ledger, the same records
+    // consumed by native SRV binding +3E05F8 and barrier tracking +337380.
+    // The ledger remains at context+538; texture records retain their B0 stride.
     // No remembered D3D pointer is used; the only assumed state is a library's input state, for a
     // resource this context has not touched (Capture).
     __try {
         const auto base=reinterpret_cast<uintptr_t>(cvr::detail::g_exe_base);
         using Current=uintptr_t(*)();
-        const auto context=reinterpret_cast<Current>(base+0x1F405C)();
+        const auto context=reinterpret_cast<Current>(base+0x337230)();
         debug[1]=context;
-        const auto pool=*reinterpret_cast<const uintptr_t*>(base+0x3438A28);
+        const auto pool=*reinterpret_cast<const uintptr_t*>(base+0x3BCDCA8);
         if(!context || !pool || !handle || handle>0x100000)return false;
         const auto table=context+0x538;
         const auto count=*reinterpret_cast<const uint32_t*>(table+8);
@@ -134,7 +135,8 @@ void Capture(ID3D12GraphicsCommandList* list,bool library) {
     if(!pose || !pose.hasRenderFrameId || candidate.frame!=pose.renderFrameId || candidate.view!=pose.view || candidate.pose!=pose.poseId)return;
     ++CyberpunkVR_FramegenNativeStages[1];InputTag tags[2]{};
     // A library is promised its inputs readable by pixel and compute shaders: the engine hands FSR 3
-    // FFX state 12, PIXEL_COMPUTE_READ (sub_141D4F220). An input this command context has not touched
+    // FFX state 12, PIXEL_COMPUTE_READ (2288FF4/228900B -> wrapper2289500).
+    // An input this command context has not touched
     // yet is in that state from an earlier context.
     const uint32_t unused=library ? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE|D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE : 0;
     if(!ReadTag(candidate.handles[0],0,tags[0],unused) || (Enabled() && !ReadTag(candidate.handles[1],1,tags[1],unused))) {

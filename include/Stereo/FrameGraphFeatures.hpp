@@ -3,7 +3,7 @@
 #include <mutex>
 
 namespace cvr::stereo {
-inline constexpr uint64_t ShadingRateImageFlagF1=1ull<<20; // graph feature 84
+inline constexpr uint64_t ShadingRateImageFlagF1=1ull<<23; // 2.50 graph feature 87 (2.31: 84)
 constexpr uint64_t SupportedShadingRateFlags(uint64_t flags,uint32_t nativeTileSize) {
     return nativeTileSize ? flags : flags&~ShadingRateImageFlagF1;
 }

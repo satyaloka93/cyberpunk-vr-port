@@ -1,4 +1,5 @@
 #pragma once
+#include "Render/NativeResourceLayout.hpp"
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -7,7 +8,7 @@
 #include <vector>
 
 namespace cvr::stereo::resource_replay {
-inline constexpr uint32_t Slots=220,RowsPerSlot=500,MaxRows=Slots*RowsPerSlot;
+inline constexpr uint32_t Slots=resource_layout::MaxSlots,RowsPerSlot=resource_layout::MaxDeclarations,MaxRows=Slots*RowsPerSlot;
 using RawDeclaration=std::array<uint8_t,48>;
 struct Identity {
     uint64_t consumerId{},epoch{},generation{},pool{},sourceGraph{},executionGraph{};

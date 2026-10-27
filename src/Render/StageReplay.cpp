@@ -13,6 +13,7 @@
 #include "Render/NativeCameraBindingState.hpp"
 #include "Render/NativeCameraFlushState.hpp"
 #include "Stereo/StereoInternal.hpp"
+#include "Stereo/EngineRvas.hpp"
 #include "Utils/StereoLog.hpp"
 #include "Hooks/SwapChainInternal.hpp"
 #include "Hooks/Hook.hpp"
@@ -127,14 +128,14 @@ bool WriteCursor(uint64_t state, uint32_t cursor) {
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-// The native renderer frame clock, renderer+0x4CA4 (incremented at 0x294055, read by temporal
-// passes; Framegen/Inputs.cpp reads the same field). It ties a source capture to the target of the
+// The 2.50 native renderer frame clock, renderer+0x4CC8 (read at RVA 0x40A1B2;
+// Framegen/Inputs.cpp reads the same field). It ties a source capture to the target of the
 // same frame. [[engine+0x60]], which the consumer hands to its uploads, looked like a frame index
 // but is constant (census 816).
 uint32_t EngineFrame() {
     const uintptr_t base = Base(); if (!base) return 0;
     uint64_t renderer = 0; uint32_t frame = 0;
-    if (!ReadSafe(base + 0x3427C00, &renderer, 8) || !renderer || !ReadSafe(renderer + 0x4CA4, &frame, 4)) return 0;
+    if (!ReadSafe(base + cvr::detail::RENDERER_GLOBAL_RVA, &renderer, 8) || !renderer || !ReadSafe(renderer + 0x4CC8, &frame, 4)) return 0;
     return frame;
 }
 
@@ -1517,17 +1518,15 @@ void Leave(Ticket& t) {
     LogEvent(t.frame, uint32_t(t.side), t.stage, t.ordinal, t.kind, t.start, end, t.spanBegin, t.spanEnd);
 }
 
-// VRCAM GBuffer_Solid partitions. The 15 bytes at 0x1D43B2B
-//     cmp [rsi+0F94h], ebx ; mov edi, cs:dword_14347F790 ; cmovz edi, ebx
-// jump to a check that keeps the worker count when the view's AA mode is 1 only if the graph is
-// VRCAM's. r12 is the builder's fourth argument for the whole function (set once at 0x1D4306B):
-// its only caller (0x219D4A) passes subview+0x17D0, and the subview's camera name is at +0x28
-// (the hash FlagCompute and RenderParity key on), so the name is [r12-17A8h]. ebx is 1 there.
-// rax is free: the next instruction is `xor ecx, ecx; call`, which clobbers it, and resets flags.
+// 2.50 full graph builder2276E60: preserve native partitioning except the
+// explicitly selected VRCAM name when AA mode is1. At2277A46, RSI carries
+// the native view state, EBX is1, and R12 retains the fourth argument.
+// Native caller40A3E8 passes subview+25B0; its name+28 is [R12-2588].
+// The exact paired clamp remains CMP / global worker load / CMOVE.
 bool InstallVrcamPartitions() {
-    auto* site = reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr)) + 0x1D43B2B;
-    static const uint8_t expected[15] = {0x39, 0x9E, 0x94, 0x0F, 0x00, 0x00, 0x8B, 0x3D,
-                                         0x59, 0xBC, 0x73, 0x01, 0x0F, 0x44, 0xFB};
+    auto* site = reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr)) + 0x2277A46;
+    static const uint8_t expected[15] = {0x39, 0x9E, 0xA4, 0x0F, 0x00, 0x00, 0x8B, 0x3D,
+                                         0xFE, 0xD0, 0x99, 0x01, 0x0F, 0x44, 0xFB};
     if (std::memcmp(site, expected, sizeof(expected)) != 0) {
         CyberpunkVR_VrcamGbufferPartitionsState.store(2);
         return false;
@@ -1536,20 +1535,24 @@ bool InstallVrcamPartitions() {
     if (!code) { CyberpunkVR_VrcamGbufferPartitionsState.store(2); return false; }
     const uintptr_t workers = uintptr_t(site + 12) + *reinterpret_cast<const int32_t*>(site + 8);
     int pos = 0;
+    code[pos++] = 0x50; // preserve native RAX
     WriteMovRaxImm64(code, pos, workers);
     for (uint8_t b : {0x8B, 0x38}) code[pos++] = b;                                 // mov edi, [rax]
-    for (uint8_t b : {0x39, 0x9E, 0x94, 0x0F, 0x00, 0x00}) code[pos++] = b;         // cmp [rsi+0F94h], ebx
+    for (uint8_t b : {0x39, 0x9E, 0xA4, 0x0F, 0x00, 0x00}) code[pos++] = b;         // cmp [rsi+0FA4h], ebx
+    code[pos++] = 0x9C; // preserve the native comparison flags through policy checks
     code[pos++] = 0x75; const int toDone1 = pos++;                                  // jnz done
     WriteMovRaxImm64(code, pos, reinterpret_cast<uintptr_t>(&CyberpunkVR_VrcamGbufferPartitionsKey));
     for (uint8_t b : {0x48, 0x8B, 0x00}) code[pos++] = b;                           // mov rax, [rax]
     for (uint8_t b : {0x48, 0x85, 0xC0}) code[pos++] = b;                           // test rax, rax
     code[pos++] = 0x74; const int toOne = pos++;                                    // jz one
-    for (uint8_t b : {0x49, 0x3B, 0x84, 0x24, 0x58, 0xE8, 0xFF, 0xFF}) code[pos++] = b;  // cmp rax, [r12-17A8h]
+    for (uint8_t b : {0x49, 0x3B, 0x84, 0x24, 0x78, 0xDA, 0xFF, 0xFF}) code[pos++] = b;  // cmp rax, [r12-2588h]
     code[pos++] = 0x74; const int toDone2 = pos++;                                  // jz done
     code[toOne] = uint8_t(pos - (toOne + 1));
     for (uint8_t b : {0x89, 0xDF}) code[pos++] = b;                                 // one: mov edi, ebx
     code[toDone1] = uint8_t(pos - (toDone1 + 1));
     code[toDone2] = uint8_t(pos - (toDone2 + 1));
+    code[pos++] = 0x9D; // popfq: original native CMP result
+    code[pos++] = 0x58; // pop rax
     code[pos++] = 0xE9;                                                             // done: jmp past the site
     *reinterpret_cast<int32_t*>(code + pos) = static_cast<int32_t>((site + sizeof(expected)) - (code + pos + 4));
     pos += 4;
@@ -1638,6 +1641,8 @@ extern "C" __declspec(dllexport) void CyberpunkVR_StageReplayPoll() {
     g_tracking.store(wanted, std::memory_order_release);
     g_active.store(wanted, std::memory_order_release);
     if (!wanted && AnyInstalled()) UninstallHooks();
-    CyberpunkVR_StageCensusSummary[6] = EngineFrame();
+    // Partitions alone do not need the diagnostic frame clock. In particular,
+    // do not probe native renderer memory from the inactive replay/census path.
+    CyberpunkVR_StageCensusSummary[6] = wanted ? EngineFrame() : 0;
     g_presents.fetch_add(1, std::memory_order_relaxed);
 }

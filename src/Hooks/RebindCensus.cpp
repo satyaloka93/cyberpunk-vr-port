@@ -29,6 +29,7 @@
 #include <windows.h>
 #include <MinHook.h>
 #include <cstdint>
+#include <cstring>
 
 // Read by the rate census in src/Runtimes/OpenXRPresent.cpp, and live-readable so the number can be
 // checked without waiting for a log line.
@@ -38,20 +39,25 @@ namespace {
 
 // sub_1401D9528: the binding -> SetWorldTransform loop. Hard RVA, like the pose-apply detour next
 // door in AnimPose.cpp -- a pattern buys nothing for a function we identified by call site.
-constexpr uint32_t kRebindLoopRva = 0x1D9528;
+constexpr uint32_t kRebindLoopRva = 0x329460;
 
-using RebindLoopFn = void* (*)(void*, void*, void*, void*);
+// Native 329460 also reads the fifth byte argument at entry RSP+28h
+// (RBP+50h after five pushes). Omitting it loses the binding update flags.
+using RebindLoopFn = void* (*)(void*, uint8_t, uint32_t, void*, uint8_t);
 RebindLoopFn g_origRebindLoop = nullptr;
 
-void* Hooked_RebindLoop(void* a1, void* a2, void* a3, void* a4) {
+void* Hooked_RebindLoop(void* a1, uint8_t a2, uint32_t a3, void* a4, uint8_t flags) {
     CVR_DIAGNOSTIC(InterlockedIncrement64(reinterpret_cast<volatile LONG64*>(&CyberpunkVR_DebugRebindLoopCalls)));
-    return g_origRebindLoop(a1, a2, a3, a4);
+    return g_origRebindLoop(a1, a2, a3, a4, flags);
 }
 
 bool InstallRebindCensusHook() {
     HMODULE mod = GetModuleHandleA("Cyberpunk2077.exe");
     if (!mod) return false;
     void* target = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(mod) + kRebindLoopRva);
+    constexpr uint8_t expected[]{0x48,0x8B,0xC4,0x48,0x89,0x78,0x10,
+        0x4C,0x89,0x48,0x20,0x44,0x89,0x40,0x18,0x48,0x89,0x48,0x08};
+    if(std::memcmp(target,expected,sizeof(expected))!=0)return false;
     MH_Initialize();   // no-op when another hook already did it
     if (MH_CreateHook(target, &Hooked_RebindLoop,
                       reinterpret_cast<void**>(&g_origRebindLoop)) != MH_OK) {

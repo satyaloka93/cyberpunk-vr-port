@@ -80,7 +80,8 @@ bool InstallProjStageHook() {
     if (!exe)
         return false;
 
-    uint8_t* found = reinterpret_cast<uint8_t*>(exe) + 0x127970;
+    // 2.50 BlendCamera5FB8F0: same three source loads, now at5FBD37.
+    uint8_t* found = reinterpret_cast<uint8_t*>(exe) + 0x5FBD37;
     const uint8_t expected[] = {
         0xF3, 0x0F, 0x10, 0xA2, 0x80, 0x00, 0x00, 0x00,
         0xF3, 0x0F, 0x10, 0xAA, 0x84, 0x00, 0x00, 0x00,
@@ -90,7 +91,7 @@ bool InstallProjStageHook() {
     for (int i = 0; i < replaceLen; ++i) {
         if (found[i] != expected[i]) {
             if (g_verboseLog) {
-                Log("ProjStage hook: RVA 0x127970 mismatch at +0x%X (got %02X expected %02X)\n", i, found[i], expected[i]);
+                Log("ProjStage hook: RVA 0x5FBD37 mismatch at +0x%X (got %02X expected %02X)\n", i, found[i], expected[i]);
             }
             return false;
         }
@@ -150,10 +151,12 @@ bool InstallProjStageHook() {
         code[pos++] = expected[i];
 
     // Override xmm4/xmm5 from globals (leave xmm6 as original src+88)
+    code[pos++] = 0x50; // preserve RAX across absolute-address loads
     WriteMovRaxImm64(code, pos, reinterpret_cast<uintptr_t>(&g_projStageFov));
     code[pos++] = 0xF3; code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x20; // movss xmm4,[rax]
     WriteMovRaxImm64(code, pos, reinterpret_cast<uintptr_t>(&g_projStageAspect));
     code[pos++] = 0xF3; code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x28; // movss xmm5,[rax]
+    code[pos++] = 0x58;
 
     code[pos++] = 0xE9;
     *reinterpret_cast<int32_t*>(code + pos) = static_cast<int32_t>((found + replaceLen) - (code + pos + 4));

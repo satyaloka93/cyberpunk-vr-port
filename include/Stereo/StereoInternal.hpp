@@ -39,8 +39,8 @@ using CloudsNodeFn = char(__fastcall*)(void*, void*);
 using NodeDispatchFn = uint8_t (__fastcall *)(uintptr_t* node, uint8_t* work_context, void* args);
 using WaitOnAddressFn = BOOL (WINAPI *)(volatile VOID*, PVOID, SIZE_T, DWORD);
 using WakeByAddressAllFn = VOID (WINAPI *)(PVOID);
-constexpr uint32_t MAIN_PRESENT_WORK_RVA     = 0x21CDC8;
-constexpr uint32_t MAIN_STARTRENDER_WORK_RVA = 0x21AB08;
+constexpr uint32_t MAIN_PRESENT_WORK_RVA     = 0xBF60F0;
+constexpr uint32_t MAIN_STARTRENDER_WORK_RVA = 0x5D798C;
 using DoCullingFn = char(__fastcall*)(void*, void*, void*);
 using DrawCompFn = char(__fastcall*)(void*, void*);
 
@@ -50,7 +50,7 @@ struct RenderMaskEntry { const char* name; uint32_t desc_rva; };
 using HandleAssignFn = void*(__fastcall*)(void* dst, void* src);
 using ResizeDynTexFn = char (__fastcall*)(void*, void**, uint32_t, uint32_t, int);
 using RttViewCreateFn = char (__fastcall*)(__int64, __int64);
-constexpr uintptr_t RVA_RENDERER_GLOBAL = 0x3427C00;
+constexpr uintptr_t RVA_RENDERER_GLOBAL = 0x3BBCAE8;
 using HudViewDataFn = void* (__fastcall*)(void*);
 using ViewFeatureCheckFn = uint8_t (__fastcall*)(uintptr_t work_context, uintptr_t required);
 struct ProfNode {
@@ -91,22 +91,22 @@ uint32_t rtv_descriptor_limit();
 // std::array<LightDst, 24> below needs it complete -- a definition appended after its use is how the
 // resolver looped five times adding the same line.
 struct LightDst { void* res; uint64_t size; uint32_t hits[2]; uint32_t last_bytes; };
-constexpr uint32_t CLUSTERED_LIGHTS_CULL_RVA = 0x77CED4;
-constexpr uint32_t RENDER_LIGHT_BUFFERS_RVA  = 0x77D308;
+constexpr uint32_t CLUSTERED_LIGHTS_CULL_RVA = 0x410F1C;
+constexpr uint32_t RENDER_LIGHT_BUFFERS_RVA  = 0x411B94;
 using GiNodeFn = char(__fastcall*)(void*, void*);
 using SkyWorkFn = void(__fastcall*)(void*, void*);
 using CbUploadFn = __int64(__fastcall*)(unsigned int, void*);
 constexpr uintptr_t OFF_VIEWSTATE       = 0x4658;
 
-// ---- offsets inside the DLSS / Streamline state, live-verified ---------------------------------
+// ---- Cyberpunk 2.50 DLSS / Streamline state, paired native-code verified -----------------------
 // A table, for the same reason EngineRvas.hpp is one: these are checked as a set against a game
 // build, not one at a time.
-constexpr uintptr_t DLSS_FLAGSET_OFF   = 0x17D8;     // inner+0x17D0 + (0x45>>6)*8
-constexpr uint64_t  DLSS_EVAL_FLAG_BIT = (1ull << 5);// flag 0x45 (bit 5 of that qword)
+constexpr uintptr_t DLSS_FLAGSET_OFF   = 0x25B8;     // view+0x25B0 + (0x46>>6)*8
+constexpr uint64_t  DLSS_EVAL_FLAG_BIT = (1ull << 6);// flag 0x46 (70): ApplyDLSS at 0x77E672
 constexpr uintptr_t DLSS_CACHE_OFF = 0x3C8;   // a1+968 .. +0x3E7 (changed-detection cache)
 
-constexpr uintptr_t DLSS_VP_OFF     = 0x498;   // viewport id inside the DLSS state (a1)
-constexpr uintptr_t DLSS_JITTER_OFF = 0x1E0;   // jitterX @ +0x1E0, jitterY @ +0x1E4, live-verified
+constexpr uintptr_t DLSS_VP_OFF     = 0x4A0;   // DWORD viewport id: constructor 0x228F126
+constexpr uintptr_t DLSS_JITTER_OFF = 0x1E0;   // unchanged: constants driver reads QWORD at 0x7EEAC1
 
 // The COM vtable signatures the command-list hook record is written in terms of. Multi-line
 // `using` declarations, which is why a per-line search for them found nothing.
@@ -193,7 +193,9 @@ using PrepareFilterFn = __int64(__fastcall*)(void*, char, uint32_t, uint32_t);
 using PrepareSortFn = void(__fastcall*)(void*, void*, uint32_t, void*);
 using PrepareStageFn = void(__fastcall*)(void*, void*, void*, uint32_t, uint32_t);
 using VisibleAppendFn = char(__fastcall*)(void*, uintptr_t*);
-using MainCullCtxInitFn = void*(__fastcall*)(void*, uintptr_t, void*);
+// 2.50's gather-context initializer consumes R9B; preserving only the old
+// three arguments silently changes the engine's gather mode.
+using MainCullCtxInitFn = void*(__fastcall*)(void*, uintptr_t, void*, uint8_t);
 using MainCullPrepareFn = __int64(__fastcall*)(void*, void*, void*);
 using MainCullTestFn = __int64(__fastcall*)(void*, void*, void*, void*, void*);
 using PrepareFinalizeFn = void(__fastcall*)(void*, char, __int64, __int64);
@@ -490,7 +492,6 @@ void STDMETHODCALLTYPE hk_RSSetScissorRects(ID3D12GraphicsCommandList*, UINT, co
 HRESULT STDMETHODCALLTYPE hk_GfxReset(ID3D12GraphicsCommandList*, ID3D12CommandAllocator*, ID3D12PipelineState*);
 
 __int64 grade_up_mirror_call(unsigned int size, void* src);
-bool grade_up_capture(void* src, int v);
 bool grade_up_is_target(unsigned int size, void* src);
 extern "C" __declspec(dllexport) int32_t CyberpunkVR_GradeCbProbe;
 extern "C" __declspec(dllexport) int32_t CyberpunkVR_GradeUpProbe;

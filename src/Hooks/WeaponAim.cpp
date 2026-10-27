@@ -1,3 +1,7 @@
+#include <atomic>
+extern void Log(const char*, ...);
+#include "Anim/HandMuzzle.hpp"
+#include <RED4ext/Scripting/Natives/Generated/game/damage/AttackData.hpp>
 #include "Utils/DebugGate.hpp"
 // The weapon-aim path: the native hitscan from the muzzle, and the two engine functions the camera
 // code needs this family to own.
@@ -59,11 +63,11 @@ extern "C" __declspec(dllexport) uint64_t CyberpunkVR_GazeTargetUpdates = 0;
 // TARGETING UPDATE @0x4B9D84, per frame (this = rcx). The original refreshes the
 // cache first. Device takeover and the head-gaze direction are applied afterward.
 // ============================================================================
-typedef void* (*WaTargetingUpdateFn)(void*, void*, void*, void*);
+typedef void (*WaTargetingUpdateFn)(void*, void*);
 inline WaTargetingUpdateFn OrigWaTargetingUpdate = nullptr;
 
-extern "C" inline void* Hooked_WaTargetingUpdate(void* rcx, void* rdx, void* r8, void* r9) {
-    void* result=OrigWaTargetingUpdate(rcx, rdx, r8, r9);
+extern "C" inline void Hooked_WaTargetingUpdate(void* rcx, void* rdx) {
+    OrigWaTargetingUpdate(rcx, rdx);
     if(g_remoteCamOn.load(std::memory_order_acquire) &&
        g_takeoverEntityId.load(std::memory_order_acquire) && DeviceCamActive() &&
        g_menuModeValue==0 && !cvr::vrui::CapturesInput() && OpenXRManager::Get().IsSessionRunning()) {
@@ -80,19 +84,22 @@ extern "C" inline void* Hooked_WaTargetingUpdate(void* rcx, void* rdx, void* r8,
             CVR_DIAGNOSTIC(CyberpunkVR_GazeTargetUpdates+=centered?1:0);
         }
     }
-    return result;
 }
 
 // ============================================================================
 // POSE COPY @0x28D4B8 (dest = rcx, source = rdx). The camera pose bookkeeping follows a pose it
 // knows from the source address to the destination.
 // ============================================================================
-typedef void* (*WaPoseCopyFn)(void*, void*, void*, void*);
+typedef void* (*WaPoseCopyFn)(void*, void*);
 inline WaPoseCopyFn OrigWaPoseCopy = nullptr;
 
-extern "C" inline void* Hooked_WaPoseCopy(void* rcx, void* rdx, void* r8, void* r9) {
+template<size_t N> static bool WaNativeMatches(uintptr_t rva,const uint8_t (&bytes)[N]) {
+    return g_waExeBase && std::memcmp(reinterpret_cast<const void*>(g_waExeBase+rva),bytes,N)==0;
+}
+
+extern "C" inline void* Hooked_WaPoseCopy(void* rcx, void* rdx) {
     const auto poseSource=cvr::camera::CapturePoseAddress(reinterpret_cast<uintptr_t>(rdx));
-    void* result = OrigWaPoseCopy(rcx, rdx, r8, r9);
+    void* result = OrigWaPoseCopy(rcx, rdx);
     cvr::camera::TransferPoseAddress(poseSource,reinterpret_cast<uintptr_t>(rcx));
     return result;
 }
@@ -247,8 +254,9 @@ static constexpr uint64_t kWaWeaponItemRecordCName  = 0x8DBDD9257C33612Full;  //
 // PhysicalRay family itself calls (sub_14084CFC8) to publish "position" and "forward", the keys the
 // impact consumers read back through sub_1401208D8 (sub_14084CD94, sub_140D17100). Refused if a game
 // update moved it.
-static constexpr uintptr_t kWaSharedVector4SetRva   = 0x11F9AC;
-static constexpr uint8_t kWaSharedVector4SetBytes[] = {0x4C, 0x8B, 0xDC, 0x49, 0x89, 0x5B, 0x08};
+static constexpr uintptr_t kWaSharedVector4SetRva   = 0x475078;
+static constexpr uint8_t kWaSharedVector4SetBytes[] = {
+    0x4C,0x8B,0xDC,0x49,0x89,0x5B,0x08,0x49,0x89,0x73,0x10,0x49,0x89,0x7B,0x18,0x41};
 // The shot's "position" and "forward" (EffectSharedData), plain name hashes like the two keys above.
 // NOT the entries sub_14084CFC8 publishes: the key table it uses at 0x143472650/+8 resolves live to
 // "lastRayDir"/"lastRayPos" (2026-10-16), the piercing continuation, which is left alone.
@@ -303,6 +311,27 @@ static bool WaPlayerOwnedWeapon(const void* aBlackboard) {
         else playerOwned = entry[8] != 0;
     }
     return fromWeapon && playerOwned;
+}
+
+// The effect's AttackData identifies the firing weapon even when two identical
+// guns fire on the same frame. Never select a hand from the last global shot.
+static bool WaShotMuzzle(const void* blackboard,cvr::aim::HandMuzzle& muzzle) {
+    const auto* bb=static_cast<const uint8_t*>(blackboard);
+    const auto* keys=*reinterpret_cast<const uint64_t* const*>(bb+0x48);
+    const uint32_t count=*reinterpret_cast<const uint32_t*>(bb+0x54);
+    const auto* vals=*reinterpret_cast<const uint8_t* const*>(bb+0x58);
+    if(!keys || !vals || count>256)return false;
+    const uint64_t key=RED4ext::CName("attackData").hash;
+    for(uint32_t i=0;i<count;++i)if(keys[i]==key) {
+        const auto* entry=vals+i*24;
+        const uint64_t tag=*reinterpret_cast<const uint64_t*>(entry);
+        if(!(tag&~1ull))return false;
+        const void* value=(tag&1)?entry+8:*reinterpret_cast<const void* const*>(entry+8);
+        if(!WaPlausiblePtr(reinterpret_cast<uintptr_t>(value)))return false;
+        const auto* data=reinterpret_cast<const RED4ext::Handle<RED4ext::game::damage::AttackData>*>(value)->instance;
+        return WaPlausiblePtr(reinterpret_cast<uintptr_t>(data)) && cvr::aim::ForWeapon(reinterpret_cast<uintptr_t>(data->weapon.instance),GetTickCount64(),muzzle);
+    }
+    return false;
 }
 
 // ONE SHOT, ONE IMPACT. The two evaluator hooks move the ray the query is cast along, but the effect's
@@ -492,6 +521,18 @@ extern "C" inline char Hooked_WaPhysicalRayOrigin(void* rcx, void* rdx, float* o
             return result;
         }
 
+        cvr::aim::HandMuzzle shotMuzzle;
+        const bool haveWeaponMuzzle=WaShotMuzzle(rdx,shotMuzzle);
+        static std::atomic<unsigned> sourceLogs[3]{};
+        const int source=haveWeaponMuzzle?shotMuzzle.hand:2;
+        if(sourceLogs[source].fetch_add(1,std::memory_order_relaxed)<6)
+            Log("[shot-aim] path=hitscan hand=%d weaponMatch=%d dual=%d\n",haveWeaponMuzzle?shotMuzzle.hand:-1,int(haveWeaponMuzzle),int(cvr::aim::DualMuzzles(GetTickCount64())));
+        if(haveWeaponMuzzle) {
+            for(int i=0;i<3;++i){muzzle[i]=shotMuzzle.p[i];forward[i]=shotMuzzle.f[i];}
+        } else if(cvr::aim::DualMuzzles(GetTickCount64())) {
+            // Unknown effect identity must not borrow the other hand's barrel.
+            return result;
+        }
         s_waPhysicalRayMine = true;
         s_waPhysicalRayMuzzleSeq = g_provMuzzleSeq;
         // Both bases are sampled HERE, on the same instant, and carried to the forward callsite
@@ -505,7 +546,7 @@ extern "C" inline char Hooked_WaPhysicalRayOrigin(void* rcx, void* rdx, float* o
         // With the eye on a sight the shot leaves the sight line, still along the barrel, so it
         // lands on the mark at every range (Hooks/SightLine.hpp).
         float lift[3] = {0.0f, 0.0f, 0.0f};
-        if (cvr::sight::SightLineOffset(forward, lift)) {
+        if ((!haveWeaponMuzzle || shotMuzzle.hand==1) && cvr::sight::SightLineOffset(forward, lift)) {
             WaCount(CyberpunkVR_DebugPhysicalRaySightLine);
             CyberpunkVR_DebugPhysicalRaySightLift[0] = lift[0];
             CyberpunkVR_DebugPhysicalRaySightLift[1] = lift[1];
@@ -521,8 +562,7 @@ extern "C" inline char Hooked_WaPhysicalRayOrigin(void* rcx, void* rdx, float* o
         const LONG recoilSeen = g_provRecoilSeqSeen;
         if (recoilSeen != recoilSeq &&
             InterlockedCompareExchange(&g_provRecoilSeqSeen, recoilSeq, recoilSeen) == recoilSeen) {
-            RecoilOnShot();
-            WaCount(CyberpunkVR_DebugPhysicalRayRecoil);
+            if(!haveWeaponMuzzle || shotMuzzle.hand==1)RecoilOnShot();
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         s_waPhysicalRayMine = false;
@@ -534,6 +574,7 @@ extern "C" inline char Hooked_WaPhysicalRayOrigin(void* rcx, void* rdx, float* o
 extern "C" inline char Hooked_WaPhysicalRayForward(void* rcx, void* rdx, float* out) {
     const char result = s_waPhysicalRayEvalOrig ? s_waPhysicalRayEvalOrig(rcx, rdx, out) : 0;
     const bool redirect = s_waPhysicalRayMine;
+    const uint32_t muzzleSeq = s_waPhysicalRayMuzzleSeq;
     const bool haveCentre = s_waPhysicalRayHaveCentre;
     const float centre[3] = {
         s_waPhysicalRayConeCenter[0], s_waPhysicalRayConeCenter[1], s_waPhysicalRayConeCenter[2]
@@ -570,13 +611,15 @@ extern "C" inline char Hooked_WaPhysicalRayForward(void* rcx, void* rdx, float* 
         // The shot is keyed by the muzzle sequence, which is exactly what the projectile path keys
         // its own cone delta by -- see g_provDeltaSeq in OrientationProvider.cpp. Same key, so the
         // two paths cut a shot's rays into groups the same way.
-        static uint32_t s_waConeSeq = 0xFFFFFFFFu;
-        static float    s_waConeFirstRaw[3] = {0.0f, 0.0f, 0.0f};
+        static thread_local uint32_t s_waConeSeq = 0xFFFFFFFFu;
+        static thread_local float    s_waConeFirstRaw[3] = {0.0f, 0.0f, 0.0f};
+        static thread_local void* s_waConeContext=nullptr;
         float coneCentre[3] = {centre[0], centre[1], centre[2]};
         bool haveCone = haveCentre;
         if (CyberpunkVR_ConeCentreFromCamera == 0) {
-            const uint32_t shot = g_provMuzzleSeq;
-            if (s_waConeSeq != shot) {
+            const uint32_t shot = muzzleSeq;
+            if (s_waConeSeq != shot || s_waConeContext != sharedContext) {
+                s_waConeContext=sharedContext;
                 s_waConeSeq = shot;
                 s_waConeFirstRaw[0] = raw[0];
                 s_waConeFirstRaw[1] = raw[1];
@@ -659,6 +702,18 @@ inline bool WaInstallPhysicalRayPatchAt(uintptr_t siteRva, void* hook, uint8_t*&
 inline bool InstallWeaponPhysicalRayHook() {
     if (!g_waExeBase) return false;
     if (CyberpunkVR_DebugPhysicalRayPatched == 1) return true;
+    // Prove both input members and output locals, not merely a call to the
+    // shared evaluator (the neighboring range input calls it too).
+    constexpr uint8_t originContext[]{0x48,0x8D,0x4E,0x40,0x49,0x8B,0x56,0x48,
+        0x4C,0x8D,0x45,0x97,0x0F,0x29,0x45,0x97,0xE8,0x10,0x44,0xB2,0xFF};
+    constexpr uint8_t forwardContext[]{0x49,0x8B,0x56,0x48,0x48,0x8D,0x4E,0x58,
+        0x4C,0x8D,0x45,0xB7,0xE8,0xDB,0x43,0xB2,0xFF};
+    if(!WaNativeMatches(kWaPhysicalRayOriginCallsite-16,originContext) ||
+       !WaNativeMatches(kWaPhysicalRayForwardCallsite-12,forwardContext) ||
+       !WaNativeMatches(kWaSharedVector4SetRva,kWaSharedVector4SetBytes)) {
+        CyberpunkVR_DebugPhysicalRayPatched=-3;
+        return false;
+    }
     s_waPhysicalRayEvalOrig = reinterpret_cast<WaPhysicalRayEvalFn>(g_waExeBase + kWaPhysicalRayEvalFn);
     if (!WaInstallPhysicalRayPatchAt(kWaPhysicalRayOriginCallsite,
             reinterpret_cast<void*>(&Hooked_WaPhysicalRayOrigin), s_waPhysicalRayOriginRelay)) {
@@ -686,6 +741,8 @@ bool EnsureCameraPoseCopyHook() {
         const auto enabled=MH_EnableHook(target);
         return enabled==MH_OK || enabled==MH_ERROR_ENABLED;
     }
+    constexpr uint8_t copyBytes[]{0x48,0x89,0x5C,0x24,0x10,0x57,0x48,0x83,0xEC,0x20,0xF2,0x0F,0x10,0x02};
+    if(!WaNativeMatches(kWaPoseCopyOffset,copyBytes))return false;
     if(MH_CreateHook(target,&Hooked_WaPoseCopy,reinterpret_cast<void**>(&OrigWaPoseCopy))!=MH_OK)return false;
     return MH_EnableHook(target)==MH_OK;
 }
@@ -718,10 +775,19 @@ bool InstallWeaponAimHooks() {
     MH_Initialize(); // no-op if already initialized by the VRIK hooks
 
     bool ok = EnsureCameraPoseCopyHook();
-    InstallWeaponPhysicalRayHook();   // reports itself: CyberpunkVR_DebugPhysicalRayPatched
+    ok = InstallWeaponPhysicalRayHook() && ok;
     void* targeting = reinterpret_cast<void*>(g_waExeBase + kWaTargetingUpdateOffset);
-    if (MH_CreateHook(targeting, &Hooked_WaTargetingUpdate, reinterpret_cast<void**>(&OrigWaTargetingUpdate)) == MH_OK)
-        MH_EnableHook(targeting);
+    if(!OrigWaTargetingUpdate) {
+        constexpr uint8_t targetBytes[]{0x48,0x89,0x5C,0x24,0x10,0x48,0x89,0x74,
+            0x24,0x18,0x48,0x89,0x7C,0x24,0x20,0x55};
+        if(!WaNativeMatches(kWaTargetingUpdateOffset,targetBytes) ||
+           MH_CreateHook(targeting,&Hooked_WaTargetingUpdate,
+               reinterpret_cast<void**>(&OrigWaTargetingUpdate))!=MH_OK)ok=false;
+    }
+    if(OrigWaTargetingUpdate) {
+        const auto enabled=MH_EnableHook(targeting);
+        ok=(enabled==MH_OK || enabled==MH_ERROR_ENABLED) && ok;
+    }
 
     CyberpunkVR_DebugWaInstalled = ok ? 1 : 0;
     return ok;

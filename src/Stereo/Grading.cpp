@@ -26,6 +26,7 @@
 
 #include "Stereo/SyncStereo.hpp"
 #include "Stereo/CascadeSampling.hpp"
+#include "Stereo/CascadeFreshness.hpp"
 #include "Render/MonoCascades.hpp"
 #include "Stereo/FogHistory.hpp"
 #include "Render/SsrWideMerge.hpp"
@@ -59,7 +60,10 @@
 
 namespace cvr {
 namespace detail {
+namespace cascade_freshness = cvr::stereo::cascade_freshness;
 extern "C" {
+__declspec(dllexport) extern int32_t CyberpunkVR_CascRecLend;
+__declspec(dllexport) extern int32_t CyberpunkVR_CascRenderLend;
 __declspec(dllexport) int32_t CyberpunkVR_OpticsDataProbe=0;
 __declspec(dllexport) uint8_t CyberpunkVR_OpticsViewData[3][4096]{};
 __declspec(dllexport) uint8_t CyberpunkVR_OpticsGradeData[3][688]{};
@@ -98,11 +102,12 @@ static int optics_data_side() {
     return t_active_view_key==0?0:t_active_view_key==g_vrcam_ctx_key?1:
         t_active_view_key==cvr::cname_hash("vr_optics_feed")?2:-1;
 }
-static void optics_grade_snapshot(void* src) {
+static void optics_grade_snapshot(uint32_t size, void* src) {
     if(!CyberpunkVR_OpticsDataProbe)return;
     const int side=optics_data_side();if(side<0)return;
     InterlockedIncrement(reinterpret_cast<volatile LONG*>(&CyberpunkVR_OpticsGradeSeq[side]));
-    cloud_cb_raw_copy(CyberpunkVR_OpticsGradeData[side],src,688);
+    std::memset(CyberpunkVR_OpticsGradeData[side],0,688);
+    cloud_cb_raw_copy(CyberpunkVR_OpticsGradeData[side],src,std::min(size,688u));
     InterlockedIncrement(reinterpret_cast<volatile LONG*>(&CyberpunkVR_OpticsGradeSeq[side]));
 }
 
@@ -505,7 +510,11 @@ extern "C" __declspec(dllexport) uint32_t CyberpunkVR_BlockDiffNode = VOLUMETRIC
 extern "C" __declspec(dllexport) uint32_t CyberpunkVR_BlockDiffSize = 384;
 
 namespace {
-constexpr uint32_t kSwayDiffFloats = 120;        // 480 bytes = 30 float4
+// Native frame producer 2DF4E0 -> 33D60C: 0x1E0 -> 0x210 bytes.
+// A 32-byte insertion at +150 moves the frame/dither IDs +1C0/+1C4
+// to +1E0/+1E4; the clocks in the first two rows are unchanged.
+constexpr uint32_t kFrameConstantBytes = 528;
+constexpr uint32_t kSwayDiffFloats = kFrameConstantBytes / sizeof(float);
 struct SwayDiffBlk {
     float    last[kSwayDiffFloats];
     uint32_t moved[kSwayDiffFloats];
@@ -541,9 +550,9 @@ void sway_diff_report() {
                              g_swaydiff[0].last[i], g_swaydiff[1].last[i]);
     }
     uint32_t dm = 0, dv = 0;
-    memcpy(&dm, &g_swaydiff[0].last[113], sizeof(dm));   // [28].y, the dither slice index
-    memcpy(&dv, &g_swaydiff[1].last[113], sizeof(dv));
-    log("[swaydiff] 480B block, EVERY differing float (%d of 120; + = advances for that view, "
+    memcpy(&dm, &g_swaydiff[0].last[121], sizeof(dm));   // [30].y, the native 2.50 dither slice
+    memcpy(&dv, &g_swaydiff[1].last[121], sizeof(dv));
+    log("[swaydiff] 528B block, EVERY differing float (%d of 132; + = advances for that view, "
         "= = static): %s || dither index [28].y as uint: MAIN %u (&63 = %u) VRCAM %u (&63 = %u)",
         n, n ? line : "(none)", dm, dm & 63u, dv, dv & 63u);
 }
@@ -557,7 +566,7 @@ uint64_t g_sway_shipped_n[2] = {0, 0};
 
 void sway_shipped_note(const void* blk, bool vrcam) {
     uint32_t v = 0;
-    __try { memcpy(&v, reinterpret_cast<const uint8_t*>(blk) + 113 * 4, sizeof(v)); }
+    __try { memcpy(&v, reinterpret_cast<const uint8_t*>(blk) + 121 * 4, sizeof(v)); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return; }
     const int i = vrcam ? 1 : 0;
     g_sway_shipped[i] = v;
@@ -725,9 +734,9 @@ void blk_report(uint32_t nfloat) {
     // The two fields the cascade shader actually decides with, printed whether or not they differ:
     // b0[28].y is the dither slice, b1[36].xyz the grid origin the height mask is addressed by.
     uint32_t dm = 0, dv = 0;
-    if (nfloat > 113) {
-        memcpy(&dm, &g_blk[0].last[113], sizeof(dm));
-        memcpy(&dv, &g_blk[1].last[113], sizeof(dv));
+    if (nfloat > 121) {
+        memcpy(&dm, &g_blk[0].last[121], sizeof(dm));
+        memcpy(&dv, &g_blk[1].last[121], sizeof(dv));
     }
     char grid[220];
     grid[0] = 0;
@@ -1026,7 +1035,7 @@ namespace {
 //   1: [1].z  the same, prev frame    4: [9].w  accumulator      7: [0].x  second clock
 //   2: [1].w  day fraction            5: [28].x counter partner  8: [1].x  ...prev frame
 //   9: [0].w  differs in low bits only
-constexpr uint32_t kSwayTimeFields[] = { 2, 6, 7, 38, 39, 112, 113, 0, 4, 3 };
+constexpr uint32_t kSwayTimeFields[] = { 2, 6, 7, 38, 39, 120, 121, 0, 4, 3 };
 constexpr uint32_t kSwayTimeCount = sizeof(kSwayTimeFields) / sizeof(kSwayTimeFields[0]);
 
 // Mode 1 state: MAIN's most recent authored values, lent to the second view.
@@ -1054,7 +1063,7 @@ bool sway_time_read(const void* src, float* out) {
 }
 
 bool sway_time_copy(const void* src, void* dst) {
-    __try { memcpy(dst, src, 480); }
+    __try { memcpy(dst, src, kFrameConstantBytes); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
     return true;
 }
@@ -1082,12 +1091,12 @@ bool sway_time_apply(const void* src, void* dst) {
     return true;
 }
 
-// ---- mode 4: MAIN's whole block, verbatim --------------------------------------------------------
-uint8_t g_sway_block[480] = {};
+// ---- mode 4: MAIN's common frame fields; retain new native per-view fields -------------------------
+uint8_t g_sway_block[kFrameConstantBytes] = {};
 std::atomic<int> g_sway_block_have{0};
 
 void sway_block_capture(const void* src) {
-    uint8_t tmp[480];
+    uint8_t tmp[kFrameConstantBytes];
     __try { memcpy(tmp, src, sizeof(tmp)); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return; }
     // Guard on the clock being authored: a block of zeros would otherwise be lent out at load time and
@@ -1099,9 +1108,14 @@ void sway_block_capture(const void* src) {
     g_sway_block_have.store(1, std::memory_order_release);
 }
 
-bool sway_block_apply(void* dst) {
+bool sway_block_apply(const void* src, void* dst) {
     if (!g_sway_block_have.load(std::memory_order_acquire)) return false;
-    memcpy(dst, g_sway_block, 480);
+    if (!sway_time_copy(src, dst)) return false;
+    // 2.50 inserted +150..16F and appended camera/stereo fields at +1FC.
+    // Only lend the fields present in the validated 2.31 block. In particular
+    // +1FC was old padding and now holds a camera-dependent scale.
+    memcpy(dst, g_sway_block, 0x150);
+    memcpy(static_cast<uint8_t*>(dst) + 0x170, g_sway_block + 0x170, 0x8C);
     CVR_DIAGNOSTIC(InterlockedIncrement64(reinterpret_cast<volatile LONG64*>(&CyberpunkVR_DebugSwayTimeFills)));
     return true;
 }
@@ -1113,8 +1127,8 @@ void sway_dither_force(void* dst) {
     const uint32_t v = CyberpunkVR_SwayDitherConst;
     // [28].x and [28].y, the counter pair -- written as raw bits, because the shader reads them with
     // asuint() and a float store would change the integer.
-    memcpy(reinterpret_cast<uint8_t*>(dst) + 112 * 4, &v, sizeof(v));
-    memcpy(reinterpret_cast<uint8_t*>(dst) + 113 * 4, &v, sizeof(v));
+    memcpy(reinterpret_cast<uint8_t*>(dst) + 120 * 4, &v, sizeof(v));
+    memcpy(reinterpret_cast<uint8_t*>(dst) + 121 * 4, &v, sizeof(v));
 }
 
 // ---- mode 2: one set of values per frame, for whichever view asks first --------------------------
@@ -1256,7 +1270,7 @@ void wide_note(const void* src, uint32_t size, int32_t side) {
     if (g_exe_base) {
         const uintptr_t renderer =
             *reinterpret_cast<uintptr_t*>(g_exe_base + RENDERER_GLOBAL_RVA);
-        if (renderer) frame_id = *reinterpret_cast<uint32_t*>(renderer + 0x4CA4);
+        if (renderer) frame_id = *reinterpret_cast<uint32_t*>(renderer + 0x4CC8);
     }
     const uint32_t nf = (size / 4 < kTFields) ? size / 4 : kTFields;
     float cur[kTFields];
@@ -1551,7 +1565,8 @@ extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugJitterFixes = 0;
 extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugJitterUnstable = 0;
 
 namespace {
-constexpr uint32_t kCamBlockBytes = 848;
+constexpr uint32_t kCamBlockBytes = 864;
+constexpr uint32_t kSharedCamBlockBytes = 848; // 2.50 appends a per-view 16-byte tail
 constexpr uint32_t kJitterFields[] = { 3, 18, 67, 115 };
 constexpr uint32_t kJitterCount = sizeof(kJitterFields) / sizeof(kJitterFields[0]);
 uint32_t g_jit[kJitterCount] = {};
@@ -1662,8 +1677,10 @@ constexpr int kCascSlots = 4;
 
 float   g_cascs_slot[kCascSlots][kCascMatFloats] = {};
 uint8_t g_cascs_slot_all[kCascSlots][kCascSampleBytes] = {};
+uint64_t g_cascs_slot_generation[kCascSlots] = {};
 int     g_cascs_have_n = 0;                     // slots the second view filled in its current turn
 int     g_cascs_idx = 0;                        // next ordinal within the current turn
+cascade_freshness::Context g_cascs_context{};
 int     g_cascs_side = -2;                      // the side whose turn it is, as last seen HERE
 std::atomic<int> g_cascs_said{0};
 
@@ -1751,6 +1768,7 @@ void cascs_note_pair(const float* mine, const float* theirs) {
 // between a fix that shipped and a fix that silently never matched a block, and one line per session is free.
 // The repeating report stays behind the probe flag.
 void cascs_report(bool first) {
+    std::lock_guard lock(cascade_freshness::mutex);
     if (!first) {
         if (!CyberpunkVR_CascSampleProbe) return;
         static uint64_t s_last = 0;
@@ -1774,6 +1792,11 @@ void cascs_report(bool first) {
         (unsigned long long)g_cascs_miss,
         g_cascs_spread,
         (int)CyberpunkVR_CascSampleLend);
+    const auto& fresh=cascade_freshness::policy;
+    log("[cascfresh] generation=%llu source_frame=%u main_frame=%u owner=%p accepted=%llu rejected=%llu native_uploads=%llu",
+        (unsigned long long)fresh.generation,fresh.source.frame,fresh.haveMain?fresh.main.frame:0,
+        reinterpret_cast<void*>(fresh.source.owner),(unsigned long long)fresh.accepted,
+        (unsigned long long)fresh.rejected,(unsigned long long)fresh.confirmed);
     if (first) return;                          // keep the first line's numbers in the interval it reports
     for (size_t m = 0; m < cvr::stereo::CascadeMatrixCount; ++m) {
         g_cascs_dbasis[m] = 0.0f;
@@ -1787,7 +1810,7 @@ void cascs_report(bool first) {
 }
 
 bool cascs_block_here(uint32_t size, const void* src) {
-    if (!CyberpunkVR_CascSampleLend || size != kCascSampleBytes || !src || !g_exe_base) return false;
+    if ((!CyberpunkVR_CascSampleLend && !CyberpunkVR_CascRenderLend && !CyberpunkVR_CascRecLend) || size != kCascSampleBytes || !src || !g_exe_base) return false;
     const uintptr_t base = reinterpret_cast<uintptr_t>(g_exe_base);
     if (t_current_node_work <= base ||
             static_cast<uint32_t>(t_current_node_work - base) != PREPARE_SCENE_NODE_WORK_RVA)
@@ -1797,23 +1820,34 @@ bool cascs_block_here(uint32_t size, const void* src) {
 
 // A turn begins when the side changes at this node; within a turn the uploads are numbered from zero.
 int cascs_ordinal(int side) {
-    if (side != g_cascs_side) {
+    std::lock_guard lock(cascade_freshness::mutex);
+    const auto context=cascade_freshness::ReadContext(t_current_node_view);
+    if (side != g_cascs_side || !(context==g_cascs_context)) {
         g_cascs_side = side;
+        g_cascs_context=context;
         g_cascs_idx = 0;
-        if (side == 1) g_cascs_have_n = 0;       // the second view starts filling its slots afresh
+        if (side == 1) {
+            g_cascs_have_n = 0;
+            // A fresh source sampling turn defines the lifetime of all three
+            // cascade caches; the engine frame can advance once for MAIN.
+            cascade_freshness::policy.Begin(context);
+        }
     }
     return g_cascs_idx++;
 }
 
 void cascs_capture(const void* src, int slot) {
+    std::lock_guard lock(cascade_freshness::mutex);
+    if(!cascade_freshness::policy.Source(cascade_freshness::ReadContext(t_current_node_view)))return;
     if (slot < 0 || slot >= kCascSlots) return;
+    g_cascs_slot_generation[slot]=0;
     float mat[kCascMatFloats];
     if (!cascs_read_mat(src, mat)) return;
     uint8_t all[kCascSampleBytes];
-    __try { memcpy(all, src, kCascSampleBytes); }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return; }
+    if(!cloud_cb_raw_copy(all,src,kCascSampleBytes))return;
     memcpy(g_cascs_slot[slot], mat, sizeof(mat));
     memcpy(g_cascs_slot_all[slot], all, kCascSampleBytes);
+    g_cascs_slot_generation[slot]=cascade_freshness::policy.generation;
     if(slot==0 && t_view_side==1)cvr::cascades::SourceSampling(mat,unsigned(cvr::stereo::ActiveCascadeMatrices(mat)));
     if (slot + 1 > g_cascs_have_n) g_cascs_have_n = slot + 1;
     // How far this view's own slots sit from each other -- the number that says whether pairing mattered.
@@ -1826,35 +1860,57 @@ void cascs_capture(const void* src, int slot) {
 }
 
 bool cascs_apply(const void* src, void* dst, int slot) {
-    if (g_cascs_have_n <= 0) return false;
+    std::lock_guard lock(cascade_freshness::mutex);
+    if(!CyberpunkVR_CascSampleLend)return false;
+    const auto context=cascade_freshness::ReadContext(t_current_node_view);
+    if(!cascade_freshness::policy.StartSampling(context)){
+        cascade_freshness::Report("sampling",context,false);return false;
+    }
+    cascade_freshness::SamplingAttempt attempt{cascade_freshness::policy};
+    if (g_cascs_have_n <= 0) { cascade_freshness::Report("sampling-no-source",context,false); return false; }
     // COVERAGE BEATS PAIRING, and it is measured rather than argued: the report says the second view's own
     // slots hold the same matrix to 0.0 mm, so which of them MAIN receives cannot matter -- while MISSING a
     // slot does matter enormously. The strict version refused 389 uploads in one interval, and a correction
     // that lands on some of MAIN's uploads and not others makes MAIN alternate between two shadow transforms,
     // which is the twitch this whole exercise is chasing. So take the matching slot when it exists and the
     // last filled one otherwise, and count the fallback instead of hiding it.
-    if (slot < 0) return false;
+    if (slot < 0) { cascade_freshness::Report("sampling-negative-slot",context,false); return false; }
     if (slot >= kCascSlots || slot >= g_cascs_have_n) {
         ++g_cascs_miss;
         slot = g_cascs_have_n - 1;
+        while(slot>=0 && g_cascs_slot_generation[slot]!=cascade_freshness::policy.generation)--slot;
+        if(slot<0){cascade_freshness::Report("sampling-slot",context,false);return false;}
+    }
+    if(g_cascs_slot_generation[slot]!=cascade_freshness::policy.generation) {
+        cascade_freshness::Report("sampling-slot",context,false);return false;
     }
     float mine[kCascMatFloats];
-    if (!cascs_read_mat(src, mine)) return false;
+    if (!cascs_read_mat(src, mine)) { cascade_freshness::Report("sampling-read",context,false); return false; }
     float worst = 0.0f;
     if (!cascs_same_setup(mine, g_cascs_slot[slot], &worst)) {
+        cascade_freshness::Report("sampling-setup",context,false);
         if (worst > g_cascs_wskip) g_cascs_wskip = worst;   // so a skip says HOW far off, not just that it was
         CVR_DIAGNOSTIC(InterlockedIncrement64(reinterpret_cast<volatile LONG64*>(&CyberpunkVR_DebugCascSampleSkips)));
         return false;
     }
+    // Sampling and raster cameras must come from one complete source generation.
+    // Otherwise lending only the sampling matrices creates the very mismatch
+    // that rejecting a stale raster camera is intended to prevent.
+    const auto active=unsigned(cvr::stereo::ActiveCascadeMatrices(g_cascs_slot[slot]));
+    if(!CyberpunkVR_CascRenderLend ||
+       !cascade_freshness::policy.Bundle(context,active,CyberpunkVR_CascRecLend!=0)) {
+        cascade_freshness::Report("sampling-bundle",context,false);return false;
+    }
+    cascade_freshness::Report("sampling",context,true);
     cascs_note_pair(mine, g_cascs_slot[slot]);
     if (CyberpunkVR_CascSampleLend >= 2) {
         memcpy(dst, g_cascs_slot_all[slot], kCascSampleBytes);
     } else {
-        __try { memcpy(dst, src, kCascSampleBytes); }
-        __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+        if(!cloud_cb_raw_copy(dst,src,kCascSampleBytes))return false;
         memcpy(reinterpret_cast<uint8_t*>(dst) + kCascMatFloat * 4, g_cascs_slot[slot],
                sizeof(g_cascs_slot[slot]));
     }
+    attempt.Commit();
     CVR_DIAGNOSTIC(InterlockedIncrement64(reinterpret_cast<volatile LONG64*>(&CyberpunkVR_DebugCascSampleLends)));
     if(t_view_side==0)cvr::cascades::MainSampling(reinterpret_cast<const float*>(static_cast<const uint8_t*>(dst)+kCascMatFloat*4),unsigned(cvr::stereo::ActiveCascadeMatrices(g_cascs_slot[slot])));
     if (g_cascs_said.exchange(1) == 0) cascs_report(true);
@@ -1903,13 +1959,13 @@ namespace {
 constexpr int kCascRenderSlots = 8;
 
 uint8_t  g_cascr[kCascRenderSlots][kCamBlockBytes] = {};
-bool     g_cascr_have[kCascRenderSlots] = {};
+uint64_t g_cascr_generation[kCascRenderSlots] = {};
 float    g_cascr_dmax[kCascRenderSlots] = {};
 uint64_t g_cascr_pairs = 0;
 std::atomic<int> g_cascr_said{0};
 
 bool cascr_block_here(uint32_t size, const void* src) {
-    if (!CyberpunkVR_CascRenderLend || size != kCamBlockBytes || !src || !g_exe_base) return false;
+    if ((!CyberpunkVR_CascRenderLend && !CyberpunkVR_CascRecLend) || size != kCamBlockBytes || !src || !g_exe_base) return false;
     if (t_cascade_idx < 0 || t_cascade_idx >= kCascRenderSlots) return false;
     const uintptr_t base = reinterpret_cast<uintptr_t>(g_exe_base);
     return t_current_node_work > base &&
@@ -1917,32 +1973,52 @@ bool cascr_block_here(uint32_t size, const void* src) {
 }
 
 void cascr_capture(const void* src, int idx) {
+    std::lock_guard lock(cascade_freshness::mutex);
+    g_cascr_generation[idx]=0;
+    cascade_freshness::policy.cameras[idx]=0;
+    cascade_freshness::policy.ready[idx]=0;
+    const auto context=cascade_freshness::ReadContext(t_current_node_view);
+    if(!cascade_freshness::policy.Source(context))return;
     uint8_t all[kCamBlockBytes];
-    __try { memcpy(all, src, kCamBlockBytes); }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return; }
+    if(!cloud_cb_raw_copy(all,src,kCamBlockBytes))return;
     memcpy(g_cascr[idx], all, kCamBlockBytes);
     cvr::cascades::Camera(unsigned(idx),all,kCamBlockBytes,true);
-    g_cascr_have[idx] = true;
+    g_cascr_generation[idx]=cascade_freshness::policy.generation;
+    // Only an actual native camera upload commits the staged record snapshot.
+    cascade_freshness::policy.Uploaded(context,unsigned(idx),cascade_freshness::stagedRecords[idx]);
 }
 
 void cascr_report(bool first);
 
 bool cascr_apply(const void* src, void* dst, int idx) {
-    if (!g_cascr_have[idx]) return false;
+    std::lock_guard lock(cascade_freshness::mutex);
+    if(!CyberpunkVR_CascRenderLend)return false;
+    const auto context=cascade_freshness::ReadContext(t_current_node_view);
+    if((CyberpunkVR_CascSampleLend && !cascade_freshness::policy.sampled) ||
+       !g_cascr_generation[idx] || g_cascr_generation[idx]!=cascade_freshness::policy.generation ||
+       !cascade_freshness::policy.Main(context)) {
+        cascade_freshness::Report("camera",context,false);return false;
+    }
+    cascade_freshness::Report("camera",context,true);
     float mine[kCamBlockBytes / 4];
-    __try { memcpy(mine, src, kCamBlockBytes); }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    if(!cloud_cb_raw_copy(mine,src,kCamBlockBytes))return false;
     // How far apart the two views' cascade cameras were BEFORE the copy -- so a lend that lands on a block
     // that never differed is distinguishable from one that closed a real gap.
     const float* theirs = reinterpret_cast<const float*>(g_cascr[idx]);
     float dmax = 0.0f;
-    for (uint32_t i = 0; i < kCamBlockBytes / 4; ++i) {
+    // Proven matrix slices only: projection[32..47], previous VP[48..63]
+    // and view[80..95]. Raw integer/tag fields must not be treated as floats.
+    for (const uint32_t start : {32u,48u,80u}) for(uint32_t i=start;i<start+16;++i) {
+        if(!std::isfinite(mine[i]) || !std::isfinite(theirs[i]))continue;
         const float d = fabsf(mine[i] - theirs[i]);
         if (d > dmax) dmax = d;
     }
     if (dmax > g_cascr_dmax[idx]) g_cascr_dmax[idx] = dmax;
     ++g_cascr_pairs;
-    memcpy(dst, g_cascr[idx], kCamBlockBytes);
+    memcpy(dst, g_cascr[idx], kSharedCamBlockBytes);
+    memcpy(static_cast<uint8_t*>(dst)+kSharedCamBlockBytes,
+           reinterpret_cast<const uint8_t*>(mine)+kSharedCamBlockBytes,
+           kCamBlockBytes-kSharedCamBlockBytes);
     cvr::cascades::Camera(unsigned(idx),dst,kCamBlockBytes,false);
     CVR_DIAGNOSTIC(InterlockedIncrement64(reinterpret_cast<volatile LONG64*>(&CyberpunkVR_DebugCascRenderLends)));
     if (g_cascr_said.exchange(1) == 0) cascr_report(true);
@@ -1960,7 +2036,7 @@ void cascr_report(bool first) {
         if (s_last && now - s_last < 5000) return;
         s_last = now;
     }
-    log("[cascrender] 848B cascade camera, worst per-float gap between the views before the lend: "
+    log("[cascrender] 864B cascade camera, worst finite matrix-only gap before the lend (projection/previousVP/view): "
         "casc0=%.4f casc1=%.4f casc2=%.4f casc3=%.4f | pairs=%llu lends=%llu",
         g_cascr_dmax[0], g_cascr_dmax[1], g_cascr_dmax[2], g_cascr_dmax[3],
         (unsigned long long)g_cascr_pairs,
@@ -2028,7 +2104,7 @@ static bool dither_lock_build(const void* src, void* out) {
         ? static_cast<uint32_t>(t_current_node_work - base) : 0;
     if (rva == PREPARE_SCENE_NODE_WORK_RVA) {
         if (view_is_main_now()) sway_block_capture(src);
-        else if (view_is_vrcam_now()) sway_block_apply(out);
+        else if (view_is_vrcam_now()) sway_block_apply(src, out);
     }
     sway_dither_force(out);
     return true;
@@ -2039,7 +2115,7 @@ static bool ReadSinglePassProbe(uintptr_t address,void* out,size_t size) {
     return address && ReadProcessMemory(GetCurrentProcess(),reinterpret_cast<const void*>(address),out,size,&bytes) && bytes==size;
 }
 static void PredictPeerCameraInput(cvr::stereo::trace::Record& row) {
-    if(row.node!=0x23A938 || !row.inputValid)return;
+    if(row.node!=0x33DDA4 || !row.inputValid)return;
     const bool paired=(CyberpunkVR_PreparationCameraTrace.load() || cvr::stereo::early_depth::NeedsCamera()) && cvr::stereo::preparation::Pairing() &&
         CyberpunkVR_PreparationPairState.load()==2;
     if(paired ? row.side!=0 : row.side!=1)return;
@@ -2058,7 +2134,7 @@ static void PredictPeerCameraInput(cvr::stereo::trace::Record& row) {
         if(current.Read<uint32_t>(0x378)!=row.width || current.Read<uint32_t>(0x37C)!=row.height ||
             std::memcmp(current.bytes.data()+0x20,row.input.data()+0x20,0x28)){row.reserved=14;return;}
         if(!cvr::stereo::DecodeShaderCameraHistory(current,history,previous,weight)){row.reserved=15;return;}
-        const auto inverse=reinterpret_cast<cvr::stereo::InvertShaderMatrix>(base+0x1E3EE8);
+        const auto inverse=reinterpret_cast<cvr::stereo::InvertShaderMatrix>(base+0x297A1C);
         if(!cvr::stereo::BuildPeerShaderCamera(row.camera,current,previous,weight,inverse,row.shaderPrediction)){row.reserved=16;return;}
         row.prediction=current.bytes;row.previousInput=previous.bytes;row.predictionCounter=current.Read<uint32_t>(0x380);
         row.predictionValid=row.previousInputValid=row.shaderPredictionValid=1;
@@ -2081,7 +2157,7 @@ static void PredictPeerCameraInput(cvr::stereo::trace::Record& row) {
     const auto jitter=cvr::stereo::PeekR2Jitter(counter,size[0],size[1]);
     // This native routine only rebuilds the supplied camera's numeric matrices.
     // Its input is an owned copy, never the live game's view/camera object.
-    auto rebuild=reinterpret_cast<cvr::stereo::RebuildCameraInput>(base+0x1E412C);
+    auto rebuild=reinterpret_cast<cvr::stereo::RebuildCameraInput>(base+0x296EA0);
     struct Guarded { std::array<uint8_t,32> before; cvr::stereo::CameraInput camera; std::array<uint8_t,32> after; } local{};
     local.before.fill(0xA5);local.after.fill(0xA5);
     // The peer's own window under the asymmetric projection (its input block, as the view producer left it).
@@ -2099,7 +2175,7 @@ static void PredictPeerCameraInput(cvr::stereo::trace::Record& row) {
        !ReadSinglePassProbe(peer+0xEF0,&historyValid,sizeof(historyValid))){row.reserved=7;return;}
     row.previousInput=previous.bytes;row.previousInputValid=1;
     if(!historyValid){row.reserved=8;return;}
-    const auto inverse=reinterpret_cast<cvr::stereo::InvertShaderMatrix>(base+0x1E3EE8);
+    const auto inverse=reinterpret_cast<cvr::stereo::InvertShaderMatrix>(base+0x297A1C);
     if(cvr::stereo::BuildPeerShaderCamera(row.camera,local.camera,previous,0.0f,inverse,row.shaderPrediction)) {
         // The peer's history weight uses a later per-view frame delta. It is unknown
         // here. Only shaders whose proven read mask excludes it are eligible.
@@ -2141,7 +2217,9 @@ extern "C" __declspec(dllexport) int32_t CyberpunkVR_HudFlatInEye = 1;
 extern "C" __declspec(dllexport) std::atomic<uint64_t> CyberpunkVR_HudFlatInEyeBlocks{0};
 extern "C" float CyberpunkVR_HudEngineCurvature[2];
 static bool FlattenHudComposite(uint32_t size,const void* src,uint8_t* out) {
-    if(size!=512 || !src || !CyberpunkVR_HudFlatInEye || !cvr::projection::Active()) return false;
+    // DrawHUD 33F938..4A uploads 0x1B0. Curvature +30/+34 and
+    // dimensions +108/+10C retain their native 2.31 layout.
+    if(size!=432 || !src || !CyberpunkVR_HudFlatInEye || !cvr::projection::Active()) return false;
     const float* r=static_cast<const float*>(src);
     const float w=r[16*4+2],h=r[16*4+3];
     if(!(w>=64.0f && w<=16384.0f && h>=64.0f && h<=16384.0f)) return false;
@@ -2157,7 +2235,7 @@ static int64_t ForwardBufUpload(uint32_t idx,uint32_t size,void* src) {
     optics_shadow_snapshot(size,src);
     optics_material_snapshot(size,src);
     cvr::stereo::constants::RegisteredUploadScope constantScope(idx,size,src);
-    if(size==848 || size==1584)cvr::stereo::ObserveFogConstants(size,src);
+    if(size==864 || size==2512)cvr::stereo::ObserveFogConstants(size,src);
     TraceCameraUpload(idx,size,src);
     cvr::stereo::source_cbv::UploadWriterScope writer(idx,size);
     const auto result=g_orig_buf_upload(idx,size,src);
@@ -2167,7 +2245,7 @@ static int64_t ForwardBufUpload(uint32_t idx,uint32_t size,void* src) {
 static __int64 ForwardCbUpload(unsigned int size,void* src) {
     optics_shadow_snapshot(size,src);
     optics_material_snapshot(size,src);
-    if(size==848 || size==1584)cvr::stereo::ObserveFogConstants(size,src);
+    if(size==864 || size==2512)cvr::stereo::ObserveFogConstants(size,src);
     TraceCameraUpload(UINT32_MAX,size,src);
     return g_orig_cb_upload(size,src);
 }
@@ -2343,15 +2421,15 @@ constexpr uint32_t kExpoEnvTag = 0x41734532u;   // asym_expo_shaders.py ENV_MAGI
 constexpr uint32_t kExpoAccTag = 0x41734533u;   // asym_expo_shaders.py ENV_ACC_MAGIC
 constexpr uint32_t kExpoAdaptBytes = 56, kExpoAdaptEnvBytes = 112, kExpoEnvBytes = 96;
 struct ExpoEnvClock { LARGE_INTEGER last{}; float position[3]{}; bool have = false; } g_expo_env;
-// The view's CameraInput (+0x70): position in 1/131072 units, orientation quaternion (x, y, z, w) at +16; the
+// The view's CameraInput (+0xE0): position in 1/131072 units, orientation quaternion (x, y, z, w) at +16; the
 // camera's right, forward and up are its +X, +Y and +Z.
 bool expo_env_camera(uintptr_t view, float position[3], float forward[3], float right[3] = nullptr, float up[3] = nullptr) {
     if (!view) return false;
     int32_t fixed[3]{};
     float q[4]{};
     __try {
-        memcpy(fixed, reinterpret_cast<const void*>(view + 0x70), sizeof(fixed));
-        memcpy(q, reinterpret_cast<const void*>(view + 0x70 + 16), sizeof(q));
+        memcpy(fixed, reinterpret_cast<const void*>(view + 0xE0), sizeof(fixed));
+        memcpy(q, reinterpret_cast<const void*>(view + 0xE0 + 16), sizeof(q));
     } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
     float norm = 0.0f;
     for (float v : q) { if (!std::isfinite(v)) return false; norm += v * v; }
@@ -2469,13 +2547,13 @@ static int64_t __fastcall Detour_BufUpload(uint32_t idx, uint32_t size, void* sr
         if (expo_centre_write(size, src, false, centred, &ship)) return ForwardBufUpload(idx, ship, centred);
         expo_env_write(size, src, false, centred, &ship);   // counts a block it cannot grow here
     }
-    if(size==848 || size==112) {
-        alignas(16) uint8_t markerConstants[848];
+    if(size==848 || size==864 || size==112) {
+        alignas(16) uint8_t markerConstants[864];
         if(cvr::markers::RewriteConstants(size,src,markerConstants))
             return ForwardBufUpload(idx,size,markerConstants);
     }
-    if(size==512) {
-        alignas(16) uint8_t flat[512];
+    if(size==432) {
+        alignas(16) uint8_t flat[432];
         if(FlattenHudComposite(size,src,flat)) return ForwardBufUpload(idx,size,flat);
     }
     // The projection jitter, put in step. Keyed on the SIDE, so a reflection-probe face -- which is neither
@@ -2539,9 +2617,9 @@ static int64_t __fastcall Detour_BufUpload(uint32_t idx, uint32_t size, void* sr
     }
     // Mode 5: the dither slice, forced in EVERY frame-constants block regardless of which node uploaded
     // it, so the instance the cascade pass reads cannot be missed. Returns through its own buffer.
-    if (CyberpunkVR_SwayTimeFix == 5 && size == 480 && src && g_exe_base &&
+    if (CyberpunkVR_SwayTimeFix == 5 && size == kFrameConstantBytes && src && g_exe_base &&
             looks_like_frame_consts(src)) {
-        uint8_t forced[480];
+        uint8_t forced[kFrameConstantBytes];
         if (sway_time_copy(src, forced)) {
             // Mode 4's mirroring still happens for the block the flags depend on -- forcing the dither
             // must not cost the fix that is already known to work.
@@ -2550,7 +2628,7 @@ static int64_t __fastcall Detour_BufUpload(uint32_t idx, uint32_t size, void* sr
                 ? static_cast<uint32_t>(t_current_node_work - base) : 0;
             if (rva == PREPARE_SCENE_NODE_WORK_RVA) {
                 if (view_is_main_now()) sway_block_capture(src);
-                else if (view_is_vrcam_now()) sway_block_apply(forced);
+                else if (view_is_vrcam_now()) sway_block_apply(src, forced);
             }
             sway_dither_force(forced);
             CVR_DIAGNOSTIC(InterlockedIncrement64(
@@ -2558,8 +2636,8 @@ static int64_t __fastcall Detour_BufUpload(uint32_t idx, uint32_t size, void* sr
             return ForwardBufUpload(idx, size, forced);
         }
     }
-    if (size == 480) {
-        uint8_t locked[480];
+    if (size == kFrameConstantBytes) {
+        uint8_t locked[kFrameConstantBytes];
         if (dither_lock_build(src, locked)) {
             CVR_DIAGNOSTIC(InterlockedIncrement64(
                 reinterpret_cast<volatile LONG64*>(&CyberpunkVR_DebugDitherLockBuf)));
@@ -2617,14 +2695,14 @@ static int64_t __fastcall Detour_BufUpload(uint32_t idx, uint32_t size, void* sr
     // The clock, lent from MAIN's block to the second view's. Gated on the node as well as the size,
     // because "480 bytes in the second eye" is a dozen unrelated blocks while "480 bytes from the node
     // that owns the frame constants" is the one.
-    if ((CyberpunkVR_SwayTimeFix || CyberpunkVR_SwayDiff) && size == 480 && src && g_exe_base) {
+    if ((CyberpunkVR_SwayTimeFix || CyberpunkVR_SwayDiff) && size == kFrameConstantBytes && src && g_exe_base) {
         const uintptr_t base = reinterpret_cast<uintptr_t>(g_exe_base);
         const uint32_t rva = (t_current_node_work > base)
             ? static_cast<uint32_t>(t_current_node_work - base) : 0;
         if (rva == PREPARE_SCENE_NODE_WORK_RVA) {
             // Measured BEFORE the patch below, so this reports what the engine itself authored.
             if (CyberpunkVR_SwayDiff) sway_diff_note(src, t_vrcam_node_active);
-            uint8_t patched[480];
+            uint8_t patched[kFrameConstantBytes];
             if (CyberpunkVR_SwayTimeFix == 2) {
                 // One set of values per frame, for BOTH views -- MAIN's block is patched too, which is
                 // the whole point: equality cannot depend on which view happens to upload first.
@@ -2632,12 +2710,12 @@ static int64_t __fastcall Detour_BufUpload(uint32_t idx, uint32_t size, void* sr
                 __try {
                     const uintptr_t renderer =
                         *reinterpret_cast<uintptr_t*>(g_exe_base + RENDERER_GLOBAL_RVA);
-                    if (renderer) frame_id = *reinterpret_cast<uint32_t*>(renderer + 0x4CA4);
+                    if (renderer) frame_id = *reinterpret_cast<uint32_t*>(renderer + 0x4CC8);
                 } __except (EXCEPTION_EXECUTE_HANDLER) { frame_id = 0; }
                 if (CyberpunkVR_SwayDiff) {
                     uint32_t authored = 0;
                     __try {
-                        memcpy(&authored, reinterpret_cast<const uint8_t*>(src) + 113 * 4,
+                        memcpy(&authored, reinterpret_cast<const uint8_t*>(src) + 121 * 4,
                                sizeof(authored));
                     } __except (EXCEPTION_EXECUTE_HANDLER) { authored = 0; }
                     sway_order_note(t_vrcam_node_active, frame_id, authored);
@@ -2659,7 +2737,7 @@ static int64_t __fastcall Detour_BufUpload(uint32_t idx, uint32_t size, void* sr
             } else if (CyberpunkVR_SwayTimeFix == 4) {
                 if (view_is_main_now()) {
                     sway_block_capture(src);
-                } else if (view_is_vrcam_now() && sway_block_apply(patched)) {
+                } else if (view_is_vrcam_now() && sway_block_apply(src, patched)) {
                     if (CyberpunkVR_SwayDiff) {
                         sway_shipped_note(patched, t_vrcam_node_active);
                         sway_shipped_report();
@@ -2732,12 +2810,12 @@ static __int64 __fastcall BindCameraProbe(uint32_t binding,uint32_t handle,uint3
         cvr::stereo::camera_upload::ObserveNativeBind(reinterpret_cast<uintptr_t>(g_exe_base),binding,handle,stages);
     if(CyberpunkVR_SinglePassTwinUpload.load(std::memory_order_relaxed)) {
         const auto base=reinterpret_cast<uintptr_t>(g_exe_base);
-        cvr::stereo::camera_upload::AfterNativeBind(base,binding,handle,stages,t_view_side==1 && t_current_node_work==base+0x23A938);
+        cvr::stereo::camera_upload::AfterNativeBind(base,binding,handle,stages,t_view_side==1 && t_current_node_work==base+0x33DDA4);
     }
     return result;
 }
 static bool WantNativeCameraProbe(){return cvr::stereo::native_probe::Enabled() || cvr::stereo::families::Enabled();}
-CVR_DETOUR_IF("[single-pass] bounded camera binding probe",0x1F4700,BindCameraProbe,g_original_bind_camera,WantNativeCameraProbe)
+CVR_DETOUR_IF("[single-pass] bounded camera binding probe",0x337968,BindCameraProbe,g_original_bind_camera,WantNativeCameraProbe)
 
 using BindMaterialFn=__int64(__fastcall*)(uint32_t,uint32_t,uint8_t);
 static BindMaterialFn g_original_bind_material{};
@@ -2751,15 +2829,15 @@ static __int64 __fastcall BindMaterialProbe(uint32_t binding,uint32_t handle,uin
 static bool WantNativeMaterialProbe(){
     return WantNativeCameraProbe() && cvr::stereo::material_binding::Compatible(reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)));
 }
-CVR_DETOUR_IF("[single-pass] native material binding",0x1F3790,BindMaterialProbe,g_original_bind_material,WantNativeMaterialProbe)
+CVR_DETOUR_IF("[single-pass] native material binding",0x336B54,BindMaterialProbe,g_original_bind_material,WantNativeMaterialProbe)
 static bool WantNativeSourceSrv(){
     const bool wanted=GetEnvironmentVariableW(L"CVR_STEREO_SOURCE_SELECTORS",nullptr,0) &&
         cvr::stereo::native_probe::ObserveBindings() && cvr::stereo::families::Enabled() &&
         cvr::stereo::source_srv::Compatible() && cvr::stereo::source_srv::ConfigureXstate();
     return wanted;
 }
-CVR_DETOUR_IF("[single-pass] current buffer SRV",0x1F5438,CvrSourceSrvIndividualDetour,CvrSourceSrvIndividualOriginal,WantNativeSourceSrv)
-CVR_DETOUR_IF("[single-pass] current cached SRV group",0x1F5354,CvrSourceSrvCachedDetour,CvrSourceSrvCachedOriginal,WantNativeSourceSrv)
+CVR_DETOUR_IF("[single-pass] current buffer SRV",0x338FC0,CvrSourceSrvIndividualDetour,CvrSourceSrvIndividualOriginal,WantNativeSourceSrv)
+CVR_DETOUR_IF("[single-pass] current cached SRV group",0x338ED4,CvrSourceSrvCachedDetour,CvrSourceSrvCachedOriginal,WantNativeSourceSrv)
 
 // Fresh native callers 0x23AEA2 and 0x1D572F1 both pass renderer,
 // render arguments and a [begin,end) span of 16-byte sorted packets.
@@ -2789,7 +2867,7 @@ static __int64 __fastcall RenderPacketsInner(void* renderer,const void* argument
     cvr::stereo::gpu_probe::GroupContext previous;
     if(group) {
         uint32_t plane=UINT_MAX;SIZE_T read{};
-        if(arguments && node==0x23A938)ReadProcessMemory(GetCurrentProcess(),static_cast<const uint8_t*>(arguments)+0x10,&plane,4,&read);
+        if(arguments && node==0x33DDA4)ReadProcessMemory(GetCurrentProcess(),static_cast<const uint8_t*>(arguments)+0x10,&plane,4,&read);
         previous=cvr::stereo::gpu_probe::BeginGroup(read==4?t_view_side:-1,plane);
     }
     const auto early=cvr::stereo::early_depth::Begin(node,t_view_side,renderer,arguments,span);
@@ -2804,17 +2882,18 @@ static bool WantNativePacketsProbe() {
     // shader variants. Recording still takes the disabled fast path by default.
     const uint8_t expected[]{0x48,0x8B,0xC4,0x4C,0x89,0x40,0x18,0x48,0x89,0x50,0x10,0x48,0x89,0x48,0x08};
     uint8_t actual[sizeof(expected)]{};SIZE_T read{};
-    const auto address=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr))+0x1F1208;
+    const auto address=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr))+0x334CC0;
     const bool compatible=ReadProcessMemory(GetCurrentProcess(),reinterpret_cast<const void*>(address),actual,sizeof(actual),&read) &&
         read==sizeof(actual) && std::memcmp(actual,expected,sizeof(actual))==0;
     CyberpunkVR_GeometryPacketHookCompatible.store(compatible?1u:2u,std::memory_order_release);
     return compatible;
 }
-CVR_DETOUR_IF("[single-pass] bounded native geometry packets",0x1F1208,RenderPacketsProbe,g_original_render_packets,WantNativePacketsProbe)
+CVR_DETOUR_IF("[single-pass] bounded native geometry packets",0x334CC0,RenderPacketsProbe,g_original_render_packets,WantNativePacketsProbe)
 
+static bool grade_up_capture_native(uint32_t size, const void* src, int v);
 static __int64 __fastcall Detour_CbUpload(unsigned int size, void* src) {
-    if (size == 512) {
-        alignas(16) uint8_t flat[512];
+    if (size == 432) {
+        alignas(16) uint8_t flat[432];
         if (FlattenHudComposite(size, src, flat)) return ForwardCbUpload(size, flat);
     }
     // The SSR and planar-reflection traces' block, grown by the rows their wide-merge twins read
@@ -2847,8 +2926,8 @@ static __int64 __fastcall Detour_CbUpload(unsigned int size, void* src) {
         }
         if (expo_env_write(size, src, true, centred, &ship)) return ForwardCbUpload(ship, centred);
     }
-    if(size==848 || size==112) {
-        alignas(16) uint8_t markerConstants[848];
+    if(size==848 || size==864 || size==112) {
+        alignas(16) uint8_t markerConstants[864];
         if(cvr::markers::RewriteConstants(size,src,markerConstants))
             return ForwardCbUpload(size,markerConstants);
     }
@@ -2927,8 +3006,8 @@ static __int64 __fastcall Detour_CbUpload(unsigned int size, void* src) {
     // The dither lock, on THIS uploader too. It has to be ahead of the grading early-out, which returns for
     // everything that is not the tonemap block -- and it is the whole point of the exercise: the buffer-only
     // version of this test may never have reached the b0 instance the cascade pass reads.
-    if (size == 480) {
-        uint8_t locked[480];
+    if (size == kFrameConstantBytes) {
+        uint8_t locked[kFrameConstantBytes];
         if (dither_lock_build(src, locked)) {
             CVR_DIAGNOSTIC(InterlockedIncrement64(
                 reinterpret_cast<volatile LONG64*>(&CyberpunkVR_DebugDitherLockCb)));
@@ -2936,7 +3015,7 @@ static __int64 __fastcall Detour_CbUpload(unsigned int size, void* src) {
         }
     }
     if (!grade_up_is_target(size, src)) return ForwardCbUpload(size, src);
-    optics_grade_snapshot(src);
+    optics_grade_snapshot(size,src);
     // WHOSE UPLOAD THIS IS, BY THE VIRTUAL-CAMERA NAME HASH. The test used to be
     // `t_vrcam_node_active ? 1 : 0`, whose else-branch called EVERYTHING that is not the second
     // view "MAIN" -- including the flat 960x540 desktop window, which uploads a grading block of
@@ -2973,13 +3052,13 @@ static __int64 __fastcall Detour_CbUpload(unsigned int size, void* src) {
     CVR_DIAGNOSTIC(InterlockedIncrement64(reinterpret_cast<volatile LONG64*>(
         v ? &CyberpunkVR_DebugGradeVrcamUploads : &CyberpunkVR_DebugGradeMainUploads)));
     if (v == 0) {                                   // MAIN: this is the reference block
-        const bool ok = grade_up_capture(src, 0);
+        const bool ok = grade_up_capture_native(size, src, 0);
         const __int64 r = ForwardCbUpload(size, src);
         if (ok && CyberpunkVR_GradeUpProbe) grade_up_report();
         return r;
     }
     // VRCAM: record what it WOULD have uploaded, then substitute the chosen dwords.
-    if (CyberpunkVR_GradeUpProbe) grade_up_capture(src, 1);
+    if (CyberpunkVR_GradeUpProbe) grade_up_capture_native(size, src, 1);
     if (!CyberpunkVR_GradeMirrorMask || !g_gcu_seen[0]) return ForwardCbUpload(size, src);
     return grade_up_mirror_call(size, src);
 }
@@ -3056,7 +3135,7 @@ static void __fastcall Detour_GradingCompose(void* a1, void* a2, uint8_t a3, flo
 // grading-settings pointer sub_14077B538 reads EVERYTHING out of (+224..+248). 0xF88 was
 // the first guess and is measurably not it: lending it fired 6776 times and changed
 // nothing, because sub_14077B538 does `if (!v9) a4 = -1.0f` and throws that float away.
-extern "C" __declspec(dllexport) uint32_t CyberpunkVR_GradingSrcOff = 0x640;
+extern "C" __declspec(dllexport) uint32_t CyberpunkVR_GradingSrcOff = 0x650;
 using TonemapLutFn = __int64(__fastcall*)(void*, void*);
 static TonemapLutFn g_orig_tonemap_lut = nullptr;
 // Parked at 0 while the composer probe says what actually differs: 0x640 is the same
@@ -3090,7 +3169,7 @@ static GradingViewDataFn g_grading_viewdata_get = nullptr;
 
 static uintptr_t* tonemap_grading_slot(void* a2) {
     if (!g_grading_viewdata_get && g_exe_base)
-        g_grading_viewdata_get = reinterpret_cast<GradingViewDataFn>(g_exe_base + 0x1ED930);
+        g_grading_viewdata_get = reinterpret_cast<GradingViewDataFn>(g_exe_base + 0x33C248);
     if (!g_grading_viewdata_get) return nullptr;
     __try {
         uint8_t* viewData = reinterpret_cast<uint8_t*>(g_grading_viewdata_get(a2));
@@ -3115,7 +3194,7 @@ static __int64 __fastcall Detour_TonemapLut(void* a1, void* a2) {
     if(CyberpunkVR_OpticsDataProbe) {
         const int side=optics_data_side();
         if(side>=0) {
-            const auto vd=reinterpret_cast<GradingViewDataFn>(g_exe_base+0x1ed930)(a2);
+            const auto vd=reinterpret_cast<GradingViewDataFn>(g_exe_base+0x33C248)(a2);
             if(vd) {
                 InterlockedIncrement(reinterpret_cast<volatile LONG*>(&CyberpunkVR_OpticsDataSeq[side]));
                 cloud_cb_raw_copy(CyberpunkVR_OpticsViewData[side],reinterpret_cast<const void*>(vd),4096);
@@ -3289,17 +3368,45 @@ void grade_cb_report() {
 // Resource_345 (green, MAIN) and Resource_2123 (ordinary, VRCAM) is very plausibly a field in
 // this block. Capture it per view and diff -- exactly the workflow that solved the clouds.
 constexpr uint32_t  GRADE_CB_BYTES  = 0x2B0;      // 688
+// Canonical diagnostic coordinates retain the old head [0,80) and LUT inputs
+// [210,2B0). 2.50 emits four different native layouts; each copies this same
+// LUT-input structure through 228E5B0. Never use the old native offsets or
+// borrow from a different tonemapper variant.
+struct GradeLayout { uint32_t size, weights; };
+static constexpr GradeLayout kGradeLayouts[] = {
+    {0x130,0x80}, {0x160,0xB0}, {0x290,0x1E0}, {0x210,0x160}
+};
+static int grade_layout(uint32_t size) {
+    for(int i=0;i<static_cast<int>(std::size(kGradeLayouts));++i)
+        if(kGradeLayouts[i].size==size)return i;
+    return -1;
+}
+static uint32_t grade_native_offset(int layout,uint32_t oldOffset) {
+    if(oldOffset<0x80)return oldOffset; // same grading head, CAF000 copies it
+    if(oldOffset>=0x210 && oldOffset<0x2B0)
+        return kGradeLayouts[layout].weights+oldOffset-0x210;
+    return UINT32_MAX; // old experimental fields have no proven 2.50 identity
+}
 using CbUploadFn = __int64(__fastcall*)(unsigned int, void*);
 CbUploadFn g_orig_cb_upload = nullptr;
 extern "C" __declspec(dllexport) int32_t CyberpunkVR_GradeUpProbe = 1;   // OFF: grading upload-ring capture (scanner tint, parked)
 static uint8_t  g_gcu[2][GRADE_CB_BYTES];
+static int g_gcu_latest_layout[2]={-1,-1};
+static uint8_t g_gcu_variant[4][2][GRADE_CB_BYTES]{};
+static bool g_gcu_variant_seen[4][2]{};
 bool     g_gcu_seen[2] = {false, false};
 static std::mutex g_gcu_mtx;
 
-static bool grade_up_store(const void* src, int v) {       // SEH only, no C++ objects
-    uint8_t tmp[GRADE_CB_BYTES];
-    if (!cloud_cb_raw_copy(tmp, src, GRADE_CB_BYTES)) return false;
+static bool grade_up_store(uint32_t size,const void* src, int v) {
+    const int layout=grade_layout(size);
+    if(layout<0)return false;
+    uint8_t tmp[GRADE_CB_BYTES]{};
+    if (!cloud_cb_raw_copy(tmp, src, 0x80) ||
+        !cloud_cb_raw_copy(tmp+0x210,static_cast<const uint8_t*>(src)+kGradeLayouts[layout].weights,0xA0))return false;
     std::memcpy(g_gcu[v], tmp, GRADE_CB_BYTES);
+    g_gcu_latest_layout[v]=layout;
+    std::memcpy(g_gcu_variant[layout][v],tmp,GRADE_CB_BYTES);
+    g_gcu_variant_seen[layout][v]=true;
     g_gcu_seen[v] = true;
     return true;
 }
@@ -3311,7 +3418,7 @@ void grade_up_report() {
     uint8_t a[GRADE_CB_BYTES], b[GRADE_CB_BYTES];
     {
         std::lock_guard<std::mutex> lk(g_gcu_mtx);
-        if (!g_gcu_seen[0] || !g_gcu_seen[1]) return;
+        if (!g_gcu_seen[0] || !g_gcu_seen[1] || g_gcu_latest_layout[0]!=g_gcu_latest_layout[1]) return;
         std::memcpy(a, g_gcu[0], GRADE_CB_BYTES);
         std::memcpy(b, g_gcu[1], GRADE_CB_BYTES);
     }
@@ -3332,7 +3439,7 @@ void grade_up_report() {
             u += snprintf(line + u, sizeof(line) - u, "+%03X M=%08X(%.4g) V=%08X(%.4g)  ",
                           o, m, fm, v, fv);
     }
-    log("[gradeup] 688B grading block, %d differing dwords: %s", diffs, u ? line : "(none)");
+    log("[gradeup] canonical grading head/LUT inputs, %d differing dwords: %s", diffs, u ? line : "(none)");
 }
 
 // Mirror selected dwords of MAIN's block into VRCAM's, scoped to the one upload.
@@ -3440,45 +3547,41 @@ extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugGradeVrcamUploads = 0
 extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugGradeOtherView    = 0;
 
 
-__int64 grade_up_mirror_call(unsigned int size, void* src) {   // SEH only
-    // ONE SLOT PER TABLE ENTRY, CHECKED. This was `saved[16]` beside a table of seventeen, so bit 16
-    // -- one of the two descriptor indices that ship in the default mask -- wrote its saved dword
-    // one past the end of the array, onto the stack frame. It never showed as a crash because the
-    // neighbouring slot is written back immediately afterwards, but it was corruption all the same,
-    // and the table only grew from here.
-    uint32_t saved[64];
-    static_assert(kGradeMirrorCount <= 64, "saved[] must have a slot per kGradeMirrorOff entry");
+static bool grade_up_build(uint32_t size,const void* src,void* out) {
+    const int layout=grade_layout(size);
+    if(layout<0 || !cloud_cb_raw_copy(out,src,size))return false;
     const uint32_t mask = CyberpunkVR_GradeMirrorMask;
-    uint8_t* p = static_cast<uint8_t*>(src);
-    __try {
-        for (uint32_t k = 0; k < kGradeMirrorCount; ++k) {
-            if (!(mask & (1u << k))) continue;
-            const uint32_t o = kGradeMirrorOff[k];
-            std::memcpy(&saved[k], p + o, 4);
-            std::memcpy(p + o, g_gcu[0] + o, 4);
-        }
-    } __except (EXCEPTION_EXECUTE_HANDLER) { return ForwardCbUpload(size, src); }
-    __int64 r = 0;
-    __try {
-        r = ForwardCbUpload(size, src);
-    } __finally {
-        for (uint32_t k = 0; k < kGradeMirrorCount; ++k)
-            if (mask & (1u << k)) std::memcpy(p + kGradeMirrorOff[k], &saved[k], 4);
+    std::lock_guard<std::mutex> lk(g_gcu_mtx);
+    if(!g_gcu_variant_seen[layout][0])return false;
+    bool changed=false;
+    for(uint32_t k=0;k<kGradeMirrorCount;++k) {
+        if(!(mask&(1u<<k)))continue;
+        const auto oldOffset=kGradeMirrorOff[k];
+        const auto offset=grade_native_offset(layout,oldOffset);
+        if(offset==UINT32_MAX || offset+4>size)continue;
+        std::memcpy(static_cast<uint8_t*>(out)+offset,g_gcu_variant[layout][0]+oldOffset,4);
+        changed=true;
     }
+    return changed;
+}
+__int64 grade_up_mirror_call(unsigned int size, void* src) {
+    alignas(16) uint8_t native[0x290];
+    if(!grade_up_build(size,src,native))return ForwardCbUpload(size,src);
+    const auto r=ForwardCbUpload(size,native);
     CVR_DIAGNOSTIC(InterlockedIncrement64(reinterpret_cast<volatile LONG64*>(&CyberpunkVR_DebugGradeMirrors)));
     return r;
 }
 
 bool grade_up_is_target(unsigned int size, void* src) {
-    if (size != GRADE_CB_BYTES || !src || !g_exe_base) return false;
+    if (grade_layout(size)<0 || !src || !g_exe_base) return false;
     const uintptr_t base = reinterpret_cast<uintptr_t>(g_exe_base);
     const uintptr_t work = t_current_node_work;
-    return work > base && static_cast<uint32_t>(work - base) == 0xEFC110;
+    return work > base && static_cast<uint32_t>(work - base) == 0xF60474;
 }
 
-bool grade_up_capture(void* src, int v) {
+static bool grade_up_capture_native(uint32_t size,const void* src, int v) {
     std::lock_guard<std::mutex> lk(g_gcu_mtx);
-    return grade_up_store(src, v);
+    return grade_up_store(size,src,v);
 }
 
 }  // namespace detail

@@ -1,9 +1,2 @@
-EquipmentArea.Weapon:
-  enumComment: Primary weapon area
-  enumName: Weapon
-  equipSlots:
-    - EquipmentArea.SimpleEquipSlot
-    - EquipmentArea.SimpleEquipSlot
-    - EquipmentArea.SimpleEquipSlot
-  localizedName: LocKey#28151
-  $type: gamedataEquipmentArea_Record
+# Cyberpunk 2.50 owns the seven-slot weapon layout.
+# Do not replace it with the pre-2.50 three-slot cigarette override.

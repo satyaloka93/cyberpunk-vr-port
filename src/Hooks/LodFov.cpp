@@ -15,6 +15,7 @@
 
 #include <windows.h>
 #include <cstdint>
+#include <cstring>
 
 #include "Camera/CameraState.hpp"      // g_bdActive, g_bdSceneQuat, MulQuat
 #include "Runtimes/OpenXRManager.hpp"   // the head pose this composes with
@@ -319,15 +320,18 @@ extern "C" float __fastcall OnFixLoDCallback(float* rbxPtr, float originalVal) {
 bool InstallFixLoDHook() {
     // Match VR Mod's CP2077FixLoD site. The short prefix occurs three times in
     // current Cyberpunk builds; the trailing mulss xmm0,xmm0 disambiguates it.
-    const char* pattern =
-        "\xF3\x0F\x10\x43\x20\xF3\x0F\x59\x05"
-        "\x00\x00\x00\x00\xE8\x00\x00\x00\x00\xF3\x0F\x59\xC0";
-    const char* mask = "xxxxxxxxx????x????xxxx";
+    // 2.50 constructor42579C now tests the stereo descriptor flag between
+    // tanf and the square. The former signature matches two OTHER builders.
+    const char* pattern = "\xF3\x0F\x10\x43\x20\xF3\x0F\x59\x05\xBF\x3E\x39\x03\xE8\xDA\xE5\x67\x01\xF6\x83\x99\x03\x00\x00\x01\xF3\x0F\x59\xC0";
+    const char* mask = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
     uint8_t* found = static_cast<uint8_t*>(FindPattern("Cyberpunk2077.exe", pattern, mask));
     if (!found) {
         Log("FixLoD hook: Pattern not found!\n");
         return false;
     }
+
+    // Exact 2.50 site; matching bytes elsewhere must not activate this hook.
+    if (found != reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr)) + 0x425A44) return false;
 
     constexpr int replaceLen = 5; // movss (5)
     void* tramp = AllocateTrampoline(found, 256);
@@ -349,11 +353,13 @@ bool InstallFixLoDHook() {
     code[pos++] = 0x55; // push rbp
 
     // Save xmm registers
-    code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xEC; code[pos++] = 0x40; // sub rsp, 40h
+    code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xEC; code[pos++] = 0x60; // sub rsp, 60h
     code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x04; code[pos++] = 0x24; // movups [rsp], xmm0
     code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x4C; code[pos++] = 0x24; code[pos++] = 0x10; // movups [rsp+10h], xmm1
     code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x54; code[pos++] = 0x24; code[pos++] = 0x20; // movups [rsp+20h], xmm2
     code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x5C; code[pos++] = 0x24; code[pos++] = 0x30; // movups [rsp+30h], xmm3
+    code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x64; code[pos++] = 0x24; code[pos++] = 0x40; // xmm4
+    code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x6C; code[pos++] = 0x24; code[pos++] = 0x50; // xmm5
 
     code[pos++] = 0x48; code[pos++] = 0x89; code[pos++] = 0xE5; // mov rbp, rsp
     code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xE4; code[pos++] = 0xF0; // and rsp, -16
@@ -367,6 +373,10 @@ bool InstallFixLoDHook() {
     WriteMovRaxImm64(code, pos, reinterpret_cast<uintptr_t>(OnFixLoDCallback));
     code[pos++] = 0xFF; code[pos++] = 0xD0; // call rax
 
+    // Match the displaced MOVSS memory load: only the float return is defined,
+    // and the destination's upper96 bits must be zero, not callback scratch.
+    code[pos++] = 0x66; code[pos++] = 0x0F; code[pos++] = 0x7E; code[pos++] = 0xC0; // movd eax,xmm0
+    code[pos++] = 0x66; code[pos++] = 0x0F; code[pos++] = 0x6E; code[pos++] = 0xC0; // movd xmm0,eax
     // Save returned value (xmm0) to stack slot for xmm0
     code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x45; code[pos++] = 0x00; // movups [rbp], xmm0
 
@@ -377,7 +387,9 @@ bool InstallFixLoDHook() {
     code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x4C; code[pos++] = 0x24; code[pos++] = 0x10; // movups xmm1, [rsp+10h]
     code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x54; code[pos++] = 0x24; code[pos++] = 0x20; // movups xmm2, [rsp+20h]
     code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x5C; code[pos++] = 0x24; code[pos++] = 0x30; // movups xmm3, [rsp+30h]
-    code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xC4; code[pos++] = 0x40; // add rsp, 40h
+    code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x64; code[pos++] = 0x24; code[pos++] = 0x40; // xmm4
+    code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x6C; code[pos++] = 0x24; code[pos++] = 0x50; // xmm5
+    code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xC4; code[pos++] = 0x60; // add rsp, 60h
 
     // Restore volatile registers
     code[pos++] = 0x5D; // pop rbp
@@ -430,78 +442,66 @@ CVR_HOOK("LodFov", ::cvr::hooks::Stage::Boot, 60, InstallFixLoDHook);
 //     mulss xmm0,xmm0 / mulss xmm0,[1.6984] / maxss xmm0,[1.0] / movss [reg+24h],xmm0
 //                       ^ these 8 bytes -> jmp to the trampoline below
 static bool InstallFixLoDThresholdSites() {
-    HMODULE exe = GetModuleHandleA("Cyberpunk2077.exe");
-    MODULEINFO mi{};
-    if (!exe || !GetModuleInformation(GetCurrentProcess(), exe, &mi, sizeof(mi))) return false;
-    uint8_t* const base = static_cast<uint8_t*>(mi.lpBaseOfDll);
-    uint8_t* const end = base + mi.SizeOfImage;
+    auto* const base = reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr));
+    if (!base) return false;
+    // Individually verified 2.50 builders: alternate constructor2135EC,
+    // override422AA4 and FOV setter206F760. The constructor now separates
+    // square/multiply with a stereo-field store; the old pattern misses it.
+    struct Site { uintptr_t rva; uint8_t expected[21]; };
+    static constexpr Site sites[] = {
+        {0x213911, {0xF3,0x0F,0x59,0x05,0x2F,0x65,0x5A,0x03,0xF3,0x0F,0x5F,0x05,0x0F,0x64,0x5A,0x03,0xF3,0x0F,0x11,0x43,0x24}},
+        {0x422C90, {0xF3,0x0F,0x59,0x05,0xB0,0x71,0x39,0x03,0xF3,0x0F,0x5F,0x05,0x90,0x70,0x39,0x03,0xF3,0x0F,0x11,0x43,0x24}},
+        {0x206F789, {0xF3,0x0F,0x59,0x05,0xB7,0xA6,0x74,0x01,0xF3,0x0F,0x5F,0x05,0x97,0xA5,0x74,0x01,0xF3,0x0F,0x11,0x43,0x24}},
+    };
+    // Validate all native windows before changing any builder.
+    for (const auto& site : sites)
+        if (std::memcmp(base + site.rva, site.expected, sizeof(site.expected))) return false;
+    int patched = 0;
+    for (const auto& site : sites) {
+        uint8_t* const mul = base + site.rva;
+        const float* k = reinterpret_cast<const float*>(mul + 8 + *reinterpret_cast<int32_t*>(mul + 4));
+        uint8_t* const mx = mul + 8;
+        const float* one = reinterpret_cast<const float*>(mx + 8 + *reinterpret_cast<int32_t*>(mx + 4));
+        if (fabsf(*k - 1.6984007f) > 1e-6f || *one != 1.0f) return false;
+        uint8_t* code = static_cast<uint8_t*>(AllocateTrampoline(mul, 64));
+        if (!code) { Log("FixLoD threshold: no trampoline space for %p\n", mul); break; }
+        int pos = 0;
+        auto jmpBack = [&]() {
+            code[pos++] = 0xE9;
+            *reinterpret_cast<int32_t*>(code + pos) = static_cast<int32_t>((mul + 8) - (code + pos + 4));
+            pos += 4;
+        };
+        code[pos++] = 0x9C;                                        // pushfq
+        code[pos++] = 0x50;                                        // push rax
+        WriteMovRaxImm64(code, pos, reinterpret_cast<uintptr_t>(&CyberpunkVR_FixLodEnable));
+        code[pos++] = 0x83; code[pos++] = 0x38; code[pos++] = 0x00; // cmp dword [rax], 0
+        code[pos++] = 0x74; code[pos++] = 0x10;                     // je engine
+        code[pos++] = 0xB8; code[pos++] = 0x00; code[pos++] = 0x00; // mov eax, 1.0f
+        code[pos++] = 0x80; code[pos++] = 0x3F;
+        code[pos++] = 0x66; code[pos++] = 0x0F; code[pos++] = 0x6E; code[pos++] = 0xC0; // movd xmm0, eax
+        code[pos++] = 0x58;                                        // pop rax
+        code[pos++] = 0x9D;                                        // popfq
+        jmpBack();
+        // engine: the multiply as it was, through its constant's absolute address
+        WriteMovRaxImm64(code, pos, reinterpret_cast<uintptr_t>(k));
+        code[pos++] = 0xF3; code[pos++] = 0x0F; code[pos++] = 0x59; code[pos++] = 0x00; // mulss xmm0, [rax]
+        code[pos++] = 0x58;                                        // pop rax
+        code[pos++] = 0x9D;                                        // popfq
+        jmpBack();
 
-    static const uint8_t pat[] = {0xF3,0x0F,0x59,0xC0, 0xF3,0x0F,0x59,0x05,0,0,0,0,
-                                  0xF3,0x0F,0x5F,0x05,0,0,0,0, 0xF3,0x0F,0x11,0,0x24};
-    static const char mask[] = "xxxxxxxx????xxxx????xxx?x";
-    constexpr size_t kLen = sizeof(pat);
-    constexpr int kMul = 4;   // the multiply by 1.6984, 8 bytes
-
-    int patched = 0, matched = 0;
-    for (uint8_t* cur = base; cur < end;) {
-        MEMORY_BASIC_INFORMATION mbi{};
-        if (!VirtualQuery(cur, &mbi, sizeof(mbi))) break;
-        uint8_t* regionEnd = static_cast<uint8_t*>(mbi.BaseAddress) + mbi.RegionSize;
-        if (regionEnd > end) regionEnd = end;
-        const bool exec = mbi.State == MEM_COMMIT &&
-            (mbi.Protect & (PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE));
-        for (uint8_t* p = cur; exec && p + kLen <= regionEnd; ++p) {
-            size_t j = 0;
-            while (j < kLen && (mask[j] != 'x' || p[j] == pat[j])) ++j;
-            if (j != kLen) continue;
-            ++matched;
-            uint8_t* const mul = p + kMul;
-            const float* k   = reinterpret_cast<const float*>(mul + 8 + *reinterpret_cast<int32_t*>(mul + 4));
-            uint8_t* const mx = mul + 8;
-            const float* one = reinterpret_cast<const float*>(mx + 8 + *reinterpret_cast<int32_t*>(mx + 4));
-            if (fabsf(*k - 1.6984007f) > 1e-6f || *one != 1.0f) continue;
-
-            uint8_t* code = static_cast<uint8_t*>(AllocateTrampoline(mul, 64));
-            if (!code) { Log("FixLoD threshold: no trampoline space for %p\n", mul); break; }
-            int pos = 0;
-            auto jmpBack = [&]() {
-                code[pos++] = 0xE9;
-                *reinterpret_cast<int32_t*>(code + pos) = static_cast<int32_t>((mul + 8) - (code + pos + 4));
-                pos += 4;
-            };
-            code[pos++] = 0x9C;                                        // pushfq
-            code[pos++] = 0x50;                                        // push rax
-            WriteMovRaxImm64(code, pos, reinterpret_cast<uintptr_t>(&CyberpunkVR_FixLodEnable));
-            code[pos++] = 0x83; code[pos++] = 0x38; code[pos++] = 0x00; // cmp dword [rax], 0
-            code[pos++] = 0x74; code[pos++] = 0x10;                     // je engine
-            code[pos++] = 0xB8; code[pos++] = 0x00; code[pos++] = 0x00; // mov eax, 1.0f
-            code[pos++] = 0x80; code[pos++] = 0x3F;
-            code[pos++] = 0x66; code[pos++] = 0x0F; code[pos++] = 0x6E; code[pos++] = 0xC0; // movd xmm0, eax
-            code[pos++] = 0x58;                                        // pop rax
-            code[pos++] = 0x9D;                                        // popfq
-            jmpBack();
-            // engine: the multiply as it was, through its constant's absolute address
-            WriteMovRaxImm64(code, pos, reinterpret_cast<uintptr_t>(k));
-            code[pos++] = 0xF3; code[pos++] = 0x0F; code[pos++] = 0x59; code[pos++] = 0x00; // mulss xmm0, [rax]
-            code[pos++] = 0x58;                                        // pop rax
-            code[pos++] = 0x9D;                                        // popfq
-            jmpBack();
-
-            DWORD oldProtect;
-            VirtualProtect(mul, 8, PAGE_EXECUTE_READWRITE, &oldProtect);
-            mul[0] = 0xE9;
-            *reinterpret_cast<int32_t*>(mul + 1) = static_cast<int32_t>(code - (mul + 5));
-            mul[5] = mul[6] = mul[7] = 0x90;
-            VirtualProtect(mul, 8, oldProtect, &oldProtect);
-            FlushInstructionCache(GetCurrentProcess(), mul, 8);
-            ++patched;
-            Log("FixLoD threshold: builder tail at exe+0x%llX -> trampoline %p\n",
-                static_cast<unsigned long long>(mul - base), code);
-        }
-        cur = static_cast<uint8_t*>(mbi.BaseAddress) + mbi.RegionSize;
+        DWORD oldProtect;
+        VirtualProtect(mul, 8, PAGE_EXECUTE_READWRITE, &oldProtect);
+        mul[0] = 0xE9;
+        *reinterpret_cast<int32_t*>(mul + 1) = static_cast<int32_t>(code - (mul + 5));
+        mul[5] = mul[6] = mul[7] = 0x90;
+        VirtualProtect(mul, 8, oldProtect, &oldProtect);
+        FlushInstructionCache(GetCurrentProcess(), mul, 8);
+        ++patched;
+        Log("FixLoD threshold: builder tail at exe+0x%llX -> trampoline %p\n",
+            static_cast<unsigned long long>(mul - base), code);
     }
-    Log("FixLoD threshold: %d tail(s) matched, %d patched (2.31: 2 and 2)\n", matched, patched);
-    return patched > 0;
+    Log("FixLoD threshold: %d of 3 verified 2.50 tails patched\n", patched);
+    return patched == 3;
 }
 
 CVR_HOOK("LodFovThreshold", ::cvr::hooks::Stage::Boot, 61, InstallFixLoDThresholdSites);

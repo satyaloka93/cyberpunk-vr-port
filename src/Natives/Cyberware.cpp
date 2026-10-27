@@ -7,6 +7,15 @@
 #include "Core/VrCoreShared.hpp"
 #include "Hooks/WeaponTrigger.hpp"
 #include <RED4ext/Scripting/Utils.hpp>
+#include <atomic>
+#include "Runtimes/HapticRouting.hpp"
+#include "Runtimes/Haptics.hpp"
+#include "Runtimes/Psvr2HapticChannel.hpp"
+#include "Runtimes/LegacyHapticPolicy.hpp"
+#include <algorithm>
+extern "C" int CyberpunkVR_Haptics;
+extern "C" float CyberpunkVR_HapticScale;
+extern "C" float CyberpunkVR_WeaponKickDeg;
 
 extern "C" int CyberpunkVR_TwoHandActive;
 extern "C" int CyberpunkVR_CarryLeft;
@@ -132,4 +141,50 @@ void VRLauncherControllerAim(RED4ext::IScriptable*,RED4ext::CStackFrame* stack,b
 }
 void VRCyberwareCollisionInfo(RED4ext::IScriptable*,RED4ext::CStackFrame* stack,RED4ext::Vector4* out,int64_t) {
     stack->code++;if(!out)return;float values[4]{};cvr::cyberware::CollisionInfo(values);*out={values[0],values[1],values[2],values[3]};
+}
+
+namespace { std::atomic<uint32_t> handShotCount[2]{}; }
+void VRWeaponShot(RED4ext::IScriptable*, RED4ext::CStackFrame* stack, void*, int64_t) {
+    int32_t hand{}; float kick{}; bool dual{};
+    RED4ext::GetParameter(stack, &hand); RED4ext::GetParameter(stack, &kick);
+    RED4ext::GetParameter(stack, &dual); stack->code++;
+    if (hand < 0 || hand > 1) return;
+    handShotCount[hand].fetch_add(1, std::memory_order_relaxed);
+    // The weapon module removes the right gun's camera recoil after caching
+    // it. A zero live stat is not evidence that its shot should feel weaker.
+    if (hand == 1 && (!std::isfinite(kick) || kick <= 0)) kick = CyberpunkVR_WeaponKickDeg;
+    if (dual && cvr::haptics::HapticRoute().Toolkit()) {
+        // Dual grip vibration is owned by actual shot events, independently
+        // of CET's adaptive-trigger profile timers or saved trigger settings.
+        if (CyberpunkVR_Haptics && OpenXRManager::Get().IsSessionRunning() && std::isfinite(CyberpunkVR_HapticScale)) {
+            const auto pulse = cvr::haptics::DualToolkitShot(kick);
+            cvr::psvr2::Haptics().Pulse(hand, std::clamp(pulse.amplitude * CyberpunkVR_HapticScale, 0.f, 1.f), pulse.durationMs);
+        }
+    } else {
+        cvr::haptics::ShotForHand(hand, kick, !dual && hand==1 && CyberpunkVR_TwoHandActive!=0);
+    }
+    static std::atomic<unsigned> logged{};
+    if(logged.fetch_add(1,std::memory_order_relaxed)<24)
+        Log("[shot-haptics] hand=%d kick=%.3f dual=%d route=%s\n", hand,kick,int(dual),
+            cvr::haptics::HapticRoute().Toolkit()?"Toolkit":"OpenXR");
+}
+void VRWeaponShotCounts(RED4ext::IScriptable*, RED4ext::CStackFrame* stack, RED4ext::Vector4* out, int64_t) {
+    stack->code++;
+    if(out) *out={float(handShotCount[0].load(std::memory_order_relaxed)&0xffffffu),
+                  float(handShotCount[1].load(std::memory_order_relaxed)&0xffffffu),
+                  cvr::haptics::HapticRoute().Toolkit()?1.f:0.f,1.f}; // w: native dual grip owner
+}
+// Actual player shot events own recoil; ray queries are not shot counters.
+extern "C" void RecoilOnShot();
+void VRRightWeaponShot(RED4ext::IScriptable*, RED4ext::CStackFrame* stack, void*, int64_t) {
+    stack->code++;
+    // The state transition precedes the native bullet query. Kicking here
+    // bends its aim before the round leaves. Native ray/provider evaluation
+    // owns the visual impulse again; VRWeaponShot still owns haptics.
+}
+void VRWeaponTrace(RED4ext::IScriptable*, RED4ext::CStackFrame* stack, void*, int64_t) {
+    RED4ext::CString message;
+    RED4ext::GetParameter(stack, &message);
+    stack->code++;
+    Log("[weapon250] ms=%llu %s\n", static_cast<unsigned long long>(GetTickCount64()), message.c_str());
 }

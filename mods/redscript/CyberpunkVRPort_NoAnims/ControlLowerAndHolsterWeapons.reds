@@ -1,5 +1,6 @@
 // CyberpunkVRPort -- FIREARMS STAY IN YOUR HANDS. Folded into this mod on 2026-08-20; everything below
-// the second banner is Rivarez's original file, byte for byte, authorship banner included.
+// the second banner retains Rivarez's original code and authorship banner, with the
+// 2.50 HandleWeaponEquip isLeftWeapon argument forwarded by our compatibility update.
 //
 // WHY THE PORT NEEDS IT. The game lowers a drawn firearm after a while of no weapon input, and then
 // unequips it entirely. The port's aiming and firing go through the controllers, so from the state
@@ -27,7 +28,7 @@
 // THIRD-PARTY CODE. Written by Rivarez, not by this project. The banner and the contact address below
 // are left exactly as they were; if the port is redistributed, that is the author to ask.
 //
-// ============================== ORIGINAL FILE FOLLOWS, UNMODIFIED ==============================
+// ============================== ORIGINAL AUTHOR BANNER FOLLOWS ================================
 
 /* ============== Control lower and holster weapons for Cyberpunk 2077 ==============
                                       v.1.1
@@ -78,9 +79,9 @@ public func SetWeaponLowered(stateContext: ref<StateContext>) -> Void
 // ============================================================================================================================================
 // Подменяем все методы, где устанавливается TurnOffPublicSafeTimeStamp и устанавливаем там свои значения для этой переменной в соответствии с описанным выше
 @wrapMethod(EquipmentBaseTransition)
-  protected final const func HandleWeaponEquip(scriptInterface: ref<StateGameScriptInterface>, stateContext: ref<StateContext>, stateMachineInstanceData: StateMachineInstanceData, item: ItemID) -> Void
+  protected final const func HandleWeaponEquip(scriptInterface: ref<StateGameScriptInterface>, stateContext: ref<StateContext>, stateMachineInstanceData: StateMachineInstanceData, item: ItemID, isLeftWeapon: Bool) -> Void
   {
-    wrappedMethod(scriptInterface, stateContext, stateMachineInstanceData, item);
+    wrappedMethod(scriptInterface, stateContext, stateMachineInstanceData, item, isLeftWeapon);
     SetWeaponRaised(stateContext, false);
   }
 
@@ -129,6 +130,17 @@ public func IsFirearms(scriptInterface: ref<StateGameScriptInterface>) -> Bool
 @wrapMethod(UpperBodyEventsTransition)
   protected final func UpdateSwitchItem(timeDelta: Float, stateContext: ref<StateContext>, scriptInterface: ref<StateGameScriptInterface>) -> Bool
   {
+    let player = scriptInterface.executionOwner as PlayerPuppet;
+    if IsDefined(player) && player.vrLauncherConsumeSwitchRelease {
+      // VrLauncherReadyEvents already advanced the wheel on this press.
+      // Consume its matching release once; do not debounce unrelated draws.
+      this.ResetEquipVars(stateContext);
+      if scriptInterface.GetActionValue(n"SwitchItem") <= 0.00 {
+        player.vrLauncherConsumeSwitchRelease = false;
+        VRWeaponTrace("launcher switch release consumed; no second cycle");
+      };
+      return false;
+    };
     if IsFirearms(scriptInterface)
     {
       // поднятие нажатием на кнопку стрельбы или прицеливания

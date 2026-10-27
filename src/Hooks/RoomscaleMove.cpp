@@ -270,7 +270,8 @@ bool Matches(const sites::Site& site) {
 bool InstallRoomscale() {
     s_base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
     if (!s_base || !Matches(sites::CctMove) || !Matches(sites::Velocity) || !Matches(sites::SolverCall) ||
-        !Matches(sites::PhysicsProperty)) {
+        !Matches(sites::PhysicsProperty) || !Matches(sites::SwimmingDivingCall) ||
+        !Matches(sites::SwimmingSurfaceCall)) {
         Log("Roomscale: native ABI signature mismatch; hooks not installed.\n");
         return false;
     }
@@ -292,7 +293,7 @@ bool InstallRoomscale() {
         return false;
     }
     CyberpunkVR_RoomscaleHooksReady = 1;
-    Log("Roomscale: native CCT displacement + solver-only velocity feedback installed (2.31).\n");
+    Log("Roomscale: native CCT displacement + solver/swimming velocity feedback installed (2.50).\n");
     return true;
 }
 } // namespace

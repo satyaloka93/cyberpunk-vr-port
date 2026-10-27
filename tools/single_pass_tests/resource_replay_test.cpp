@@ -146,7 +146,7 @@ void CaptureArgumentsAndTears(){
         case 8:fixture.nodes.clear();break;case 9:fixture.nodes[0].slot=replay::Slots;break;
         case 10:fixture.nodes[0].viewIndex=2;break;case 11:fixture.nodes[0].ordinal=1;break;
         case 12:fixture.nodes[0].handle=65536;break;case 13:++countsAfter[Node.slot];break;
-        case 14:fixture.counts[Node.slot]=countsAfter[Node.slot]=501;break;case 15:fixture.rows.clear();rowsAfter.clear();break;
+        case 14:fixture.counts[Node.slot]=countsAfter[Node.slot]=replay::RowsPerSlot+1;break;case 15:fixture.rows.clear();rowsAfter.clear();break;
         case 16:rowsAfter[0][47]^=1;break;case 17:fixture.rows[0][0]=rowsAfter[0][0]=14;break;
         case 18:fixture.rows[0][1]=rowsAfter[0][1]=0;break;case 19:policy=replay::Kind13Policy(3);break;
         case 20:fixture.counts[1]=countsAfter[1]=1;fixture.rows.insert(fixture.rows.begin(),Row(1,1));rowsAfter=fixture.rows;break;
@@ -201,7 +201,7 @@ void CaptureCapacity(){
     }
     replay::Receipt maximum;Require(fixture.Capture(maximum) && maximum.Declarations().size()==replay::MaxRows,"Audited maximum full declaration inventory rejected");
     const auto node=fixture.nodes.back();replay::Token token;
-    Require(!maximum.Before(Identity,node,2,500,fixture.rows.back(),token),"Native cursor outside declared slot capacity accepted");
+    Require(!maximum.Before(Identity,node,2,replay::RowsPerSlot,fixture.rows.back(),token),"Native cursor outside declared slot capacity accepted");
     replay::Receipt tooMany;fixture.nodes.push_back({9999,220,0,0});Require(!fixture.Capture(tooMany),"Node inventory overflow accepted");
 }
 }

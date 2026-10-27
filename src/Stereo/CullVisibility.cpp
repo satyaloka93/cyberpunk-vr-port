@@ -46,12 +46,13 @@
 namespace cvr {
 namespace detail {
 
-void* __fastcall Detour_GatherCtxInit(void* ctx, uintptr_t view, void* cull_query) {
-    void* const r = g_orig_gather_ctx_init(ctx, view, cull_query);
+void* __fastcall Detour_GatherCtxInit(void* ctx, uintptr_t view, void* cull_query, uint8_t query_flags) {
+    // 2.50 adds a fourth byte argument. The native initializer incorporates
+    // R9B into the gather flags; omitting it corrupts even the passthrough path.
+    void* const r = g_orig_gather_ctx_init(ctx, view, cull_query, query_flags);
     if (CyberpunkVR_LodThreshOverrideEnable && ctx && view) {
         __try {
             const uint64_t key = *reinterpret_cast<uint64_t*>(view + 0x28);
-            const float aspect = *reinterpret_cast<float*>(view + 0x98);
             const uint32_t seen = *reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(ctx) + 0x28);
             uint32_t bit;
             if (key == g_vrcam_ctx_key) { bit = 2; CyberpunkVR_DebugLodThreshSeenVrcamBits = seen; }
@@ -80,7 +81,7 @@ void* __fastcall Detour_GatherCtxInit(void* ctx, uintptr_t view, void* cull_quer
 // OWN frustum -> correct occlusion, no cross-eye parallax error. The occluder list itself is
 // scene-wide (this+8 -> +0x80, 604 entries observed for every caller) and sub_14079F518
 // already early-outs when that list is empty, so this stays safe for views without occluders.
-constexpr uintptr_t VIS_QUERY_PREPARE_RVA = 0x79E50C;
+constexpr uintptr_t VIS_QUERY_PREPARE_RVA = 0x5AC174;
 constexpr uintptr_t TESTER_OCC_GATE_OFF = 0x19E;
 using VisQueryPrepareFn = __int64(__fastcall*)(void*, void*);
 VisQueryPrepareFn g_orig_visquery_prepare = nullptr;
@@ -123,8 +124,13 @@ __int64 __fastcall Detour_MainCullPrepare(void* manager, void* job, void* output
                     view_kind = 2;
             }
             alignas(16) uint8_t gather_ctx[72] = {};
+            // Match 2.50's native MainCullPrepare (0xC65218): derive the
+            // fourth initializer argument from the job, rather than assuming
+            // zero and silently changing stereo-query flags in profiling mode.
+            using QueryFlagsFn = uint8_t(__fastcall*)(void*);
+            const auto query_flags = reinterpret_cast<QueryFlagsFn>(g_exe_base + 0x22A0D10)(job);
             g_main_cull_ctx_init(gather_ctx,
-                *reinterpret_cast<uintptr_t*>(reinterpret_cast<uint8_t*>(job) + 24), output);
+                *reinterpret_cast<uintptr_t*>(reinterpret_cast<uint8_t*>(job) + 24), output, query_flags);
             auto** callbacks = *reinterpret_cast<uintptr_t***>(reinterpret_cast<uint8_t*>(manager) + 516512);
             const uint32_t count = *reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(manager) + 516524);
             __int64 result = 0;
@@ -840,7 +846,7 @@ void __fastcall Detour_PrepareSortFinal(
 //   VRCAM -> [query+0x348] != 0
 // One-shot live nulling of VRCAM's +0x348 kept the scene intact, but FPS did not move in a
 // single-frame poke. Mode 4 repeats that null EVERY invocation for a real measurement.
-constexpr uintptr_t QUERYWORK_RVA = 0x14D03C;   // sub_14014D03C multifrustum worker
+constexpr uintptr_t QUERYWORK_RVA = 0x29C158;   // 2.50 multifrustum worker
 using QueryWorkFn = __int64(__fastcall*)(void*, void*);
 QueryWorkFn g_orig_querywork = nullptr;
 __int64 __fastcall Detour_QueryWork(void* query, void* a2) {
@@ -1070,7 +1076,7 @@ static_assert(offsetof(ReplayVisibilityBatch, count) == 0x100);
 
 using MainCullTestFn = __int64(__fastcall*)(void*, void*, void*, void*, void*);
 using MainCullPrepareFn = __int64(__fastcall*)(void*, void*, void*);
-using MainCullCtxInitFn = void*(__fastcall*)(void*, uintptr_t, void*);
+// MainCullCtxInitFn is declared once in StereoInternal.hpp (2.50: four arguments).
 using VisibilityCollectorFn = __int64(__fastcall*)(void*, void*);
 using MaterializeWorkerFn = void*(__fastcall*)(void*, void*);
 using FineMaterializeFn = char(__fastcall*)(void*, __int64*, char, void*);

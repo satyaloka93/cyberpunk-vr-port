@@ -35,13 +35,13 @@ extern "C" void __fastcall OnUnifixHookCallback(void* projectionData, void* rend
             if (proj[i] != 0.0f) nonZero = true;
         }
 
-        // Also read directly from render object (rbx+0x21C0) — this is where
+        // Also read directly from render object (2.50: rbx+0x3030) — this is where
         // the game stores the ACTUAL projection during gameplay. The r13 source
         // may be a zeroed template; the real data is in the destination.
         float rbxProj[9] = {};
         bool rbxNonZero = false;
         if (renderObj) {
-            float* dst = reinterpret_cast<float*>(g_unifixRenderObj + 0x21C0);
+            float* dst = reinterpret_cast<float*>(g_unifixRenderObj + 0x3030);
             for (int i = 0; i < 9; ++i) {
                 rbxProj[i] = dst[i];
                 if (rbxProj[i] != 0.0f) rbxNonZero = true;
@@ -70,7 +70,7 @@ extern "C" void __fastcall OnUnifixHookCallback(void* projectionData, void* rend
 
         if (g_unifixEnableOverride && rbxNonZero) {
             const float desiredFov = g_normalFovOverrideValue;
-            float* dst = reinterpret_cast<float*>(g_unifixRenderObj + 0x21E0);
+            float* dst = reinterpret_cast<float*>(g_unifixRenderObj + 0x3050);
             if (desiredFov > 1.0f && desiredFov < 179.0f && *dst != desiredFov) {
                 *dst = desiredFov;
             }
@@ -81,17 +81,16 @@ extern "C" void __fastcall OnUnifixHookCallback(void* projectionData, void* rend
 }
 
 bool InstallUnifixHook() {
-    // AOB: mov rcx,rdi; mov rdx,rdi; movups [rbx+0x21C0],xmm0
-    // = 48 8B CF | 48 8B D7 | 0F 11 83 C0 21 00 00  (13 bytes)
-    // xmm0 was already loaded from [r13] by the preceding instruction (41 0F 10 45 00).
-    const char* pattern = "\x48\x8B\xCF\x48\x8B\xD7\x0F\x11\x83\xC0\x21\x00\x00";
-    const char* mask = "xxxxxxxxxxxxx";
+    // 2.50's mapped owner is 0x67B6AC (2.31: 0x36FD10). R13 remains the
+    // projection source and RBX the destination. Its three writes moved from
+    // +21C0/+21D0/+21E0 to +3030/+3040/+3050; the old register-setup pair is gone.
+    // Hook the first complete store; replay it after the register-preserving callback.
+    const char* pattern = "\x0F\x11\x83\x30\x30\x00\x00\x41\x0F\x10\x4D\x10\x0F\x57\xC0";
+    const char* mask = "xxxxxxxxxxxxxxx";
     uint8_t* found = static_cast<uint8_t*>(FindPattern("Cyberpunk2077.exe", pattern, mask));
-    if (!found) return false;
+    if (!found || found != reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr)) + 0x67B76D) return false;
 
-    // Replace 2 complete instructions (6 bytes): mov rcx,rdi (3) + mov rdx,rdi (3).
-    // The third instruction (movups, 7 bytes) stays untouched.
-    constexpr int replaceLen = 6;
+    constexpr int replaceLen = 7; // movups [rbx+3030h],xmm0; no relative operand
     void* tramp = AllocateTrampoline(found, 512);
     if (!tramp) return false;
 
@@ -111,12 +110,14 @@ bool InstallUnifixHook() {
     code[pos++] = 0x41; code[pos++] = 0x53;      // push r11
     code[pos++] = 0x55;                          // push rbp
 
-    // Save volatile xmm registers (4 * 16 = 64 bytes)
-    code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xEC; code[pos++] = 0x40; // sub rsp,40h
+    // Save all six volatile XMM registers; the callback may use XMM4/XMM5 too.
+    code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xEC; code[pos++] = 0x60; // sub rsp,60h
     code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x04; code[pos++] = 0x24;       // movups [rsp],xmm0
     code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x4C; code[pos++] = 0x24; code[pos++] = 0x10; // movups [rsp+10h],xmm1
     code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x54; code[pos++] = 0x24; code[pos++] = 0x20; // movups [rsp+20h],xmm2
     code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x5C; code[pos++] = 0x24; code[pos++] = 0x30; // movups [rsp+30h],xmm3
+    code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x64; code[pos++] = 0x24; code[pos++] = 0x40;
+    code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x6C; code[pos++] = 0x24; code[pos++] = 0x50;
 
     code[pos++] = 0x48; code[pos++] = 0x89; code[pos++] = 0xE5;   // mov rbp,rsp
     code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xE4; code[pos++] = 0xF0; // and rsp,-10h (align)
@@ -135,7 +136,9 @@ bool InstallUnifixHook() {
     code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x4C; code[pos++] = 0x24; code[pos++] = 0x10;
     code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x54; code[pos++] = 0x24; code[pos++] = 0x20;
     code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x5C; code[pos++] = 0x24; code[pos++] = 0x30;
-    code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xC4; code[pos++] = 0x40; // add rsp,40h
+    code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x64; code[pos++] = 0x24; code[pos++] = 0x40;
+    code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x6C; code[pos++] = 0x24; code[pos++] = 0x50;
+    code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xC4; code[pos++] = 0x60; // add rsp,60h
 
     // Pop volatile GPRs (reverse order)
     code[pos++] = 0x5D;                          // pop rbp
@@ -148,10 +151,8 @@ bool InstallUnifixHook() {
     code[pos++] = 0x58;                          // pop rax
     code[pos++] = 0x9D;                          // popfq
 
-    // Execute original 6 bytes:
-    code[pos++] = 0x48; code[pos++] = 0x8B; code[pos++] = 0xCF;   // mov rcx, rdi
-    code[pos++] = 0x48; code[pos++] = 0x8B; code[pos++] = 0xD7;   // mov rdx, rdi
-    // (movups [rbx+0x21C0],xmm0 at found+6 is NOT replaced — executes in-place)
+    // Replay the verified original store exactly once, with XMM0 restored.
+    for (int i = 0; i < replaceLen; ++i) code[pos++] = found[i];
 
     // Jump back to found + replaceLen
     code[pos++] = 0xE9;
@@ -163,7 +164,7 @@ bool InstallUnifixHook() {
     VirtualProtect(found, replaceLen, PAGE_EXECUTE_READWRITE, &oldProtect);
     found[0] = 0xE9;
     *reinterpret_cast<int32_t*>(found + 1) = static_cast<int32_t>(code - (found + 5));
-    found[5] = 0x90;  // NOP the 6th byte (rest of 2nd instruction)
+    for (int i = 5; i < replaceLen; ++i) found[i] = 0x90;
     VirtualProtect(found, replaceLen, oldProtect, &oldProtect);
     FlushInstructionCache(GetCurrentProcess(), found, replaceLen);
     return true;

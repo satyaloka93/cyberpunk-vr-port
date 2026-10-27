@@ -66,8 +66,7 @@ continuation:
     jne bad
     cmp r11,77777777h
     jne bad
-    lea rax,[rbx+1F8h]
-    cmp rcx,rax
+    cmp rcx,22222222h
     jne bad
     movups XMMWORD PTR WorldMarkerTestXmm,xmm0
     movups XMMWORD PTR WorldMarkerTestXmm+10h,xmm1

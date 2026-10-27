@@ -89,7 +89,9 @@ namespace cvr {
 namespace detail {
 namespace {
 
-using SubmitPointFn = void (*)(uintptr_t, void*, uint32_t, uint8_t*, void*);
+// 2.50 removed the mode argument: R8 is now the builder and R9 the fence
+// description. Keeping the five-argument ABI corrupts native calls even OFF.
+using SubmitPointFn = void (*)(uintptr_t, void*, uint8_t*, void*);
 using BuilderInitFn = void* (*)(void*, uint8_t, uint8_t, uintptr_t);
 using BuilderFinishFn = void** (*)(void*, void**);
 using LinkFn = void (*)(void*, void*);
@@ -102,16 +104,18 @@ using DeviceOutputFn = void (*)(uintptr_t, uint64_t);
 using XefgPresentIdFn = void (*)(uintptr_t);
 using SwapchainPresentFn = uintptr_t (*)(const uint32_t*, uintptr_t, uint32_t);
 
-constexpr uintptr_t BUILDER_INIT_RVA = 0x218B54;     // (builder, prio, prio2, tag): fresh after/done counters
-constexpr uintptr_t BUILDER_FINISH_RVA = 0x218C38;   // (builder, &last): hands over the last stage's counter
-constexpr uintptr_t COUNTER_LINK_RVA = 0x14285C;     // (src, dst): dst stays pending until src completes
-constexpr uintptr_t COUNTER_RELEASE_RVA = 0x1419A4;  // (&counter): drops one reference
-constexpr uintptr_t JOB_SCHEDULE_RVA = 0x14299C;     // (dispatcher, job, prio, after, done)
-constexpr uintptr_t DISPATCHER_RVA = 0x3438980;
-constexpr uintptr_t COUNTER_NEW_RVA = 0x142B20;       // (unused, tag): a counter with one reference
-constexpr uintptr_t RENDER_DEVICE_RVA = 0x3427C00;    // the render device the Present node calls
-constexpr uintptr_t XEFG_PRESENT_ID_RVA = 0x1D577B0;  // (device+18048): XeSS frame generation present id
-constexpr uintptr_t SWAPCHAIN_PRESENT_RVA = 0x21C5AC; // (&swapchain id, -, sync interval)
+// Paired shipped symbol identities and native operand checks, 2.31 -> 2.50:
+// diagnostics/game250/reference-231/unresolved/layout-helpers.json.
+constexpr uintptr_t BUILDER_INIT_RVA = 0x409858;     // (builder, prio, prio2, tag): fresh after/done counters
+constexpr uintptr_t BUILDER_FINISH_RVA = 0x40993C;   // (builder, &last): hands over the last stage's counter
+constexpr uintptr_t COUNTER_LINK_RVA = 0x272E1C;     // (src, dst): dst stays pending until src completes
+constexpr uintptr_t COUNTER_RELEASE_RVA = 0x2744CC;  // (&counter): drops one reference
+constexpr uintptr_t JOB_SCHEDULE_RVA = 0x272B40;     // (dispatcher, job, prio, after, done)
+constexpr uintptr_t DISPATCHER_RVA = 0x3BCDBF8;
+constexpr uintptr_t COUNTER_NEW_RVA = 0x273008;       // (unused, tag): a counter with one reference
+constexpr uintptr_t RENDER_DEVICE_RVA = 0x3BBCAE8;    // the render device the Present node calls
+constexpr uintptr_t XEFG_PRESENT_ID_RVA = 0x229D9C0;  // (device+0x4678): XeSS frame generation present id
+constexpr uintptr_t SWAPCHAIN_PRESENT_RVA = 0x5D95B8; // (&swapchain id, -, sync interval)
 
 // Builder (sub_140218B54 / sub_140142634): +8 tag, +16 the counter the next stage waits for, +24 the
 // current stage's counter, +40 priority, +41 second priority byte. Counter: +24 pending.
@@ -201,14 +205,14 @@ int64_t WaitPresented() {
     return prof_now() - t0;
 }
 
-void Detour_SubmitPoint(uintptr_t name, void* range, uint32_t mode, uint8_t* builder, void* fences) {
+void Detour_SubmitPoint(uintptr_t name, void* range, uint8_t* builder, void* fences) {
     if (!CyberpunkVR_SubmitChain.load(std::memory_order_relaxed) || !builder) {
         if (ChainPending()) {
             CyberpunkVR_SubmitChainStats[7].fetch_add(1, std::memory_order_relaxed);
             WaitSubmitted();
         }
         WaitPresented();
-        g_orig_submit_point(name, range, mode, builder, fences);
+        g_orig_submit_point(name, range, builder, fences);
         return;
     }
     alignas(16) uint8_t own[64] = {};
@@ -222,7 +226,7 @@ void Detour_SubmitPoint(uintptr_t name, void* range, uint32_t mode, uint8_t* bui
     const auto link = Engine<LinkFn>(COUNTER_LINK_RVA);
     if (Pending(g_tail)) link(g_tail, first);
     if (Pending(caller_after)) link(caller_after, first);
-    g_orig_submit_point(name, range, mode, own, fences);
+    g_orig_submit_point(name, range, own, fences);
     void* last = nullptr;
     Engine<BuilderFinishFn>(BUILDER_FINISH_RVA)(own, &last);
     const uint64_t seq = g_issued.load(std::memory_order_relaxed) + 1;
@@ -245,7 +249,7 @@ bool Presents(uint8_t* context) {
         auto* view = *reinterpret_cast<uint8_t**>(context);
         const auto table = *reinterpret_cast<uintptr_t**>(view);
         auto* data = reinterpret_cast<uint8_t* (*)(void*)>(table[4])(view);
-        return data && *reinterpret_cast<void**>(data + 3976) && data[336];
+        return data && *reinterpret_cast<void**>(data + 0xF98) && data[0x150];
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return true;
     }
@@ -256,12 +260,12 @@ void RunPresent(uint8_t* output, uint64_t handle) {
     const uintptr_t device = *reinterpret_cast<uintptr_t*>(Base() + RENDER_DEVICE_RVA);
     const auto table = *reinterpret_cast<uintptr_t**>(device);
     reinterpret_cast<DeviceOutputFn>(table[56 / 8])(device, handle);
-    reinterpret_cast<DeviceOutputFn>(table[104 / 8])(device, handle);
-    reinterpret_cast<DeviceOutputFn>(table[144 / 8])(device, handle);
-    Engine<XefgPresentIdFn>(XEFG_PRESENT_ID_RVA)(*reinterpret_cast<uintptr_t*>(device + 18048));
-    if (!output[272]) {
+    reinterpret_cast<DeviceOutputFn>(table[0x80 / 8])(device, handle);
+    reinterpret_cast<DeviceOutputFn>(table[0xA8 / 8])(device, handle);
+    Engine<XefgPresentIdFn>(XEFG_PRESENT_ID_RVA)(*reinterpret_cast<uintptr_t*>(device + 0x4678));
+    if (!output[0x17C]) {
         Engine<SwapchainPresentFn>(SWAPCHAIN_PRESENT_RVA)(reinterpret_cast<const uint32_t*>(output + 56), 0,
-                                                          *reinterpret_cast<uint32_t*>(output + 84));
+                                                          *reinterpret_cast<uint32_t*>(output + 0x78));
         InvalidateRect(*reinterpret_cast<HWND*>(*reinterpret_cast<uintptr_t*>(output + 48) + 8), nullptr, TRUE);
     }
 }
@@ -281,8 +285,8 @@ bool PresentTarget(uint8_t* context, uint8_t** output, uint64_t* handle) {
         auto* view = *reinterpret_cast<uint8_t**>(context);
         const auto table = *reinterpret_cast<uintptr_t**>(view);
         auto* data = reinterpret_cast<uint8_t* (*)(void*)>(table[4])(view);
-        if (!data || !*reinterpret_cast<uint8_t**>(data + 3976) || !data[336]) return false;
-        *output = *reinterpret_cast<uint8_t**>(data + 3976);
+        if (!data || !*reinterpret_cast<uint8_t**>(data + 0xF98) || !data[0x150]) return false;
+        *output = *reinterpret_cast<uint8_t**>(data + 0xF98);
         *handle = *reinterpret_cast<uint64_t*>(data + 416);
         g_present_view.store(view, std::memory_order_relaxed);
         return true;
@@ -406,9 +410,9 @@ extern "C" void CyberpunkVR_SubmitChainConfigure(int mode) {
 namespace cvr {
 namespace detail {
 
-CVR_DETOUR("[submit-chain] submission point sub_1401FAFA4", 0x1FAFA4, Detour_SubmitPoint, g_orig_submit_point)
-CVR_DETOUR("[submit-chain] Present node sub_14021CDC8", 0x21CDC8, Detour_PresentNode, g_orig_present_node)
-CVR_DETOUR("[submit-chain] view job builder sub_140AA39B8", 0xAA39B8, Detour_ViewBuilder, g_orig_view_builder)
+CVR_DETOUR("[submit-chain] submission point 2.50", 0x22EF830, Detour_SubmitPoint, g_orig_submit_point)
+CVR_DETOUR("[submit-chain] Present node 2.50", 0xBF60F0, Detour_PresentNode, g_orig_present_node)
+CVR_DETOUR("[submit-chain] view job builder 2.50", 0xB603D8, Detour_ViewBuilder, g_orig_view_builder)
 
 }  // namespace detail
 }  // namespace cvr

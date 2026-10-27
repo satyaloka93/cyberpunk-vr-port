@@ -1349,7 +1349,7 @@ extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugFinalGrabs = 0;
 extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugFinalArms = 0;
 
 // CompositionPostProcess: the one node the finished frame is acquired, written and released inside.
-static constexpr uint32_t COMPOSITION_NODE_RVA = 0x1F8928;
+static constexpr uint32_t COMPOSITION_NODE_RVA = COMPOSITION_WORK_RVA;
 
 // The second view's finished-frame target, learned from the engine's own acquire barrier in that node
 // and copied when the same node releases it.

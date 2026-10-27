@@ -1,3 +1,6 @@
+public native func VRWeaponShot(hand: Int32, kick: Float, dual: Bool) -> Void;
+public native func VRWeaponShotCounts() -> Vector4;
+public native func VRRightWeaponShot() -> Void;
 public native func VRWeaponTriggerEnabled() -> Bool;
 
 @addField(WeaponObject) private let vrTriggerHasShot: Bool;
@@ -37,13 +40,25 @@ protected final func OnEnter(stateContext: ref<StateContext>, scriptInterface: r
     weapon.vrTriggerHasShot = true;
   };
   wrappedMethod(stateContext, scriptInterface);
+  if IsDefined(scriptInterface.executionOwner as PlayerPuppet) {
+    if IsDefined(weapon) && weapon.IsRanged() {
+      let otherSlot: TweakDBID = this.IsRightWeaponLogic() ? t"AttachmentSlots.WeaponLeft" : t"AttachmentSlots.WeaponRight";
+      let other = scriptInterface.GetTransactionSystem().GetItemInSlot(scriptInterface.executionOwner, otherSlot) as WeaponObject;
+      let dual: Bool = IsDefined(other) && other.IsRanged();
+      let kick = scriptInterface.GetStatsSystem().GetStatValue(Cast<StatsObjectID>(weapon.GetEntityID()), gamedataStatType.RecoilKickMax);
+      VRWeaponShot(this.IsRightWeaponLogic() ? 1 : 0, kick, dual);
+    };
+    if this.IsRightWeaponLogic() { VRRightWeaponShot(); };
+  };
 }
 
 @wrapMethod(WeaponTransition)
 protected final const func IsSemiAutoAction(weaponObject: ref<WeaponObject>, const stateContext: ref<StateContext>, const scriptInterface: ref<StateGameScriptInterface>) -> Bool {
   let lastPress: StateResultInt;
   if this.VRDirectSemiAuto(scriptInterface) {
-    lastPress = stateContext.GetPermanentIntParameter(n"LastChargePressCount");
+    // 2.50 owns hand selection and records a separate shot count per hand.
+    if !this.ShouldShoot(scriptInterface) { return false; };
+    lastPress = stateContext.GetPermanentIntParameter(this.GetLastChargePressCount());
     // ShootEvents records this native count on every actual shot. The count
     // survives a one-frame Shoot/CycleRound transition, unlike JustPressed,
     // while holding at .84 after the break cannot create another shot.

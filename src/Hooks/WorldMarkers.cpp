@@ -225,17 +225,18 @@ void Projection(void* projection,void* view,void* size,float worldScale) {
     // Same native entity/slot lookup as the projection update, with its static
     // position fallback. Constants below are read from the verified executable.
     using WorldFn=bool (*)(void*,float*);
-    if(!reinterpret_cast<WorldFn>(base+0x4E8FD4)(projection,world))
+    // 2.50 extracted this lookup into the helper used by 0x2142700.
+    if(!reinterpret_cast<WorldFn>(base+0x21428B0)(projection,world))
         std::memcpy(world,static_cast<uint8_t*>(projection)+0xB0,sizeof(world));
     const bool adjust=At<uint8_t>(projection,0xE0)!=0;
-    const float minimum=*reinterpret_cast<const float*>(base+0x31EF494);
+    const float minimum=*reinterpret_cast<const float*>(base+0x37B9DF4);
     const float scale=adjust && worldScale>minimum
-        ? *reinterpret_cast<const float*>(base+0x31EF5A8)/worldScale : 1;
+        ? *reinterpret_cast<const float*>(base+0x37B9F18)/worldScale : 1;
     for(int i=0;i<3;++i) world[i]+=At<float>(projection,0xC0+i*4)*scale;
     if(adjust) {
         const float distance=At<float>(projection,0x104)/(worldScale>minimum ? worldScale : 1);
-        const float factor=std::min(distance,*reinterpret_cast<const float*>(base+0x31EF890)) *
-            *reinterpret_cast<const float*>(base+0x31EEFB0);
+        const float factor=std::min(distance,*reinterpret_cast<const float*>(base+0x37BA1F4)) *
+            *reinterpret_cast<const float*>(base+0x37B991C);
         for(int i=0;i<3;++i) world[i]+=At<float>(projection,0xE4+i*4)*factor;
     }
     Remember(root,world);
@@ -337,7 +338,8 @@ MarkerOwner CompositeOwner(void* source) {
     std::lock_guard lock(primitiveMutex);
     for(uint32_t i=0;i<count;++i) {
         if(indices[i]>=batchCount)return {};
-        auto* batch=reinterpret_cast<void*>(batches+size_t(indices[i])*0xB0);
+        // 2.50 batch walker 0x289E3E/42: index * 3 << 6.
+        auto* batch=reinterpret_cast<void*>(batches+size_t(indices[i])*0xC0);
         const auto records=At<uint32_t*>(batch,0x18);
         const auto size=At<uint32_t>(batch,0x30);
         if(!size)continue;
@@ -379,12 +381,13 @@ void Emit(EmitFn original,void* context,void* record,VertexStream* stream) {
 }
 void Quad(void* context,void* record,VertexStream* stream) { Emit(originalQuad,context,record,stream); }
 void Triangles(void* context,void* record,VertexStream* stream) { Emit(originalTriangles,context,record,stream); }
-using TextFn=void (*)(void*,void*);
+// The 2.50 emitter additionally reads clipping metadata from its batch (R8).
+using TextFn=void (*)(void*,void*,void*);
 TextFn originalText{};
-void Text(void* record,void* context) {
+void Text(void* record,void* context,void* batchMetadata) {
     const float previous=textDepth;
     textDepth=PrimitiveDepth(record);
-    originalText(record,context);
+    originalText(record,context,batchMetadata);
     textDepth=previous;
 }
 
@@ -434,8 +437,10 @@ float EyeScale(float width,float height) {
 }
 
 bool InstallTextCall() {
-    auto* site=reinterpret_cast<uint8_t*>(base+0x2F3D58);
-    const uint8_t expected[]={0x48,0x8d,0x8b,0xf8,0x01,0,0,0xf3,0x0f,0x10,0x46,0x6c};
+    // Last native transform-row store, before color processing/publication.
+    // Geometry is still owned by the native writer; no pointer is retained.
+    auto* site=reinterpret_cast<uint8_t*>(base+0x22F6674);
+    const uint8_t expected[]={0x0f,0x11,0x9b,0x60,0x01,0,0,0xf3,0x0f,0x10,0x46,0x60};
     if(std::memcmp(site,expected,sizeof(expected))) return false;
     auto* relay=static_cast<uint8_t*>(AllocateTrampoline(site,14));
     if(!relay) return false;
@@ -447,9 +452,9 @@ bool InstallTextCall() {
     if(distance<INT32_MIN || distance>INT32_MAX) return false;
     DWORD previous{};
     if(!VirtualProtect(site,7,PAGE_EXECUTE_READWRITE,&previous)) return false;
-    // Replace the seven-byte LEA with NOP/NOP/CALL. A real return address lets
+    // Replace the seven-byte MOVUPS with NOP/NOP/CALL. A real return address lets
     // Windows unwind through the thunk back into the native function's frame.
-    // The thunk performs the original LEA before returning to site+7.
+    // The thunk performs the original store BEFORE tagging, then returns to site+7.
     site[0]=site[1]=0x90;site[2]=0xe8;
     const auto relative=static_cast<int32_t>(distance);
     std::memcpy(site+3,&relative,4);
@@ -462,14 +467,14 @@ bool InstallTextCall() {
 bool Install() {
     struct Hook { uintptr_t rva; const char* bytes; size_t size; void* detour; void** original; };
     const Hook hooks[]={
-        {0x2E37AC,"\x48\x89\x5c\x24\x10\x48\x89\x7c\x24\x20\x55\x48\x8b\xec",14,reinterpret_cast<void*>(&MappinPosition),reinterpret_cast<void**>(&originalMappinPosition)},
-        {0x4E7E24,"\x48\x8b\xc4\x48\x89\x58\x10\x48\x89\x70\x18\x48\x89\x78\x20",15,reinterpret_cast<void*>(&Projection),reinterpret_cast<void**>(&originalProjection)},
-        {0x2EE510,"\x48\x8b\xc4\x48\x89\x58\x10\x48\x89\x70\x18\x48\x89\x78\x20",15,reinterpret_cast<void*>(&Paint),reinterpret_cast<void**>(&originalPaint)},
-        {0x2ECC64,"\x48\x89\x5c\x24\x08\x48\x89\x6c\x24\x10\x48\x89\x74\x24\x18",15,reinterpret_cast<void*>(&Allocate),reinterpret_cast<void**>(&originalAllocate)},
-        {0x2F2708,"\x48\x8b\xc4\x48\x89\x58\x08\x4c\x89\x40\x18\x48\x89\x50\x10",15,reinterpret_cast<void*>(&Quad),reinterpret_cast<void**>(&originalQuad)},
-        {0x2F2E40,"\x48\x8b\xc4\x48\x89\x58\x18\x48\x89\x48\x08\x55\x56\x57",14,reinterpret_cast<void*>(&Triangles),reinterpret_cast<void**>(&originalTriangles)},
-        {0x2F3B10,"\x48\x8b\xc4\x48\x89\x58\x10\x55\x56\x57",10,reinterpret_cast<void*>(&Text),reinterpret_cast<void**>(&originalText)},
-        {0x2F5ADC,"\x48\x8b\xc4\x48\x89\x58\x08\x4c\x89\x40\x18\x48\x89\x50\x10",15,reinterpret_cast<void*>(&Composite),reinterpret_cast<void**>(&originalComposite)},
+        {0x54A0F8,"\x48\x89\x5c\x24\x10\x48\x89\x7c\x24\x20\x55\x48\x8b\xec",14,reinterpret_cast<void*>(&MappinPosition),reinterpret_cast<void**>(&originalMappinPosition)},
+        {0x2A4B18,"\x48\x8b\xc4\x48\x89\x58\x10\x48\x89\x70\x18\x57",12,reinterpret_cast<void*>(&Projection),reinterpret_cast<void**>(&originalProjection)},
+        {0x27F26C,"\x48\x8b\xc4\x48\x89\x58\x08\x48\x89\x70\x10\x48\x89\x78\x18",15,reinterpret_cast<void*>(&Paint),reinterpret_cast<void**>(&originalPaint)},
+        {0x28894C,"\x48\x8b\xc4\x48\x89\x58\x10\x48\x89\x68\x18\x48\x89\x70\x20",15,reinterpret_cast<void*>(&Allocate),reinterpret_cast<void**>(&originalAllocate)},
+        {0x28A064,"\x48\x8b\xc4\x48\x89\x58\x08\x4c\x89\x40\x18\x48\x89\x50\x10",15,reinterpret_cast<void*>(&Quad),reinterpret_cast<void**>(&originalQuad)},
+        {0x28A774,"\x48\x8b\xc4\x48\x89\x58\x18\x48\x89\x48\x08\x55\x56\x57",14,reinterpret_cast<void*>(&Triangles),reinterpret_cast<void**>(&originalTriangles)},
+        {0x22F63D0,"\x48\x8b\xc4\x53\x55\x56\x48\x81\xec\xd0\0\0\0\x48\x8d\x71\x50",17,reinterpret_cast<void*>(&Text),reinterpret_cast<void**>(&originalText)},
+        {0x1F4490,"\x48\x8b\xc4\x48\x89\x58\x08\x48\x89\x70\x10\x48\x89\x78\x20",15,reinterpret_cast<void*>(&Composite),reinterpret_cast<void**>(&originalComposite)},
     };
     for(const auto& h:hooks) if(std::memcmp(reinterpret_cast<void*>(base+h.rva),h.bytes,h.size)) {
         Log("[world-markers] signature mismatch at %llX; native placement retained\n",static_cast<unsigned long long>(h.rva));return false;

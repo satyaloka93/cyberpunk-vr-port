@@ -12,6 +12,7 @@
 #include <unordered_set>
 #include <vector>
 
+extern void Log(const char* fmt, ...);
 extern "C" int GetMenuMode();
 extern "C" std::atomic<uint32_t> CyberpunkVR_HiddenAreaEnabled;
 
@@ -330,7 +331,13 @@ ID3D12PipelineState* FixedTwin(Entry& e,const std::vector<uint8_t>& container,co
     std::lock_guard lock(e.mutex);
     if(e.fixedDone.load(std::memory_order_relaxed))return e.fixedTwin.load(std::memory_order_acquire);
     twin=e.create({container.data(),container.size()});
-    (twin?*g.built:*g.failed).fetch_add(1,std::memory_order_relaxed);
+    const auto attempt=(twin?*g.built:*g.failed).fetch_add(1,std::memory_order_relaxed);
+    if(g.built==&CyberpunkVR_AsymSsrPatchBuilt && attempt<8)
+        Log("[ssr-patch] pipeline %s; built=%u failed=%u loaded=%u\n",twin?"created":"FAILED",
+            g.built->load(),g.failed->load(),CyberpunkVR_AsymSsrPatchLoaded.load());
+    if(g.built==&CyberpunkVR_AsymFogPatchBuilt && attempt<8)
+        Log("[fog-patch] pipeline %s; built=%u failed=%u loaded=%u\n",twin?"created":"FAILED",
+            g.built->load(),g.failed->load(),CyberpunkVR_AsymFogPatchLoaded.load());
     e.fixedTwin.store(twin,std::memory_order_release);
     e.fixedDone.store(1,std::memory_order_release);
     return twin;
@@ -381,7 +388,9 @@ ID3D12PipelineState* BindFixed(Entry& e,const std::vector<uint8_t>& container,in
     if(!g.enabled->load(std::memory_order_relaxed))return pso;
     ID3D12PipelineState* twin=FixedTwin(e,container,g);
     if(!twin)return pso;
-    g.binds->fetch_add(1,std::memory_order_relaxed);
+    const auto previousBinds=g.binds->fetch_add(1,std::memory_order_relaxed);
+    if(group==1 && previousBinds==0)Log("[ssr-patch] first corrected reflection pipeline bound\n");
+    if(group==0 && previousBinds==0)Log("[fog-patch] first corrected fog pipeline bound\n");
     return twin;
 }
 ID3D12PipelineState* Fallback(Entry* e,ID3D12PipelineState* pso) {

@@ -1043,12 +1043,28 @@ local function updateWeapon(dt)
     pcall(weaponFrame, dt)
 end
 
+local handMuzzleError
+local function publishHandMuzzles(pl)
+    if pl then
+        local ts=Game.GetTransactionSystem()
+        for hand,slot in pairs({[0]='AttachmentSlots.WeaponLeft',[1]='AttachmentSlots.WeaponRight'}) do
+            local gun=ts:GetItemInSlot(pl,TweakDBID.new(slot))
+            if gun and gun:IsRanged() then
+                Game.SetVRHandMuzzle(hand,gun,gun:GetMuzzleSlotWorldTransform())
+            end
+        end
+    end
+end
 local cyberwareClock=0
 local function combatFrame(dt)
     local pl=Game.GetPlayer();local wpn=pl and pl:GetActiveWeapon()
     -- Runtime weapon hooks need a live player, not the front-end/loading
     -- scene while Codeware is still constructing script/resource types.
     if pl then pcall(updateWeapon,dt) end
+    local aimOk,aimErr=pcall(publishHandMuzzles,pl)
+    if not aimOk and handMuzzleError~=tostring(aimErr) then
+        handMuzzleError=tostring(aimErr);logAlways('hand muzzle publisher: %s',handMuzzleError)
+    end
     local kind=cyberware.kind(wpn,pl)
     Game.VRCyberwareSelect(cyberware.inputKind())
     cyberware.handEquipment(pl)

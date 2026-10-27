@@ -75,9 +75,9 @@ extern "C" void __fastcall OnFinalCameraCallback(float* rsiPtr) {
     // ---- READ BACK THE POSE THIS FRAME IS ACTUALLY BEING BUILT WITH ---------------------------
     //
     // Read-only, and it runs whatever the write path is set to -- it is a measurement of the
-    // engine, not a modification of it. rsiPtr is the render camera + 0x70, so rsiPtr + 4 floats
-    // is the camera quaternion at object+0x80 (verified live: for
-    // q = (-0.112416, 0.204406, -0.710105, 0.664354) the basis rows at +0xC0 matched R(q) with
+    // engine, not a modification of it. rsiPtr is the 2.50 render camera + 0xE0, so rsiPtr + 4 floats
+    // is the camera quaternion at object+0xF0 (2.31 live verification used +0x80: for
+    // q = (-0.112416, 0.204406, -0.710105, 0.664354) the basis rows at +0xC0 in 2.31 matched R(q) with
     // the Y/Z columns exchanged, to 1e-5). That quaternion is the one we composed and wrote into
     // the placed component, carried through the view producer, so finding it in the write ring
     // tells us exactly which XR sample is in this frame.
@@ -180,8 +180,8 @@ extern "C" void __fastcall OnFinalCameraCallback(float* rsiPtr) {
     // returned one of those two pointers. So a write here is seen by the matrix bake AND by
     // everything between -- which is why frame-open is the right place and stage 8 is not.
     //
-    // `rsiPtr` is the component + 0x70: int32 fixed-point position at [0..2], and the rotation
-    // rows the bake consumes at component +0xC0 == rsiPtr + 20 floats, which is exactly what
+    // `rsiPtr` is the 2.50 render camera + 0xE0: int32 fixed-point position at [0..2], and the rotation
+    // rows the bake consumes at camera +0x130 == rsiPtr + 20 floats, which is exactly what
     // ApplyFinalCameraOrientationFromQuat already writes. The machinery was here all along; it
     // was simply gated behind AER.
     //
@@ -320,10 +320,14 @@ extern "C" void __fastcall OnFinalCameraCallback(float* rsiPtr) {
 }
 
 bool InstallFinalCameraHook() {
-    const char* pattern = "\xF3\x44\x0F\x5E\x4E\x40\x49\x81\xC0\x20\x0F\x00\x00";
+    const char* pattern = "\xF3\x44\x0F\x5E\x4E\x40\x49\x81\xC0\x90\x10\x00\x00";
     const char* mask = "xxxxxxxxxxxxx";
     uint8_t* found = static_cast<uint8_t*>(FindPattern("Cyberpunk2077.exe", pattern, mask));
-    if (!found) return false;
+    // 2.50: the mapped PrepareSceneRendering caller passes the same transform
+    // block (now render-camera +0xE0) into 0x229B520. RSI-relative fields remain
+    // unchanged; the render context appended to R8 moved from 0xF20 to 0x1090.
+    const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    if (!found || reinterpret_cast<uintptr_t>(found) != base + 0x229B60F) return false;
 
     constexpr int replaceLen = 13; 
     void* tramp = AllocateTrampoline(found, 512);
@@ -343,11 +347,13 @@ bool InstallFinalCameraHook() {
     code[pos++] = 0x41; code[pos++] = 0x53; // push r11
     code[pos++] = 0x55; // push rbp
 
-    code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xEC; code[pos++] = 0x40; // sub rsp, 40h
+    code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xEC; code[pos++] = 0x60; // sub rsp, 60h
     code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x04; code[pos++] = 0x24; // movups [rsp+00h], xmm0
     code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x4C; code[pos++] = 0x24; code[pos++] = 0x10; // movups [rsp+10h], xmm1
     code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x54; code[pos++] = 0x24; code[pos++] = 0x20; // movups [rsp+20h], xmm2
     code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x5C; code[pos++] = 0x24; code[pos++] = 0x30; // movups [rsp+30h], xmm3
+    code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x64; code[pos++] = 0x24; code[pos++] = 0x40;
+    code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x6C; code[pos++] = 0x24; code[pos++] = 0x50;
 
     code[pos++] = 0x48; code[pos++] = 0x89; code[pos++] = 0xE5; // mov rbp, rsp
     code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xE4; code[pos++] = 0xF0; // and rsp, -16
@@ -365,7 +371,9 @@ bool InstallFinalCameraHook() {
     code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x4C; code[pos++] = 0x24; code[pos++] = 0x10; // movups xmm1, [rsp+10h]
     code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x54; code[pos++] = 0x24; code[pos++] = 0x20; // movups xmm2, [rsp+20h]
     code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x5C; code[pos++] = 0x24; code[pos++] = 0x30; // movups xmm3, [rsp+30h]
-    code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xC4; code[pos++] = 0x40; // add rsp, 40h
+    code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x64; code[pos++] = 0x24; code[pos++] = 0x40;
+    code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x6C; code[pos++] = 0x24; code[pos++] = 0x50;
+    code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xC4; code[pos++] = 0x60; // add rsp, 60h
 
     code[pos++] = 0x5D; // pop rbp
     code[pos++] = 0x41; code[pos++] = 0x5B; // pop r11
@@ -378,12 +386,9 @@ bool InstallFinalCameraHook() {
     code[pos++] = 0x9D; // popfq
 
     // Original instructions:
-    // divss xmm9, [rsi+40h]
-    code[pos++] = 0xF3; code[pos++] = 0x44; code[pos++] = 0x0F; code[pos++] = 0x5E; code[pos++] = 0x4E; code[pos++] = 0x40;
-    // add r8, 0F20h
-    code[pos++] = 0x49; code[pos++] = 0x81; code[pos++] = 0xC0; code[pos++] = 0x20; code[pos++] = 0x0F; code[pos++] = 0x00; code[pos++] = 0x00;
+    // Replay both verified, position-independent native instructions.
+    for (int i = 0; i < replaceLen; ++i) code[pos++] = found[i];
 
-    // jmp back
     code[pos++] = 0xE9;
     *reinterpret_cast<int32_t*>(code + pos) = static_cast<int32_t>((found + replaceLen) - (code + pos + 4));
     pos += 4;

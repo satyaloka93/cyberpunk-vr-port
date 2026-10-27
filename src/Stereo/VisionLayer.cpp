@@ -50,7 +50,7 @@ namespace detail {
 // WHO BINDS IT instead -- the target bound while CRenderNode_RenderVisionElements is on the
 // stack is the outline surface by construction, per view. That node is the sole writer, and its
 // draws are attributed correctly (the draw census sees it firing for both views).
-constexpr uint32_t VISION_ELEMENTS_RVA = 0x61FDE4;
+constexpr uint32_t VISION_ELEMENTS_RVA = 0x4262CC;
 // The outline layer is produced by a COMPUTE dispatch, not a draw -- which is why hanging the
 // detection off OMSetRenderTargets found nothing at all. In the capture:
 //     VRCAM  PipelineState_1213  Dispatch(306,320,1) -> UAV barrier on Resource_85137 (2444x2560)
@@ -89,7 +89,7 @@ thread_local UINT t_last_disp[3] = {0, 0, 0};
 // outright: CRenderNode_RenderVisionElements, the node the outline belongs to by its own name,
 // firing 1190 times for VRCAM against MAIN's 1191. It never appeared in the DRAW census because
 // it does not draw; it dispatches. Select by node, and the identification stops being a heuristic.
-extern "C" __declspec(dllexport) uint32_t CyberpunkVR_VisionNode = 0x61FDE4;
+extern "C" __declspec(dllexport) uint32_t CyberpunkVR_VisionNode = 0x4262CC;
 // The tally that FOUND that node. Report-only; the snapshot below does not need it.
 extern "C" __declspec(dllexport) int32_t CyberpunkVR_VisionMap = 0;
 // Ordinal of the full-size match inside that node. 0 -- measured, not assumed.

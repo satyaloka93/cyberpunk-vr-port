@@ -112,8 +112,8 @@ bool g_hud_batch_listed = false;
 // Note what is ABSENT from that table: the inventory's portrait. It is created as an RTV -- which
 // is why the descriptor test saw it -- but never bound through this path, so keying on the node
 // excludes it by construction rather than by another shape rule.
-extern "C" __declspec(dllexport) uint32_t CyberpunkVR_HudNodeRva  = 0x1F8928;
-extern "C" __declspec(dllexport) uint32_t CyberpunkVR_HudNodeRva2 = 0x20A264;
+extern "C" __declspec(dllexport) uint32_t CyberpunkVR_HudNodeRva  = 0x3E1B20;
+extern "C" __declspec(dllexport) uint32_t CyberpunkVR_HudNodeRva2 = 0x33D0AC;
 extern "C" __declspec(dllexport) int32_t  CyberpunkVR_HudByNode = 1;
 extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugHudNodeNames = 0;
 static std::atomic<bool> g_hud_node_named{false};
@@ -652,8 +652,8 @@ void hud_cb_rescan() {
     const uint8_t* found = (s_held && hud_cb_block_plausible(s_held, w, h)) ? s_held : nullptr;
     for (uint32_t i = 0; i < localN && !found; ++i) {
         const MappedUpload& m = local[i];
-        if (!m.ptr || m.size < 512) continue;
-        for (uint64_t off = 0; off + 512 <= m.size; off += 256) {
+        if (!m.ptr || m.size < 432) continue;
+        for (uint64_t off = 0; off + 432 <= m.size; off += 256) {
             if (hud_cb_block_plausible(m.ptr + off, w, h)) { found = m.ptr + off; break; }
         }
     }
@@ -688,7 +688,10 @@ void hud_cb_rescan() {
         g_hud_cb_copy = buf;
         g_hud_cb_copy_ptr = static_cast<uint8_t*>(mapped);
     }
-    memcpy(g_hud_cb_copy_ptr, found, 512);
+    // Native 2.50 DrawHUD uploads 0x1B0 bytes. The D3D12 allocation remains
+    // 512-byte aligned; do not read the adjacent 80 bytes in the upload ring.
+    memset(g_hud_cb_copy_ptr, 0, 512);
+    memcpy(g_hud_cb_copy_ptr, found, 432);
     // Take over even from an earlier capture: this buffer is ours, so it cannot be recycled by the
     // ring allocator under the shader, and the block was found by the full fingerprint. Only the
     // first hand-over logs; after that the copy above just refreshes the contents in place.
@@ -769,8 +772,11 @@ extern "C" __declspec(dllexport) ID3D12Resource* CyberpunkVR_GetHudConstantBuffe
 // anything.
 // ================================================================================================
 
-extern "C" __declspec(dllexport) uint32_t CyberpunkVR_HudCapWord   = 11;      // qword index
-extern "C" __declspec(dllexport) uint64_t CyberpunkVR_HudCapBits   = 0x80;    // bit 7 (=711)
+// 32 selects the engine's registered HUD requirement. Category indices are
+// assigned at startup (2.50 initializer 176200); old word11/bit7 is not an ABI.
+// Values 0..31 retain the diagnostic single-word override.
+extern "C" __declspec(dllexport) uint32_t CyberpunkVR_HudCapWord   = 32;
+extern "C" __declspec(dllexport) uint64_t CyberpunkVR_HudCapBits   = 0x80;
 extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugHudCapGrants = 0;
 
 // Idempotent OR into the view's own capability mask. Deliberately NOT saved/restored: a
@@ -779,9 +785,23 @@ void hud_grant_capability(uintptr_t ctx) {
     if (!CyberpunkVR_HudGrantCap || !ctx) return;
     const uint32_t w = CyberpunkVR_HudCapWord;
     const uint64_t bits = CyberpunkVR_HudCapBits;
-    if (w >= 32 || !bits) return;
+    if (w > 32 || (w < 32 && !bits) || (w == 32 && !g_exe_base)) return;
     __try {
-        uint64_t* slot = reinterpret_cast<uint64_t*>(ctx + 6304) + w;
+        if (w == 32) {
+            auto* have = reinterpret_cast<uint64_t*>(ctx + 0x2688);
+            const auto* required = reinterpret_cast<const uint64_t*>(
+                g_exe_base + HUD_REQUIRED_MASK_RVA + 8);
+            bool changed = false;
+            for (uint32_t i = 0; i < 32; ++i) {
+                const uint64_t merged = have[i] | required[i];
+                changed |= merged != have[i];
+                have[i] = merged;
+            }
+            if (changed) CVR_DIAGNOSTIC(InterlockedIncrement64(reinterpret_cast<volatile LONG64*>(
+                &CyberpunkVR_DebugHudCapGrants)));
+            return;
+        }
+        uint64_t* slot = reinterpret_cast<uint64_t*>(ctx + 0x2688) + w;
         if ((*slot & bits) != bits) {
             *slot |= bits;
             CVR_DIAGNOSTIC(InterlockedIncrement64(reinterpret_cast<volatile LONG64*>(
@@ -794,12 +814,12 @@ void hud_dump_capability_mask(uint8_t* work_context, bool vrcam) {
     if (vrcam ? g_hud_mask_dumped_vrcam : g_hud_mask_dumped_main) return;
     if (!work_context || !g_exe_base) return;
     if (!g_hud_viewdata_get) {
-        g_hud_viewdata_get = reinterpret_cast<HudViewDataFn>(g_exe_base + 0x1ED930);
+        g_hud_viewdata_get = reinterpret_cast<HudViewDataFn>(g_exe_base + 0x33C248);
     }
     __try {
         const uintptr_t ctx = *reinterpret_cast<uintptr_t*>(work_context + 0x18);
         if (!ctx) return;
-        const uint64_t* viewBits = reinterpret_cast<const uint64_t*>(ctx + 6304);
+        const uint64_t* viewBits = reinterpret_cast<const uint64_t*>(ctx + 0x2688);
         const uint64_t* required =
             reinterpret_cast<const uint64_t*>(g_exe_base + HUD_REQUIRED_MASK_RVA + 8);
         if (vrcam) g_hud_mask_dumped_vrcam = true; else g_hud_mask_dumped_main = true;

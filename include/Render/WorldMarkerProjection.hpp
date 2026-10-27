@@ -4,6 +4,8 @@
 #include <cstdint>
 
 namespace cvr::markers {
+inline constexpr size_t InkCameraPrefixBytes=848;
+inline constexpr size_t InkCameraMaxBytes=864;
 // Flat ink vertices normally have z=0. Carry a bounded inverse forward depth
 // through the shared UI mesh; the replacement VS removes it before projection.
 inline float EncodeDepth(float inverseDepth) {
@@ -50,7 +52,9 @@ inline bool IsInkMatrix(const float* m, float w, float h) {
 }
 // Identify the game's flat ink camera, never a perspective/shadow/world camera.
 inline bool IsInkCamera(const void* data, size_t bytes) {
-    if (!data || bytes != 848) return false;
+    // 2.50's shared camera producer appends a native per-view tail. A distinct
+    // ink producer may retain the legacy size; require the same exact matrix.
+    if (!data || (bytes != InkCameraPrefixBytes && bytes != InkCameraMaxBytes)) return false;
     const auto* p=static_cast<const float*>(data);
     const float w=p[188],h=p[189];
     if (!(w>=640 && w<=16384 && h>=360 && h<=16384)) return false;
@@ -65,7 +69,8 @@ inline bool IsInkCamera(const void* data, size_t bytes) {
 inline int ShiftInkCamera(float* out, const float* source, size_t bytes, float squeeze, float shiftX, float shiftY) {
     const float w=source[188],h=source[189];
     int copies=0;
-    for(size_t m=0;m+16<=bytes/sizeof(float);m+=16) {
+    const size_t prefix=bytes<InkCameraPrefixBytes?bytes:InkCameraPrefixBytes;
+    for(size_t m=0;m+16<=prefix/sizeof(float);m+=16) {
         if(m && !IsInkMatrix(source+m,w,h)) continue;
         out[m]*=squeeze;out[m+3]=out[m+3]*squeeze+shiftX;out[m+7]+=shiftY;
         if(m) ++copies;

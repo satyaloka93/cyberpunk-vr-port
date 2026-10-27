@@ -126,6 +126,7 @@ extern "C" void __fastcall OnPatchCameraCallback(float* cameraState, void* owner
     g_patchCameraHits++;
 
     const int camKind = ClassifyPatchCameraOwner(ownerState);
+    if (camKind == 1) SyncAdsWeaponZoomForActiveCamera(ownerState);
     if(camKind>=1 && camKind<=3)
         cvr::camera::InvalidatePoseAddress(reinterpret_cast<uintptr_t>(ownerState)+0xE0);
     CameraOwnerWorld cameraOwnerBefore{};
@@ -1430,12 +1431,18 @@ extern "C" void __fastcall OnPatchCameraCallback(float* cameraState, void* owner
 }
 
 bool InstallPatchCameraHook() {
-    const char* pattern = "\x0F\x11\x02\x80\xBE\xB1\x00\x00\x00\x00\x89\x45\x88";
-    const char* mask = "xxxxxxxxxxxxx";
+    const char* pattern = "\x0F\x11\x87\xF0\x00\x00\x00\xE8\x74\x00\x00\x00\x44\x8A\xC0";
+    const char* mask = "xxxxxxxxxxxxxxx";
     uint8_t* found = static_cast<uint8_t*>(FindPattern("Cyberpunk2077.exe", pattern, mask));
-    if (!found) return false;
+    // 2.50 UpdateWorldTransforms (0x32A844, exact linker identity) now calls
+    // the extracted transform writer at 0x93A638. It stores world position at
+    // owner+0xE0 and rotation at +0xF0 before testing the same +0xB0/B1 dirty
+    // flags and notifying the same vtable slot +0x240. RDI is owner; RSI is
+    // owner+0xF0. See aob-migration/PatchTransform-new-93a638.asm.
+    const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    if (!found || reinterpret_cast<uintptr_t>(found) != base + 0x93A6CC) return false;
 
-    constexpr int replaceLen = 10; // 0F 11 02 80 BE B1 00 00 00 00
+    constexpr int replaceLen = 7; // movups [rdi+0xF0],xmm0; following CALL stays native
     void* tramp = AllocateTrampoline(found, 512);
     if (!tramp) return false;
 
@@ -1447,7 +1454,7 @@ bool InstallPatchCameraHook() {
     // It used to sit after the telemetry block; it is first now because everything below it may be
     // skipped and this may not. xmm0 is not touched by it, so the telemetry that used to be taken
     // before the store records the same four floats after it.
-    code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x02;   // movups [rdx], xmm0
+    for (int i = 0; i < replaceLen; ++i) code[pos++] = found[i];
 
     // ---- 2. THE FAST REJECT: THE WHOLE POINT OF THIS TRAMPOLINE --------------------------------
     //
@@ -1458,35 +1465,34 @@ bool InstallPatchCameraHook() {
     // xmm spill, a call into C++, and three SEH-guarded reads once inside it -- ran for all of them
     // and was then thrown away by `camKind == 0`.
     //
-    // What replaces it is four compares. rsi is the owner -- the very value the callback classifies
+    // What replaces it is four compares. rdi is the owner -- the very value the callback classifies
     // -- and both cameras are already latched by the slow path, so recognising them here needs no
     // name read, no memory of ours to write and no exception frame:
     //
     //     armed == 0            -> slow, always. This is the bootstrap and the recovery.
-    //     rsi == owner[0/1/2]   -> slow. It IS a camera, and the C++ does every check it did before.
+    //     rdi == owner[0/1/2]   -> slow. It IS a camera, and the C++ does every check it did before.
     //     otherwise             -> restore rax, run the relocated tail, leave. Nine instructions,
     //                              no store, no call, no SEH.
     //
-    // ORDER MATTERS AND IS NOT NEGOTIABLE: the relocated `cmp byte [rsi+0B1h], 0` has to be the LAST
-    // flag-setting instruction before either jump back, because the game consumes those flags after
-    // site+10 (the `mov [rbp-78h], eax` there leaves them alone). Both exits below end with it, and
-    // `pop rax` does not disturb them either.
+    // Preserve incoming flags across the fast reject too. Unlike 2.31, the
+    // dirty-flag comparison is in the following native leaf CALL, which remains
+    // in place. No old CMP or stack-frame-relative instruction is replayed.
+    code[pos++] = 0x9C;                                            // pushfq
     code[pos++] = 0x50;                                            // push rax
     WriteMovRaxImm64(code, pos, reinterpret_cast<uintptr_t>(&g_patchFast));
     int slowJz[4] = {};
     int slowJzN = 0;
     code[pos++] = 0x83; code[pos++] = 0x78; code[pos++] = 0x18; code[pos++] = 0x00;  // cmp dword [rax+18h],0
     code[pos++] = 0x74; slowJz[slowJzN++] = pos++;                 // jz Lslow  (not armed)
-    code[pos++] = 0x48; code[pos++] = 0x3B; code[pos++] = 0x30;                      // cmp rsi,[rax]
+    code[pos++] = 0x48; code[pos++] = 0x3B; code[pos++] = 0x38;                      // cmp rdi,[rax]
     code[pos++] = 0x74; slowJz[slowJzN++] = pos++;                 // jz Lslow  (MAIN)
-    code[pos++] = 0x48; code[pos++] = 0x3B; code[pos++] = 0x70; code[pos++] = 0x08;  // cmp rsi,[rax+8]
+    code[pos++] = 0x48; code[pos++] = 0x3B; code[pos++] = 0x78; code[pos++] = 0x08;  // cmp rdi,[rax+8]
     code[pos++] = 0x74; slowJz[slowJzN++] = pos++;                 // jz Lslow  (VRCAM)
-    code[pos++] = 0x48; code[pos++] = 0x3B; code[pos++] = 0x70; code[pos++] = 0x10;  // cmp rsi,[rax+10h]
+    code[pos++] = 0x48; code[pos++] = 0x3B; code[pos++] = 0x78; code[pos++] = 0x10;  // cmp rdi,[rax+10h]
     code[pos++] = 0x74; slowJz[slowJzN++] = pos++;                 // jz Lslow  (device camera)
     // Not one of ours: rax back, the engine's own tail, and out.
     code[pos++] = 0x58;                                            // pop rax
-    code[pos++] = 0x80; code[pos++] = 0xBE; code[pos++] = 0xB1; code[pos++] = 0x00;
-    code[pos++] = 0x00; code[pos++] = 0x00; code[pos++] = 0x00;    // cmp byte [rsi+0B1h], 0
+    code[pos++] = 0x9D;                                            // popfq
     code[pos++] = 0xE9;                                            // jmp back to site+replaceLen
     *reinterpret_cast<int32_t*>(code + pos) =
         static_cast<int32_t>((found + replaceLen) - (code + pos + 4));
@@ -1514,10 +1520,11 @@ bool InstallPatchCameraHook() {
     // rax is still the pushed one, so it is reused here without a second push/pop pair.
     WriteMovRaxImm64(code, pos, reinterpret_cast<uintptr_t>(g_telemetry) + kPatchTelemetryOffset);
     code[pos++] = 0xFF; code[pos++] = 0x00; // inc dword ptr [rax+0]
-    code[pos++] = 0x48; code[pos++] = 0x89; code[pos++] = 0x50; code[pos++] = 0x08; // mov [rax+8], rdx
-    code[pos++] = 0x48; code[pos++] = 0x89; code[pos++] = 0x70; code[pos++] = 0x10; // mov [rax+10h], rsi
+    code[pos++] = 0x48; code[pos++] = 0x89; code[pos++] = 0x70; code[pos++] = 0x08; // mov [rax+8], rsi (rotation)
+    code[pos++] = 0x48; code[pos++] = 0x89; code[pos++] = 0x78; code[pos++] = 0x10; // mov [rax+10h], rdi (owner)
     code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x40; code[pos++] = 0x18; // movups [rax+18h], xmm0
     code[pos++] = 0x58; // pop rax
+    code[pos++] = 0x9D; // popfq (before the full callback save)
 
     // --- CALL C++ CALLBACK ---
     // Save volatile registers
@@ -1531,21 +1538,23 @@ bool InstallPatchCameraHook() {
     code[pos++] = 0x41; code[pos++] = 0x53; // push r11
     code[pos++] = 0x55; // push rbp
 
-    // Save xmm0-xmm3
-    code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xEC; code[pos++] = 0x40; // sub rsp, 40h
+    // Save xmm0-xmm5
+    code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xEC; code[pos++] = 0x60; // sub rsp, 60h
     code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x04; code[pos++] = 0x24; // movups [rsp+00h], xmm0
     code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x4C; code[pos++] = 0x24; code[pos++] = 0x10; // movups [rsp+10h], xmm1
     code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x54; code[pos++] = 0x24; code[pos++] = 0x20; // movups [rsp+20h], xmm2
     code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x5C; code[pos++] = 0x24; code[pos++] = 0x30; // movups [rsp+30h], xmm3
+    code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x64; code[pos++] = 0x24; code[pos++] = 0x40;
+    code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x6C; code[pos++] = 0x24; code[pos++] = 0x50;
 
     // Align stack and allocate shadow space
     code[pos++] = 0x48; code[pos++] = 0x89; code[pos++] = 0xE5; // mov rbp, rsp
     code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xE4; code[pos++] = 0xF0; // and rsp, -16 (0xFFFFFFFFFFFFFFF0)
     code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xEC; code[pos++] = 0x20; // sub rsp, 20h
 
-    // Set arg1 (rcx) = rdx (camera state), arg2 (rdx) = rsi (owner state)
-    code[pos++] = 0x48; code[pos++] = 0x89; code[pos++] = 0xD1; // mov rcx, rdx
-    code[pos++] = 0x48; code[pos++] = 0x89; code[pos++] = 0xF2; // mov rdx, rsi
+    // Set arg1 (rcx) = rsi (rotation state), arg2 (rdx) = rdi (owner)
+    code[pos++] = 0x48; code[pos++] = 0x89; code[pos++] = 0xF1; // mov rcx, rsi
+    code[pos++] = 0x48; code[pos++] = 0x89; code[pos++] = 0xFA; // mov rdx, rdi
 
     // Call OnPatchCameraCallback
     WriteMovRaxImm64(code, pos, reinterpret_cast<uintptr_t>(OnPatchCameraCallback));
@@ -1554,12 +1563,14 @@ bool InstallPatchCameraHook() {
     // Restore unaligned stack pointer
     code[pos++] = 0x48; code[pos++] = 0x89; code[pos++] = 0xEC; // mov rsp, rbp
 
-    // Restore xmm0-xmm3
+    // Restore xmm0-xmm5
     code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x04; code[pos++] = 0x24; // movups xmm0, [rsp+00h]
     code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x4C; code[pos++] = 0x24; code[pos++] = 0x10; // movups xmm1, [rsp+10h]
     code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x54; code[pos++] = 0x24; code[pos++] = 0x20; // movups xmm2, [rsp+20h]
     code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x5C; code[pos++] = 0x24; code[pos++] = 0x30; // movups xmm3, [rsp+30h]
-    code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xC4; code[pos++] = 0x40; // add rsp, 40h
+    code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x64; code[pos++] = 0x24; code[pos++] = 0x40;
+    code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x6C; code[pos++] = 0x24; code[pos++] = 0x50;
+    code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xC4; code[pos++] = 0x60; // add rsp, 60h
 
     // Restore volatile registers
     code[pos++] = 0x5D; // pop rbp
@@ -1571,10 +1582,6 @@ bool InstallPatchCameraHook() {
     code[pos++] = 0x59; // pop rcx
     code[pos++] = 0x58; // pop rax
     code[pos++] = 0x9D; // popfq
-
-    // End original instruction block
-    code[pos++] = 0x80; code[pos++] = 0xBE; code[pos++] = 0xB1; code[pos++] = 0x00;
-    code[pos++] = 0x00; code[pos++] = 0x00; code[pos++] = 0x00; // cmp byte ptr [rsi+0B1h], 0
 
     // jmp back
     code[pos++] = 0xE9;

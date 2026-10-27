@@ -63,7 +63,7 @@ uintptr_t __fastcall Launch(uintptr_t owner,uintptr_t weapon,const float* positi
     uintptr_t slots{},cannon{};uint32_t size{};
     if(reinterpret_cast<uintptr_t>(_ReturnAddress())!=exe+cvr::camera::sites::VehicleWeaponTargetedLaunchCall.rva+5 ||
        !IsPlayerTank(owner) || !position || !forward || !target ||
-       !ReadU64Safe(owner+0xB00,&slots) || !slots || !ReadU32Safe(owner+0xB0C,&size) || size<1 || size>8 ||
+       !ReadU64Safe(owner+0xB20,&slots) || !slots || !ReadU32Safe(owner+0xB2C,&size) || size<1 || size>8 ||
        !ReadU64Safe(slots+0x10,&cannon) || cannon!=weapon)
         return originalLaunch(owner,weapon,position,forward,target,spread,count);
     // The native cannon launch otherwise constructs its direction provider from
@@ -111,7 +111,7 @@ void Record(Context& frame,uintptr_t owner) {
     std::memcpy(next.position,frame.pose.position,12);std::memcpy(next.rotation,frame.pose.rotation,16);
     if(frame.positionWritten && frame.rotationWritten) {
         next.reason=0;
-        ReadFloatArraySafe(reinterpret_cast<const float*>(owner+0xB14),next.target,3);
+        ReadFloatArraySafe(reinterpret_cast<const float*>(owner+0xB34),next.target,3);
     }
     std::lock_guard lock(debugMutex);
     next.calls=CyberpunkVR_PanzerWeaponAimDebug.calls+1;
@@ -134,7 +134,7 @@ uintptr_t __fastcall Update(uintptr_t owner) {
     } while(false);
     Scope scope(apply?&frame:nullptr);
     // The native function performs its original collision query and updates the
-    // weapon target at +B14, including the missile salvo's original latch/spread.
+    // weapon target at +B34, including the missile salvo's original latch/spread.
     // Only its two camera getter results change; no shared camera is modified.
     const auto result=originalUpdate(owner);
     CVR_DIAGNOSTIC(Record(frame,owner));

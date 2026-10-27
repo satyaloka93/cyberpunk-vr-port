@@ -312,26 +312,15 @@ float GripRiseFactor() {
 
 }  // namespace
 
-// Called from the shot bracket in src/Hooks/WeaponAim.cpp, once per round that actually leaves the
-// barrel -- so burst and full-auto stack by construction, exactly as a real one does.
+// Called once by the player's right-hand ShootEvents after the game executes a shot.
+// Ray/provider queries no longer generate impulses, so no timing-based deduplication
+// is needed (it could discard legitimate rapid shots).
 extern "C" void RecoilOnShot() {
-    // ONE ROUND, ONE IMPULSE -- and the site cannot promise that on its own.
-    //
-    // The provider slot is called several times per round (measured: 42 calls for 8 rounds fired), and
-    // the muzzle sequence only separates FRAMES, so a round whose calls straddle two frames still
-    // counted twice -- 14 impulses for those same 8 rounds. A refractory window is what actually
-    // matches a round: 40 ms is longer than the 2-3 frames one round's calls span at 72 fps, and
-    // shorter than the gap between rounds even at 1500 rpm.
-    static double s_lastMs = 0.0;
     const double now = NowMs();
-    if (s_lastMs > 0.0 && (now - s_lastMs) < 40.0) return;
-    s_lastMs = now;
     g_lastShotMs = now;
     g_shotSeq.fetch_add(1, std::memory_order_release);
-    // ...and the round is felt: this is the one place that already knows a round left the barrel,
-    // so the controller gets one envelope per round, by weapon class, in the trigger hand -- and a
-    // weaker copy in the support hand when it is really on the gun.
-    cvr::haptics::Shot(CyberpunkVR_WeaponClass, CyberpunkVR_TwoHandActive != 0);
+    // Per-hand ShootEvents owns haptics; this function owns right-hand pose recoil.
+
 }
 
 // Advance both springs to now. Called once per fresh solve, before either arm is built.

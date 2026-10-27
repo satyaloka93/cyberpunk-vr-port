@@ -104,17 +104,17 @@ void NativeBounds(){
     {auto memory=Fixture();memory.Ids({Id(2,0,0x123)});Rejected(memory,resource_uses::Failure::Slot);}
     {auto memory=Fixture();memory.Ids({Id(65535,0,0x123)});Rejected(memory,resource_uses::Failure::Slot);}
     {auto memory=Fixture();memory.Ids({Id(0,2,0x123)});Rejected(memory,resource_uses::Failure::Index);}
-    {auto memory=Fixture();memory.Put(Pool+resource_uses::DeclarationCount,uint32_t(501));Rejected(memory,resource_uses::Failure::Limit);}
+    {auto memory=Fixture();memory.Put(Pool+resource_uses::DeclarationCount,resource_uses::MaxDeclarations+1);Rejected(memory,resource_uses::Failure::Limit);}
     {auto memory=Fixture();memory.Ids({Id(0,0,0x124)});Rejected(memory,resource_uses::Failure::Declaration);}
     {auto memory=Fixture();memory.Ids({Id(0,0,0x123),Id(0,0,0x124)});Rejected(memory,resource_uses::Failure::Declaration);}
     {auto memory=Fixture();memory.values.at(Pool+resource_uses::Declarations)[1]=1;Rejected(memory,resource_uses::Failure::Declaration);}
     {auto memory=Fixture();memory.values.erase(Pool+resource_uses::Declarations);Rejected(memory,resource_uses::Failure::Declaration);}
     {auto memory=Fixture();memory.values.at(Pool+resource_uses::UseIds).pop_back();Rejected(memory,resource_uses::Failure::Ids);}
     {auto memory=Fixture();auto graph=Graph(1);graph.nodes[0].bytes[0x1d]=219;
-        memory.Put(Pool+219*resource_uses::SlotStride+resource_uses::DeclarationCount,uint32_t(500));
+        memory.Put(Pool+219*resource_uses::SlotStride+resource_uses::DeclarationCount,resource_uses::MaxDeclarations);
         std::array<uint8_t,48> row{};row[0]=1;row[1]=219;Set(row,4,uint32_t(123));
-        memory.Put(Pool+219*resource_uses::SlotStride+resource_uses::Declarations+499*48,row);
-        memory.Ids({Id(219,499,123)});resource_uses::Snapshot out;Require(Capture(memory,out,graph));}
+        memory.Put(Pool+219*resource_uses::SlotStride+resource_uses::Declarations+(resource_uses::MaxDeclarations-1)*48,row);
+        memory.Ids({Id(219,resource_uses::MaxDeclarations-1,123)});resource_uses::Snapshot out;Require(Capture(memory,out,graph));}
 }
 void AuxAndBoundaries(){
     auto memory=Fixture();memory.Put(Pool+resource_uses::AuxCount,uint32_t(2));

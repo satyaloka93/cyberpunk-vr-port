@@ -76,22 +76,21 @@ extern "C" void __fastcall OnDLSSResCallback(void* dlssPtr) {
 }
 
 bool InstallDLSSResHook() {
-    const char* pattern = "\x4C\x89\x73\x30\x89\x43\x04\x89\x43\x18\x89\x43\x1C";
-    const char* mask = "xxxxxxxxxxxxx";
+    // 2.50: the old final-height store split into several branches. Observe the
+    // common epilogue instead, after all size stores. The same symbol identity
+    // maps 2.31's 0x4E42A0 to 0x425054; RBX remains the first (size-state) argument.
+    // 0x425762: lea r11,[rsp+B0h]; mov rbx,[r11+48h]; movaps xmm6,[r11-10h].
+    const char* pattern = "\x4C\x8D\x9C\x24\xB0\x00\x00\x00\x49\x8B\x5B\x48\x41\x0F\x28\x73\xF0\x41\x0F\x28\x7B\xE0\x45\x0F\x28\x43\xD0\x45\x0F\x28\x4B\xC0\x45\x0F\x28\x53\xB0\x45\x0F\x28\x5B\xA0\x49\x8B\xE3\x41";
+    const char* mask = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
     uint8_t* found = static_cast<uint8_t*>(FindPattern("Cyberpunk2077.exe", pattern, mask));
-    if (!found) return false;
+    if (!found || found != reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr)) + 0x425762) return false;
 
-    constexpr int replaceLen = 13;
+    constexpr int replaceLen = 8; // one complete, non-relative LEA; replay after restoring RSP
     void* tramp = AllocateTrampoline(found, 512);
     if (!tramp) return false;
 
     uint8_t* code = static_cast<uint8_t*>(tramp);
     int pos = 0;
-
-    code[pos++] = 0x4C; code[pos++] = 0x89; code[pos++] = 0x73; code[pos++] = 0x30;
-    code[pos++] = 0x89; code[pos++] = 0x43; code[pos++] = 0x04;
-    code[pos++] = 0x89; code[pos++] = 0x43; code[pos++] = 0x18;
-    code[pos++] = 0x89; code[pos++] = 0x43; code[pos++] = 0x1C;
 
     code[pos++] = 0x9C;
     code[pos++] = 0x50;
@@ -103,11 +102,13 @@ bool InstallDLSSResHook() {
     code[pos++] = 0x41; code[pos++] = 0x53;
     code[pos++] = 0x55;
 
-    code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xEC; code[pos++] = 0x40;
+    code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xEC; code[pos++] = 0x60;
     code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x04; code[pos++] = 0x24;
     code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x4C; code[pos++] = 0x24; code[pos++] = 0x10;
     code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x54; code[pos++] = 0x24; code[pos++] = 0x20;
     code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x5C; code[pos++] = 0x24; code[pos++] = 0x30;
+    code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x64; code[pos++] = 0x24; code[pos++] = 0x40;
+    code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x6C; code[pos++] = 0x24; code[pos++] = 0x50;
 
     code[pos++] = 0x48; code[pos++] = 0x89; code[pos++] = 0xE5;
     code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xE4; code[pos++] = 0xF0;
@@ -123,7 +124,9 @@ bool InstallDLSSResHook() {
     code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x4C; code[pos++] = 0x24; code[pos++] = 0x10;
     code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x54; code[pos++] = 0x24; code[pos++] = 0x20;
     code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x5C; code[pos++] = 0x24; code[pos++] = 0x30;
-    code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xC4; code[pos++] = 0x40;
+    code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x64; code[pos++] = 0x24; code[pos++] = 0x40;
+    code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x6C; code[pos++] = 0x24; code[pos++] = 0x50;
+    code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xC4; code[pos++] = 0x60;
 
     code[pos++] = 0x5D;
     code[pos++] = 0x41; code[pos++] = 0x5B;
@@ -135,6 +138,8 @@ bool InstallDLSSResHook() {
     code[pos++] = 0x58;
     code[pos++] = 0x9D;
 
+    // Replay with the original stack pointer, before the native epilogue uses R11.
+    for (int i = 0; i < replaceLen; ++i) code[pos++] = found[i];
     code[pos++] = 0xE9;
     *reinterpret_cast<int32_t*>(code + pos) = static_cast<int32_t>((found + replaceLen) - (code + pos + 4));
     pos += 4;

@@ -49,8 +49,8 @@ uintptr_t __fastcall Target(uintptr_t model) {
         if(!ReadU64Safe(model+0xE0,&owner)||!owner || owner!=MountedVehicle())break;
         frame.owner=owner;frame.reason=3;
         if(!cvr::camera::ReadExternalMainDirection(frame.target,&frame.poseId))break;
-        // CP2077 2.31: FixedUpdate_PreSolve calls this native TPP camera helper,
-        // then compares chassis forward with model+E8/EC/F0 at +261D4B2..515.
+        // CP2077 2.50: FixedUpdate_PreSolve calls2BB99F8 at2BB9839.
+        // Model owner+E0 and planar target+E8/EC/F0 remain unchanged.
         // Replace its planar target only. The native yaw controller, turning
         // speed, forces, acceleration and camera orbit remain owned by the game.
         CVR_DIAGNOSTIC(ReadFloatArraySafe(reinterpret_cast<const float*>(model+0xE8),frame.nativeTarget,3));

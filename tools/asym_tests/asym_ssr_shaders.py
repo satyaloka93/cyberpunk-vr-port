@@ -70,15 +70,15 @@ def cbv_handle(ir, register):
     return found[0]
 
 
-def shift_reconstruction(ir):
+def shift_reconstruction(ir, tangent_row=17):
     b6 = cbv_handle(ir, 6)
     tangents = {}                     # value -> axis (0 = x from .z, 1 = y from .w)
-    for load in re.findall(LOAD.format(h=re.escape(b6), row=17), ir):
+    for load in re.findall(LOAD.format(h=re.escape(b6), row=tangent_row), ir):
         for comp, axis in ((2, 0), (3, 1)):
             for v in re.findall(r'(?m)^  (%\d+) = extractvalue %dx\.types\.CBufRet\.f32 ' + re.escape(load) + ', %d$' % comp, ir):
                 tangents[v] = axis
     if not tangents:
-        raise ValueError('no b6 row 17 tangent')
+        raise ValueError('no b6 row %d tangent' % tangent_row)
     # a value that IS a tangent, or a product with one (z * tangent)
     scaled = dict(tangents)
     for v, axis in tangents.items():

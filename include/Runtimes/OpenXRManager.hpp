@@ -939,6 +939,8 @@ private:
     XrAction m_menuButtonAction = XR_NULL_HANDLE;        // Bool, global menu/start action
     XrAction m_psvr2TriangleTouchAction = XR_NULL_HANDLE;
     XrAction m_hapticAction = XR_NULL_HANDLE;            // Vibration OUTPUT, per hand
+    bool m_hapticBindingLogged = false;
+    int m_hapticLastResult[2] = {123456, 123456};
     cvr::input::SteamFrameActions m_steamFrameActions{};
     XrPath m_handPaths[2] = { XR_NULL_PATH, XR_NULL_PATH };
     XrSpace m_handSpaces[2] = { XR_NULL_HANDLE, XR_NULL_HANDLE };

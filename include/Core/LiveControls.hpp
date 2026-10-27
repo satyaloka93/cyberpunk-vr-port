@@ -82,8 +82,11 @@ struct LiveControls {
     // camera is already in the right place (which is why the two automatic bakes are dropped there --
     // see LocateCamera), and a standing offset then carries the view off the seat.
     volatile float xrVehHeadOffsetX;
+    volatile float xrBikeHeadOffsetX;
     volatile float xrVehHeadOffsetY;
+    volatile float xrBikeHeadOffsetY;
     volatile float xrVehHeadOffsetZ;
+    volatile float xrBikeHeadOffsetZ;
     // ---- DRIVING: hands on the wheel (iPowerTech, 425d4262 + 51861118) --------------------------
     // None of these is published to a shared slot: the consumers (src/Anim/WheelGrab.cpp and the
     // XInput merge) are in this DLL and read them straight from here.

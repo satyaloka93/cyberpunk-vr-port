@@ -127,14 +127,16 @@ bool Matches(uintptr_t rva,const char* hex) {
 }
 bool Install() {
     s_base=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
-    if(!s_base || !Matches(0x57B714,"48895C240848897C241055488BEC4883EC70") ||
-       !Matches(0xD455B0,"40534883EC300F2805C3B84A02498BD80F1102F30F1089A4000000")) {
+    // Exact 2.50 counterparts; all non-relocation instructions and accessed
+    // fields in both native bodies match 2.31 (including chained cold code).
+    if(!s_base || !Matches(0xA99838,"48895C240848897C241055488BEC4883EC70") ||
+       !Matches(0xE3C3A0,"40534883EC300F2805F3F39702498BD80F1102F30F1089A4000000")) {
         Log("BodyHeading: native ABI mismatch; hooks not installed.\n");return false;
     }
     const auto init=MH_Initialize();
     if(init!=MH_OK && init!=MH_ERROR_ALREADY_INITIALIZED)return false;
-    void* apply=reinterpret_cast<void*>(s_base+0x57B714);
-    void* motion=reinterpret_cast<void*>(s_base+0xD455B0);
+    void* apply=reinterpret_cast<void*>(s_base+0xA99838);
+    void* motion=reinterpret_cast<void*>(s_base+0xE3C3A0);
     if(MH_CreateHook(apply,reinterpret_cast<void*>(&Apply),reinterpret_cast<void**>(&s_apply))!=MH_OK)return false;
     if(MH_CreateHook(motion,reinterpret_cast<void*>(&Motion),reinterpret_cast<void**>(&s_motion))!=MH_OK) {
         MH_RemoveHook(apply);return false;
@@ -143,7 +145,7 @@ bool Install() {
         MH_DisableHook(apply);MH_DisableHook(motion);MH_RemoveHook(apply);MH_RemoveHook(motion);return false;
     }
     CyberpunkVR_BodyHeadingHooksReady=1;
-    Log("BodyHeading: native body motion source and commit observer installed (2.31).\n");return true;
+    Log("BodyHeading: native body motion source and commit observer installed (2.50).\n");return true;
 }
 }
 

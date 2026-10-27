@@ -341,6 +341,7 @@ extern "C" uint32_t GetRenderedCameraSeq();
 float GetDesiredHalfIpd();
 float GetWorldScale();
 int ClassifyPatchCameraOwner(void* ownerState);
+void SyncAdsWeaponZoomForActiveCamera(void* ownerState);
 // Is the player looking through a device camera right now -- a surveillance camera it has taken over.
 // True for 300 ms after the last write to such a camera component, so it arms and clears itself with no
 // polling and no script call (the periodic poll runs on the worker thread, where the script VM is not

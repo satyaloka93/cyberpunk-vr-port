@@ -53,14 +53,18 @@ public final func CycleWeapon(cycleNext: Bool, onlyCheck: Bool) -> ItemID {
 }
 
 @wrapMethod(EquipmentSystemPlayerData)
-public final func GetItemIDfromEquipmentManipulationAction(action: EquipmentManipulationAction) -> ItemID {
+public final func GetItemIDfromEquipmentManipulationAction(action: EquipmentManipulationAction, currentState: SSlotActiveItems) -> SSlotActiveItems {
   let item: ItemID;
+  let state: SSlotActiveItems;
   let player = this.m_owner as PlayerPuppet;
+  // 2.50 resolves both hands together. Route our wheel action through the
+  // native next-item path so slot assignment and secondary weapons stay native.
   if Equals(action, EquipmentManipulationAction.CycleWeaponWheelItem) && ItemID.IsValid(this.VrInstalledLauncher()) {
-    item = this.CycleWeapon(true, false);
+    state = wrappedMethod(EquipmentManipulationAction.CycleNextWeaponWheelItem, currentState);
   } else {
-    item = wrappedMethod(action);
+    state = wrappedMethod(action, currentState);
   };
+  item = ItemID.IsValid(state.leftHandItem) && WeaponObject.IsOfType(state.leftHandItem, gamedataItemType.Cyb_Launcher) ? state.leftHandItem : state.rightHandItem;
   if this.vrCyberwareHandlingRequest && IsDefined(player) && ItemID.IsValid(item) && !this.IsEquipmentManipulationAnUnequipRequest(action) {
     if WeaponObject.IsOfType(item, gamedataItemType.Cyb_Launcher) {
       player.vrLauncherSelectedAsWeapon = NotEquals(action, EquipmentManipulationAction.RequestLeftHandCyberware);
@@ -72,7 +76,7 @@ public final func GetItemIDfromEquipmentManipulationAction(action: EquipmentMani
       };
     };
   };
-  return item;
+  return state;
 }
 
 @addMethod(LeftHandCyberwareEquipDecisions)

@@ -59,6 +59,7 @@ extern "C" void CarryLeftBlend(float* handRot);
 extern "C" void CarryReturnRight(float* target, float* hm, const float* wristR);
 extern "C" void CarryRecordLeft(const float* pos, const float* rot);
 #include <MinHook.h>
+#include <cstring>
 
 // The [vrik*] log channel: Log lives in Core, the flag in OpenXRPresent.cpp. Declared here rather
 // than pulled in through a header, because this file is the pose path and has no business seeing
@@ -2145,7 +2146,12 @@ if (g_VRRecordFK) {
 bool InstallAnimPoseHook() {
     HMODULE hMod = GetModuleHandleA("Cyberpunk2077.exe");
     if (!hMod) return false;
-    void* target = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(hMod) + 0x17DDB4);
+    // 2.50 exact shipped identity; the paired 128-instruction body retains
+    // the pose buffer/rig layout and four-argument calling contract.
+    void* target = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(hMod) + 0x1B3C08);
+    constexpr uint8_t expected[]{0x48,0x89,0x5C,0x24,0x08,0x4C,0x89,0x44,0x24,0x18,
+        0x55,0x56,0x57,0x41,0x54,0x41,0x55,0x41,0x56,0x41,0x57};
+    if(std::memcmp(target,expected,sizeof(expected))!=0)return false;
     MH_Initialize(); // no-op if already initialized
     if (MH_CreateHook(target, &Hooked_AnimPoseApply, reinterpret_cast<void**>(&OriginalAnimPose)) != MH_OK)
         return false;

@@ -391,15 +391,15 @@ void ApplySettingsResolutionOverride(uintptr_t settingsPtr) {
         }
     }
 
-    // ONLY THE TARGET. +0x84/+0x88 is the resolution the game is asked for, +0x18/+0x1C the one it
+    // ONLY THE TARGET. 2.50 +0xB0/+0xB4 is the requested resolution; +0x18/+0x1C the one it
     // runs at. The settings tick (sub_14021BF9C) applies a change only when sub_14021C584 -- the
     // function this hook sits in -- sees the two differ; the apply (sub_14087320C) resizes and then
     // copies target into active itself. Writing BOTH told the game it was already there: whenever its
     // renderer had been built at the settings resolution before our first write (a startup race, lost
     // after the display layout changed, 2026-10-15) or after the world map's suspension, MAIN stayed at
     // 1024x768 for good while the swapchain and the second view ran at the launcher's size.
-    WriteU32Safe(settingsPtr + 0x84, forcedWidth);
-    WriteU32Safe(settingsPtr + 0x88, forcedHeight);
+    WriteU32Safe(settingsPtr + 0xB0, forcedWidth);
+    WriteU32Safe(settingsPtr + 0xB4, forcedHeight);
 }
 
 // Only the SETTINGS override is left. The DLSS one was removed 2026-08-03: it was AER-era,
@@ -1546,6 +1546,7 @@ void InitializeMountedVehicleCache() {
 
 uint64_t g_locateCameraHits = 0;
 bool g_isInVehicle = false;
+std::atomic<bool> g_isOnBike{false};
 std::atomic<bool> g_isDriving{false};
 std::atomic<int> g_vehicleState{-1};
 std::atomic<int> g_sceneTier{0};

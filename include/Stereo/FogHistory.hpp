@@ -4,7 +4,11 @@
 #include <cstring>
 
 namespace cvr::stereo {
-using FogCamera = std::array<float,212>;
+// 2.50 native camera producer (0x228C9A0) uploads 0x360 bytes. The
+// existing projection/view/jitter fields keep their indices; the appended
+// native 16-byte tail belongs to this eye and must survive history borrowing.
+using FogCamera = std::array<float,216>;
+inline constexpr size_t kFogPrepareConstantsBytes=0x9D0;
 using FogProjection = std::array<float,16>;
 using FogGrid = std::array<float,16>;
 inline bool ReadFogGrid(const void* constants,FogGrid& out) {

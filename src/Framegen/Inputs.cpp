@@ -143,19 +143,19 @@ bool ReadTag(const sl::ResourceTag* p,InputTag* out) {
 }
 
 bool ReadRenderFrameIndex(uint32_t* index) {
-    // Native renderer frame clock: incremented at RVA294055 and read by
-    // temporal rendering passes (e.g. RVA788104). The per-view +1A0 token
-    // used by Streamline is permanently zero for this RTT view, so cannot
+    // 2.50 native renderer frame clock: read at RVA40A1B2 by the graph
+    // executor. The per-view token used by Streamline stays zero for this
+    // RTT view, so cannot
     // identify its texture history. Read the common clock; never modify it.
     __try {
         if(!index || !cvr::detail::g_exe_base)return false;
         const auto renderer=*reinterpret_cast<const uint8_t* const*>(cvr::detail::g_exe_base+cvr::detail::RENDERER_GLOBAL_RVA);
-        if(!renderer)return false;*index=*reinterpret_cast<const uint32_t*>(renderer+0x4CA4);return true;
+        if(!renderer)return false;*index=*reinterpret_cast<const uint32_t*>(renderer+0x4CC8);return true;
     } __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
 }
 namespace {
 bool NativeCamera(void* state,unsigned view,CameraData* result) {
-    // The exact source fields copied by native0x78933C into sl::Constants.
+    // The exact source fields copied by 2.50 native0x7EEA54 into sl::Constants.
     // Its last-frame gate skips slSetConstants when VRCAM's native token
     // stays at zero, though staging already contains that view's camera.
     __try {
@@ -170,32 +170,35 @@ bool NativeCamera(void* state,unsigned view,CameraData* result) {
         cvr::projection::ViewWindow window{};
         if(cvr::projection::ViewWindowOf(int(view)-1,&window)){c.shift[0]=window.shiftX;c.shift[1]=window.shiftY;}
         c.inverted=p[0x1F1]!=0;c.cameraMotion=p[0x1F3]!=0;c.reset=p[0x1F0]==0;c.infinite=std::isinf(c.farPlane);
-        c.motion3d=*reinterpret_cast<const uint8_t*>(reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr))+0x32F8598)!=0;
+        c.motion3d=*reinterpret_cast<const uint8_t*>(reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr))+0x3914B80)!=0;
         if(!ValidCamera(c))return false;*result=c;return true;
     } __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
 }
 }
 namespace {
 bool ViewCamera(const void* view,CameraData* result) {
-    // The fields SetStreamlineConstants (native0x788A9C) copies from the view into the block above,
+    // The fields SetStreamlineConstants (2.50 native0x7EE0BC) copies from the view into the block above,
     // read at their source: Streamline is not initialised as an upscaler everywhere (AMD), and the
     // native consumers must not depend on it.
     __try {
         const auto* v=static_cast<const uint8_t*>(view);if(!v)return false;CameraData c{};
-        const auto* fixed=reinterpret_cast<const int32_t*>(v+0x70);           // position, 1/131072 m units
+        const auto* fixed=reinterpret_cast<const int32_t*>(v+0xE0);           // position, 1/131072 m units
         for(unsigned i=0;i<3;++i)c.position[i]=float(fixed[i])*(1.0f/131072.0f);
-        std::memcpy(c.right,v+0x2C0,12);std::memcpy(c.forward,v+0x2D0,12);std::memcpy(c.up,v+0x2E0,12);
-        std::memcpy(&c.nearPlane,v+0xB0,4);std::memcpy(&c.farPlane,v+0xB4,4);std::memcpy(&c.aspect,v+0x98,4);
-        std::memcpy(c.shift,v+0xA0,8);                                          // the descriptor's own centre shift
+        std::memcpy(c.right,v+0x330,12);std::memcpy(c.forward,v+0x340,12);std::memcpy(c.up,v+0x350,12);
+        std::memcpy(&c.nearPlane,v+0x120,4);std::memcpy(&c.farPlane,v+0x124,4);std::memcpy(&c.aspect,v+0x108,4);
+        std::memcpy(c.shift,v+0x110,8);                                          // the descriptor's own centre shift
         if(!std::isfinite(c.shift[0]) || !std::isfinite(c.shift[1]) || std::abs(c.shift[0])>=1 || std::abs(c.shift[1])>=1)c.shift[0]=c.shift[1]=0;
-        float degrees{},jitterY{};std::memcpy(&degrees,v+0x90,4);std::memcpy(&jitterY,v+0x3E4,4);
+        float degrees{},jitterY{};std::memcpy(&degrees,v+0x100,4);std::memcpy(&jitterY,v+0x454,4);
         c.verticalFov=degrees*(3.14159265f/180.0f);                           // what FSR 3 is given too
-        std::memcpy(&c.jitter[0],v+0x3E0,4);c.jitter[1]=-jitterY;
+        std::memcpy(&c.jitter[0],v+0x450,4);c.jitter[1]=-jitterY;
         const auto base=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
-        std::memcpy(&c.motionScale[0],reinterpret_cast<const void*>(base+0x3464DC0),4);
-        std::memcpy(&c.motionScale[1],reinterpret_cast<const void*>(base+0x3464E10),4);
-        c.reset=v[0xEF0]==0;c.inverted=true;c.cameraMotion=true;c.infinite=std::isinf(c.farPlane);
-        c.motion3d=*reinterpret_cast<const uint8_t*>(base+0x32F8598)!=0;
+        // Exact RIP targets at7EE1EC/7EE1FC; motion3d is read at7EEC68.
+        std::memcpy(&c.motionScale[0],reinterpret_cast<const void*>(base+0x3BFA1E0),4);
+        std::memcpy(&c.motionScale[1],reinterpret_cast<const void*>(base+0x3BFA230),4);
+        // Native producer calls history getter22704C0 with category/index zero,
+        // which returns view+1060. This is not a descriptor-relative field.
+        c.reset=v[0x1060]==0;c.inverted=true;c.cameraMotion=true;c.infinite=std::isinf(c.farPlane);
+        c.motion3d=*reinterpret_cast<const uint8_t*>(base+0x3914B80)!=0;
         if(!ValidCamera(c))return false;*result=c;return true;
     } __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
 }

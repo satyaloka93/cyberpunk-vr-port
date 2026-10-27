@@ -3,6 +3,8 @@
 // No synthetic held input and no repeated equip requests are used.
 
 @addField(PlayerPuppet)
+public let vrLauncherConsumeSwitchRelease: Bool;
+@addField(PlayerPuppet)
 public let vrLauncherKeepOpen: Bool;
 @addField(PlayerPuppet)
 public let vrLauncherSelectedAsWeapon: Bool;
@@ -127,6 +129,9 @@ public class VrLauncherReadyEvents extends LeftHandCyberwareEventsTransition {
   }
   public func OnExit(stateContext: ref<StateContext>, scriptInterface: ref<StateGameScriptInterface>) -> Void {
     if (scriptInterface.executionOwner as PlayerPuppet).vrLauncherKeepOpen && scriptInterface.IsActionJustPressed(n"SwitchItem") {
+      // We consume the press here. The upper-body SwitchItem tap on release
+      // must not cycle again after the next gun has already equipped.
+      (scriptInterface.executionOwner as PlayerPuppet).vrLauncherConsumeSwitchRelease = true;
       this.SendEquipmentSystemWeaponManipulationRequest(scriptInterface, EquipmentManipulationAction.CycleNextWeaponWheelItem, gameEquipAnimationType.Default);
     };
     stateContext.RemovePermanentBoolParameter(n"vrLauncherInputArmed");

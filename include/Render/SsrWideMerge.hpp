@@ -4,13 +4,18 @@
 // Screen-space reflections of the two eyes as ONE wide display. src/Render/SsrWideMerge.cpp has the
 // reasoning; tools/asym_tests/asym_ssr_shaders.py (wide_merge) is the shader side of the same contract.
 namespace cvr::ssr_merge {
-// The trace's CB_SSRRaymarch (b6, node ScreenSpaceReflections) as the engine uploads it: 372 bytes used,
-// sent as 384. The port grows it by three rows (24-26) that only the twins read.
-constexpr uint32_t kEngineBlockBytes=384;
-constexpr uint32_t kBlockBytes=432;
-constexpr uint32_t kCameraRow=24;           // xyz camera world position, w kTag
-constexpr uint32_t kStoreRow=25;            // x stamp, y width, z height, w store capacity (entries)
-constexpr uint32_t kModeRow=26;             // x mode, y depth tolerance (relative)
+// Cyberpunk 2.50 uploads 656 bytes for both SSR and SSPR (native builder RVA 0x2273960).
+// Preserve all eight matrices and native scalar/stereo fields; only the twins read the appended rows.
+constexpr uint32_t kEngineBlockBytes=656;
+constexpr uint32_t kBlockBytes=704;
+constexpr uint32_t kPixelStepRow=32;        // zw = 2 / width, 2 / height (native offsets 0x208/0x20c)
+constexpr uint32_t kCameraRow=41;           // xyz camera world position, w kTag
+constexpr uint32_t kStoreRow=42;            // x stamp, y width, z height, w store capacity (entries)
+constexpr uint32_t kModeRow=43;             // x mode, y depth tolerance (relative)
+static_assert(kCameraRow*16==kEngineBlockBytes && (kModeRow+1)*16==kBlockBytes);
+// Reconstruction-only 2.50 shader patches do not consume the appended merge metadata yet.
+// Enable only alongside matching 704-byte SSR/SSPR wide-merge shader twins.
+constexpr bool kWideMergeShaderContractReady=false;
 constexpr uint32_t kTag=0x41734D31u;        // asym_ssr_shaders.py MERGE_MAGIC
 constexpr uint32_t kHeaderEntries=52;       // entries before the pixels, asym_ssr_shaders.py HEADER
 constexpr uint32_t kEntryBytes=12;          // uint3: colour, half depth | confidence, stamp (asym_ssr_shaders.py STRIDE)
@@ -18,7 +23,7 @@ constexpr uint32_t kEntryBytes=12;          // uint3: colour, half depth | confi
 // u0+19 and used by no pass of the node: its tile classifier binds u0-u3 after the block is uploaded.
 constexpr uint32_t kOwnSlot=16,kOtherSlot=17;
 // The traces that share the block and the stores' layout, each with a store pair of its own:
-// ScreenSpaceReflections (0x157B24) and ScreenSpacePlanarReflections (0x78A6B8).
+// ScreenSpaceReflections (0x77A100) and ScreenSpacePlanarReflections (0x77D450) in 2.50.
 enum Channel : int { kReflections=0, kPlanar=1, kConeAo=2, kShadowMask=3, kExposure=4, kChannels=5 };
 // Called with the engine's block in the channel's node. True with the grown block in `out` (kBlockBytes)
 // and the channel's two stores bound as u16 (this eye's) and u17 (the other eye's) on the node's command

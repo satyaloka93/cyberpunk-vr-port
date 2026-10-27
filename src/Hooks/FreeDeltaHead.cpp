@@ -20,6 +20,9 @@ bool InstallFreeDeltaHeadHook() {
     uint8_t* found = static_cast<uint8_t*>(FindPattern("Cyberpunk2077.exe", pattern, mask));
     if (!found) return false;
 
+    // Exact 2.50 site; matching bytes elsewhere must not activate this hook.
+    if (found != reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr)) + 0x2F51E1) return false;
+
     constexpr int replaceLen = 8; // movss [rsi+0CCCh],xmm3
     void* tramp = AllocateTrampoline(found, 256);
     if (!tramp) return false;
@@ -32,13 +35,15 @@ bool InstallFreeDeltaHeadHook() {
     code[pos++] = 0xF3; code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x9E;
     code[pos++] = 0xCC; code[pos++] = 0x0C; code[pos++] = 0x00; code[pos++] = 0x00;
 
-    // Telemetry after the original store.
+    // Telemetry must preserve ZF: the untouched next instruction is JE.
+    code[pos++] = 0x9C; // pushfq
     code[pos++] = 0x50;
     WriteMovRaxImm64(code, pos, reinterpret_cast<uintptr_t>(g_telemetry) + kFreeDeltaTelemetryOffset);
     code[pos++] = 0xFF; code[pos++] = 0x00;
     code[pos++] = 0x48; code[pos++] = 0x89; code[pos++] = 0x70; code[pos++] = 0x08;
     code[pos++] = 0xF3; code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x58; code[pos++] = 0x10; // movss [rax+10h],xmm3
     code[pos++] = 0x58;
+    code[pos++] = 0x9D; // popfq
 
     code[pos++] = 0xE9;
     *reinterpret_cast<int32_t*>(code + pos) = static_cast<int32_t>((found + replaceLen) - (code + pos + 4));

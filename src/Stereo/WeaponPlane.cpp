@@ -92,7 +92,7 @@ namespace {
 
 constexpr uint8_t kOrigJz = 0x74;   // jz short
 constexpr uint8_t kForced = 0xEB;   // jmp short -- same operand, same length
-constexpr uint8_t kRel8   = 0x1E;   // the displacement to the scene branch, checked as a guard
+constexpr uint8_t kRel8   = 0x2B;   // 2.50: 0x33E0B8 -> scene branch 0x33E0E5
 
 int32_t s_applied = 0;              // what this file has actually written, not what was asked for
 

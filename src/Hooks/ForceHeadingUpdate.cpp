@@ -20,6 +20,9 @@ bool InstallForceHeadingUpdateHook() {
     uint8_t* found = static_cast<uint8_t*>(FindPattern("Cyberpunk2077.exe", pattern, mask));
     if (!found) return false;
 
+    // Exact 2.50 site; matching bytes elsewhere must not activate this hook.
+    if (found != reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr)) + 0xA93C8E) return false;
+
     constexpr int replaceLen = 15;
     void* tramp = AllocateTrampoline(found, 256);
     if (!tramp) return false;
@@ -32,8 +35,12 @@ bool InstallForceHeadingUpdateHook() {
 
     code[pos++] = 0x48; code[pos++] = 0x8B; code[pos++] = 0xCB; // mov rcx,rbx
     code[pos++] = 0xF3; code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x4F; code[pos++] = 0x1C; // movss xmm1,[rdi+1C]
-    WriteMovRaxImm64(code, pos, callTarget);
-    code[pos++] = 0xFF; code[pos++] = 0xD0; // call rax
+    // Relocate the native call without changing its live input/output RAX.
+    code[pos++] = 0xFF; code[pos++] = 0x15; // call qword ptr [rip+2]
+    code[pos++] = 0x02; code[pos++] = 0x00; code[pos++] = 0x00; code[pos++] = 0x00;
+    code[pos++] = 0xEB; code[pos++] = 0x08; // return skips the inline pointer
+    *reinterpret_cast<uint64_t*>(code + pos) = callTarget;
+    pos += 8;
     code[pos++] = 0x30; code[pos++] = 0xC0; // xor al,al
 
     code[pos++] = 0xE9;

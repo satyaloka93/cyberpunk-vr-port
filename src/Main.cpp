@@ -34,6 +34,7 @@
 
 #include "Runtimes/OpenXRManager.hpp"
 #include "Overlay/ImGuiOverlay.hpp"
+#include "Core/GameCompatibility.hpp"
 
 extern void Log(const char* fmt, ...);
 
@@ -75,8 +76,10 @@ RED4EXT_C_EXPORT bool RED4EXT_CALL Main(RED4ext::v1::PluginHandle, RED4ext::v1::
                                         const RED4ext::v1::Sdk*) {
     switch (reason) {
     case RED4ext::v1::EMainReason::Load: {
-        if (g_started.exchange(true)) break;
+        if (g_started.load()) break;
         InitRuntimePaths();
+        if (!cvr::compatibility::CheckGameCompatibility()) return false;
+        if (g_started.exchange(true)) break;
         Log("=== CyberpunkVRPort red4ext plugin loaded (no dxgi proxy) ===\n");
         // FIRST, and deliberately: registering the RTTI callbacks is cheap and has a window. The
         // graphics init below waits on the game's device and can take seconds; doing it first is
@@ -97,6 +100,8 @@ RED4EXT_C_EXPORT bool RED4EXT_CALL Main(RED4ext::v1::PluginHandle, RED4ext::v1::
         break;
     }
     case RED4ext::v1::EMainReason::Unload:
+        // A rejected load never constructed the runtime or installed hooks.
+        if (!g_started.exchange(false)) break;
         CyberpunkVR_CloseOwnedExecution();
         // RED4ext unloads the plugin BEFORE the process finishes tearing down the graphics runtime,
         // and nothing here used to take that window (dabinn, TofuExpress fbe336fa). Stopping OpenXR
@@ -114,10 +119,10 @@ RED4EXT_C_EXPORT bool RED4EXT_CALL Main(RED4ext::v1::PluginHandle, RED4ext::v1::
 RED4EXT_C_EXPORT void RED4EXT_CALL Query(RED4ext::v1::PluginInfo* info) {
     info->name = L"CyberpunkVRPort";
     info->author = L"CyberpunkVRPort";
-    info->version = RED4EXT_V1_SEMVER(0, 1, 7);
-    // Matches the loader actually installed here (runtime 1.29.1), which predates API v1 and
-    // skips plugins that declare it outright -- the testbed plugin had to do the same.
-    info->runtime = RED4EXT_V1_RUNTIME_VERSION_INDEPENDENT;
+    info->version = RED4EXT_V1_SEMVER(0, 1, 8);
+    // Compiled SDK layouts target 2.50. Main also checks the independently
+    // verified private hook profile; the SDK-only migration is not deployable.
+    info->runtime = RED4EXT_V1_RUNTIME_VERSION_2_50;
     info->sdk = RED4EXT_V1_SDK_VERSION_1_0_0_COMPAT_0_5_0;
 }
 

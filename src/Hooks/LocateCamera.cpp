@@ -42,6 +42,7 @@
 #include <RED4ext/Scripting/Utils.hpp>
 #include <RED4ext/Scripting/Natives/ScriptGameInstance.hpp>
 #include <RED4ext/Scripting/Functions.hpp>
+#include <RED4ext/Scripting/Natives/Generated/game/CameraComponent.hpp>
 
 #include <windows.h>
 #include <atomic>
@@ -90,18 +91,25 @@ extern "C" void GetAdsCameraTelemetryUiState(AdsCameraTelemetryUiState* outState
     *outState = g_adsCameraTelemetry;
 }
 
-// BOTH EYES, and that is a correction to the original rather than a copy of it. The fields are on
-// the CAMERA OBJECT, and this port has two of them -- MAIN's and VRCAM's, classified apart by the
-// PatchCamera owner test. Forcing the weapon layer's magnification on MAIN alone would leave the
-// second eye rendering the weapon at the vanilla zoom, i.e. the gun a different size in each eye
-// while aiming. On a flat screen that failure mode does not exist; in a headset it is the worst kind,
-// because the two images cannot be fused and the brain picks one.
+// Only gameCameraComponent owns the weapon zoom pair. VRCAM is an
+// entRenderToTextureCameraComponent: +0x280 is its environment resource token,
+// NOT a float. An empty token passed the old float plausibility check, so aiming
+// wrote 1.0/1.0 into it and crashed the next RTT preparation (2.50 crash154533).
+// Require the reflected class before reading, writing OR restoring the pair.
 static void SyncAdsWeaponZoomOneCamera(uintptr_t camObj, bool aiming, bool prevAiming,
                                        uintptr_t* savedCam, float* savedWeight, float* savedValue,
                                        bool* saved) {
-    if (!camObj) return;
-    const uintptr_t weightAddr = camObj + 0x280;
-    const uintptr_t valueAddr  = camObj + 0x284;
+    uint64_t vtable = 0;
+    if (!camObj || !ReadU64Safe(camObj, &vtable) || !vtable) return;
+    static auto* cameraClass = RED4ext::CRTTISystem::Get()->GetClass("gameCameraComponent");
+    auto* type = reinterpret_cast<RED4ext::ISerializable*>(camObj)->GetType();
+    if (!cameraClass || !type || !type->IsA(cameraClass)) {
+        *saved = false;
+        *savedCam = 0;
+        return;
+    }
+    const uintptr_t weightAddr = camObj + offsetof(RED4ext::game::CameraComponent, zoomWeaponOverrideWeight);
+    const uintptr_t valueAddr = camObj + offsetof(RED4ext::game::CameraComponent, zoomWeaponOverrideValue);
 
     if (aiming) {
         // Capture the engine's own pair once per aim-in, so leaving ADS can put back exactly what
@@ -145,27 +153,20 @@ static void SyncAdsWeaponZoomOneCamera(uintptr_t camObj, bool aiming, bool prevA
     }
 }
 
-static void SyncAdsWeaponZoomToWorld() {
-    static uintptr_t s_savedCam[2] = {0, 0};
-    static float s_savedWeight[2] = {0.0f, 0.0f};
-    static float s_savedValue[2] = {1.0f, 1.0f};
-    static bool  s_saved[2] = {false, false};
-    static bool  s_prevAiming = false;
-
-    // The sight zoom magnifies the world the same way aiming does (NativeFunctions: SetVRSightZoom).
+// Called only with the component currently executing the engine's camera update.
+// Never dereference the raw g_camObj* caches here: they can outlive a component
+// during save loading (crash155237 had a cleared vtable in the cached object).
+void SyncAdsWeaponZoomForActiveCamera(void* ownerState) {
+    static std::mutex mutex;
+    std::lock_guard lock(mutex);
+    static uintptr_t savedCam = 0;
+    static float savedWeight = 0.0f, savedValue = 1.0f;
+    static bool saved = false, prevAiming = false;
     const bool aiming = g_isAiming || CyberpunkVR_SightZoom != 0;
-    if (!CyberpunkVR_AdsWeaponZoomSync) { s_prevAiming = aiming; return; }
-
-    const uintptr_t cams[2] = { g_camObjMain.load(std::memory_order_acquire),
-                                g_camObjVrcam.load(std::memory_order_acquire) };
-    // Per-camera saved state, because the two objects can be latched at different times and can hold
-    // different vanilla values -- restoring one eye's pair into the other would be a fresh bug.
-    for (int i = 0; i < 2; ++i) {
-        SyncAdsWeaponZoomOneCamera(cams[i], aiming, s_prevAiming,
-                                   &s_savedCam[i], &s_savedWeight[i], &s_savedValue[i],
-                                   &s_saved[i]);
-    }
-    s_prevAiming = aiming;
+    if (!CyberpunkVR_AdsWeaponZoomSync) { prevAiming = aiming; return; }
+    SyncAdsWeaponZoomOneCamera(reinterpret_cast<uintptr_t>(ownerState), aiming, prevAiming,
+                              &savedCam, &savedWeight, &savedValue, &saved);
+    prevAiming = aiming;
 }
 
 // The second eye's transform pushed through the engine's own notify -- see the note at the call site
@@ -255,6 +256,7 @@ void RefreshPlayerCameraState() {
 
             g_isInVehicle=false;
             bool mountedCar=false;
+            bool onBike=false;
             uintptr_t mountedIdentity=0;
             if (playerHandle && g_mountedVehicleProp) {
                 auto mountedVehicle = g_mountedVehicleProp->GetValue<RED4ext::WeakHandle<RED4ext::IScriptable>>(playerHandle.instance);
@@ -264,8 +266,13 @@ void RefreshPlayerCameraState() {
                 if(mounted) {
                     static const auto* carClass=RED4ext::CRTTISystem::Get()->GetClass("vehicleCarBaseObject");
                     mountedCar=carClass && mounted->GetType()->IsA(carClass);
+                    const RED4ext::CName bikeClass("vehicleBikeBaseObject");
+                    for(auto* cls=mounted->GetType();cls;cls=cls->parent) {
+                        if(cls->name==bikeClass){onBike=true;break;}
+                    }
                 }
             }
+            g_isOnBike.store(onBike,std::memory_order_relaxed);
             cvr::anim::WheelSetMountedCar(mountedCar);
             s_mountedVehicleIdentity.store(mountedIdentity,std::memory_order_release);
 
@@ -394,8 +401,6 @@ extern "C" void __fastcall OnLocateCameraCallback(float* rbxPtr, float xmm0_val)
             return;
         }
     }
-
-    SyncAdsWeaponZoomToWorld();
 
     RefreshPlayerCameraState();
 
@@ -982,8 +987,12 @@ extern "C" void __fastcall OnLocateCameraCallback(float* rbxPtr, float xmm0_val)
         // consistent with) sees one number and they cannot drift apart.
         float vehOff[3] = { 0.0f, 0.0f, 0.0f };
         if (allowGameCameraTranslation && g_isInVehicle) {
-            const auto active=cvr::camera::ActiveVehicleCameraOffset(
+            const auto selected=cvr::camera::SelectVehicleCameraOffset(
                 {g_liveControls.xrVehHeadOffsetX,g_liveControls.xrVehHeadOffsetY,g_liveControls.xrVehHeadOffsetZ},
+                {g_liveControls.xrBikeHeadOffsetX,g_liveControls.xrBikeHeadOffsetY,g_liveControls.xrBikeHeadOffsetZ},
+                g_isOnBike.load(std::memory_order_relaxed));
+            const auto active=cvr::camera::ActiveVehicleCameraOffset(
+                selected,
                 cvr::anim::IsPassengerWindowCombat(g_vehicleState.load(std::memory_order_relaxed)));
             vehOff[0]=active.x;vehOff[1]=active.y;vehOff[2]=active.z;
         }
@@ -1550,6 +1559,9 @@ bool InstallLocateCameraHook() {
     uint8_t* found = static_cast<uint8_t*>(FindPattern("Cyberpunk2077.exe", pattern, mask));
     if (!found) return false;
 
+    // Exact 2.50 site; matching bytes elsewhere must not activate this hook.
+    if (found != reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr)) + 0x5FC357) return false;
+
     constexpr int replaceLen = 10; 
     void* tramp = AllocateTrampoline(found, 512);
     if (!tramp) return false;
@@ -1568,11 +1580,13 @@ bool InstallLocateCameraHook() {
     code[pos++] = 0x41; code[pos++] = 0x53; // push r11
     code[pos++] = 0x55; // push rbp
 
-    code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xEC; code[pos++] = 0x40; // sub rsp, 40h
+    code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xEC; code[pos++] = 0x60; // sub rsp, 60h
     code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x04; code[pos++] = 0x24; // movups [rsp+00h], xmm0
     code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x4C; code[pos++] = 0x24; code[pos++] = 0x10; // movups [rsp+10h], xmm1
     code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x54; code[pos++] = 0x24; code[pos++] = 0x20; // movups [rsp+20h], xmm2
     code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x5C; code[pos++] = 0x24; code[pos++] = 0x30; // movups [rsp+30h], xmm3
+    code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x64; code[pos++] = 0x24; code[pos++] = 0x40; // xmm4
+    code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x6C; code[pos++] = 0x24; code[pos++] = 0x50; // xmm5
 
     code[pos++] = 0x48; code[pos++] = 0x89; code[pos++] = 0xE5; // mov rbp, rsp
     code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xE4; code[pos++] = 0xF0; // and rsp, -16
@@ -1592,7 +1606,9 @@ bool InstallLocateCameraHook() {
     code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x4C; code[pos++] = 0x24; code[pos++] = 0x10; // movups xmm1, [rsp+10h]
     code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x54; code[pos++] = 0x24; code[pos++] = 0x20; // movups xmm2, [rsp+20h]
     code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x5C; code[pos++] = 0x24; code[pos++] = 0x30; // movups xmm3, [rsp+30h]
-    code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xC4; code[pos++] = 0x40; // add rsp, 40h
+    code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x64; code[pos++] = 0x24; code[pos++] = 0x40; // xmm4
+    code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x6C; code[pos++] = 0x24; code[pos++] = 0x50; // xmm5
+    code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xC4; code[pos++] = 0x60; // add rsp, 60h
 
     code[pos++] = 0x5D; // pop rbp
     code[pos++] = 0x41; code[pos++] = 0x5B; // pop r11

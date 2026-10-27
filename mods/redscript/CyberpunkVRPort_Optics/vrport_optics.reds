@@ -59,7 +59,7 @@ public func VRIsSmartSniper(weapon: ref<WeaponObject>) -> Bool {
 // their native zoom feature. Optical magnification belongs to the lens view.
 @wrapMethod(ZoomTransition)
 protected final func SendZoomAnimFeatureData(stateContext: ref<StateContext>, scriptInterface: ref<StateGameScriptInterface>) -> Void {
-  let weapon: ref<WeaponObject> = DefaultTransition.GetActiveWeapon(scriptInterface);
+  let weapon: ref<WeaponObject> = GameObject.GetActiveWeapon(scriptInterface.executionOwner);
   let feature: ref<AnimFeature_Zoom>;
   let worldFOV: Float;
   if !VRPhysicalOpticsEnabled() || !IsDefined(scriptInterface.executionOwner as PlayerPuppet) ||

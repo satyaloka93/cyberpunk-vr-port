@@ -163,19 +163,19 @@ std::atomic<uint32_t> g_prof_ord_vrcam{0};
 // (CapGrant 2) did turn them on.
 // struct RenderMaskEntry now lives in Stereo/StereoInternal.hpp: FrameGraph.cpp reads this table.
 const RenderMaskEntry kRenderMasks[] = {
-    { "DistantLights",       0x3487D70 },   // bit 0 -- the unlit lamps           [on by default]
-    { "AutoGrass",           0x34880A0 },   // bit 1 -- terrain scatter + its cascade
-    { "Foliage",             0x3487F90 },   // bit 2
-    { "Decals",              0x3487B50 },   // bit 3
-    { "Terrain",             0x3487E80 },   // bit 4
-    { "EnvProbes",           0x34881B0 },   // bit 5
-    { "Emissive",            0x34882C0 },   // bit 6
-    { "LightChannels",       0x34883D0 },   // bit 7
-    { "Fog",                 0x34884E0 },   // bit 8
-    { "Lights",              0x3487C60 },   // bit 9
-    { "ClearLighting",       0x3488700 },   // bit 10
-    { "GameplayPostProcess", 0x3487930 },   // bit 11 -- scanner/focus tint etc  [on by default]
-    { "HUD",                 0x3487820 },   // bit 12 -- we composite the HUD ourselves: leave off
+    { "DistantLights",       0x3C1CDF0 },   // bit 0 -- the unlit lamps           [on by default]
+    { "AutoGrass",           0x3C1D120 },   // bit 1 -- terrain scatter + its cascade
+    { "Foliage",             0x3C1D010 },   // bit 2
+    { "Decals",              0x3C1CBD0 },   // bit 3
+    { "Terrain",             0x3C1CF00 },   // bit 4
+    { "EnvProbes",           0x3C1D230 },   // bit 5
+    { "Emissive",            0x3C1D340 },   // bit 6
+    { "LightChannels",       0x3C1D450 },   // bit 7
+    { "Fog",                 0x3C1D560 },   // bit 8
+    { "Lights",              0x3C1CCE0 },   // bit 9
+    { "ClearLighting",       0x3C1D780 },   // bit 10
+    { "GameplayPostProcess", 0x3C1C9B0 },   // bit 11 -- scanner/focus tint etc  [on by default]
+    { "HUD",                 0x3C1C8A0 },   // bit 12 -- we composite the HUD ourselves: leave off
     // THE OTHER FOURTEEN. The engine registers 27 of these and this table knew half, which is a
     // blind spot rather than a choice: a category nobody listed cannot be reported as missing, and
     // "granting the capability changed nothing" has been said in this project about a name that was
@@ -185,20 +185,20 @@ const RenderMaskEntry kRenderMasks[] = {
     //
     // Added 2026-08-17 while chasing cloth flags that do not wave in the second eye and do in MAIN.
     // A flag is skinned cloth, so GeometrySkinned is the first one to look at.
-    { "GeometrySkinned",     0x3486B60 },   // bit 13 -- skinned meshes: characters, and cloth
-    { "GeometryStatic",      0x3486A50 },   // bit 14
-    { "GeometryProxies",     0x3486C70 },   // bit 15
-    { "DepthPrepass",        0x3486D80 },   // bit 16
-    { "GBuffer",             0x3486E90 },   // bit 17
-    { "GBufferLate",         0x3486FA0 },   // bit 18
-    { "Forward",             0x34871C0 },   // bit 19
-    { "ForwardNoTXAA",       0x34872D0 },   // bit 20
-    { "Particles",           0x3487A40 },   // bit 21
-    { "Unlit",               0x3487600 },   // bit 22
-    { "WeaponPlane",         0x34870B0 },   // bit 23 -- the first-person weapon plane
-    { "TopDownCarProxy",     0x3487710 },   // bit 24
-    { "DebugDraw",           0x34874F0 },   // bit 25
-    { "Discarded",           0x34873E0 },   // bit 26
+    { "GeometrySkinned",     0x3C1BBE0 },   // bit 13 -- skinned meshes: characters, and cloth
+    { "GeometryStatic",      0x3C1BAD0 },   // bit 14
+    { "GeometryProxies",     0x3C1BCF0 },   // bit 15
+    { "DepthPrepass",        0x3C1BE00 },   // bit 16
+    { "GBuffer",             0x3C1BF10 },   // bit 17
+    { "GBufferLate",         0x3C1C020 },   // bit 18
+    { "Forward",             0x3C1C240 },   // bit 19
+    { "ForwardNoTXAA",       0x3C1C350 },   // bit 20
+    { "Particles",           0x3C1CAC0 },   // bit 21
+    { "Unlit",               0x3C1C680 },   // bit 22
+    { "WeaponPlane",         0x3C1C130 },   // bit 23 -- the first-person weapon plane
+    { "TopDownCarProxy",     0x3C1C790 },   // bit 24
+    { "DebugDraw",           0x3C1C570 },   // bit 25
+    { "Discarded",           0x3C1C460 },   // bit 26
 };
 const uint32_t kRenderMaskCount =
     static_cast<uint32_t>(sizeof(kRenderMasks) / sizeof(kRenderMasks[0]));
@@ -271,7 +271,7 @@ static std::atomic<uint64_t> g_world_render_mask_gen{0};
 // Build this snapshot only when VRCAM's mask changes, then apply its 32 words.
 static void share_world_render_mask_locked(uintptr_t ctx,bool eye) {
     std::array<uint64_t,32> have{};
-    if(!cloud_cb_raw_copy(have.data(),reinterpret_cast<const void*>(ctx+6304),sizeof(have)))return;
+    if(!cloud_cb_raw_copy(have.data(),reinterpret_cast<const void*>(ctx+0x2688),sizeof(have)))return;
     std::lock_guard lock(g_world_render_mask_mutex);
     if(eye) {
         if(have==g_world_render_source)return;
@@ -287,7 +287,7 @@ static void share_world_render_mask_locked(uintptr_t ctx,bool eye) {
         g_world_render_mask_gen.fetch_add(1,std::memory_order_release);
     } else {
         for(size_t i=0;i<have.size();++i)have[i]|=g_world_render_mask[i];
-        cloud_cb_raw_copy(reinterpret_cast<void*>(ctx+6304),have.data(),sizeof(have));
+        cloud_cb_raw_copy(reinterpret_cast<void*>(ctx+0x2688),have.data(),sizeof(have));
     }
 }
 
@@ -309,7 +309,7 @@ extern "C" __declspec(dllexport) uint64_t CyberpunkVR_OpticsPreworkCalls = 0;
 
 static void or_missing_mask_words(uintptr_t ctx,const uint64_t* mask,const uint64_t* have) {
     __try {
-        uint64_t* dst = reinterpret_cast<uint64_t*>(ctx + 6304);
+        uint64_t* dst = reinterpret_cast<uint64_t*>(ctx + 0x2688);
         for (size_t i = 0; i < 32; ++i) {
             const uint64_t missing = mask[i] & ~have[i];
             if (missing) dst[i] |= missing;
@@ -322,7 +322,7 @@ static void share_world_render_mask_fast(uintptr_t ctx,bool eye) {
     thread_local std::array<uint64_t,32> t_mask{};
     thread_local uint64_t t_gen = ~0ull;
     std::array<uint64_t,32> have{};
-    if(!cloud_cb_raw_copy(have.data(),reinterpret_cast<const void*>(ctx+6304),sizeof(have)))return;
+    if(!cloud_cb_raw_copy(have.data(),reinterpret_cast<const void*>(ctx+0x2688),sizeof(have)))return;
     if(eye) {
         if(have==t_source)return;
         share_world_render_mask_locked(ctx,true);
@@ -373,7 +373,7 @@ static void render_mask_grant(uintptr_t ctx,bool eye=true) {
             }
             t_want = want;
         }
-        uint64_t* have = reinterpret_cast<uint64_t*>(ctx + 6304);
+        uint64_t* have = reinterpret_cast<uint64_t*>(ctx + 0x2688);
         bool changed = false;
         for (int i = 0; i < 32; ++i) {
             const uint64_t missing = t_union[i] & ~have[i];
@@ -423,7 +423,7 @@ static void optics_hide_weapon_plane(uintptr_t ctx) {
     if (!ctx || !CyberpunkVR_OpticsHideWeaponPlane || !g_exe_base) return;
     const auto& only = weapon_plane_only_bits();
     __try {
-        uint64_t* have = reinterpret_cast<uint64_t*>(ctx + 6304);
+        uint64_t* have = reinterpret_cast<uint64_t*>(ctx + 0x2688);
         for (size_t i = 0; i < only.size(); ++i)
             if (have[i] & only[i]) have[i] &= ~only[i];
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
@@ -473,7 +473,7 @@ static void cap_census_note(uintptr_t work, uintptr_t required) {
 }
 
 // Granting = making the test pass HONESTLY, by OR-ing the bits the descriptor asks for into the
-// view's own 32-qword mask at ctx+6304 -- exactly what fixed the HUD. Not the same thing as
+// view's own 32-qword mask at ctx+0x2688 -- exactly what fixed the HUD. Not the same thing as
 // returning 1 from the gate: that leaves the mask short, so the next node to ask gets refused
 // again and anything downstream that reads the mask still sees a crippled view.
 //
@@ -498,7 +498,7 @@ static bool cap_grant_required(uintptr_t work_context, uintptr_t required) {
     __try {
         const uintptr_t ctx = *reinterpret_cast<uintptr_t*>(work_context + 0x18);
         if (!ctx) return false;
-        uint64_t* have = reinterpret_cast<uint64_t*>(ctx + 6304);
+        uint64_t* have = reinterpret_cast<uint64_t*>(ctx + 0x2688);
         // +1 qword: sub_14021BE28 compares mask[i] against descriptor[i+1].
         const uint64_t* need = reinterpret_cast<const uint64_t*>(required) + 1;
         bool changed = false;
@@ -596,11 +596,16 @@ void featbit_report() {
 // sub_14023AF5C and answers about a BIT INDEX. The shadow-mask pass asks this one, which is why the first
 // version of this probe -- attached to the other -- printed nothing at all.
 using FeatureBitFn = uint8_t (__fastcall*)(uintptr_t, uintptr_t);
-static FeatureBitFn g_orig_feature_bit = nullptr;
+extern "C" {
+FeatureBitFn CvrFeatureBitOriginal = nullptr;
+uint8_t CvrFeatureBitDetour(uintptr_t work_context, uintptr_t bit);
+}
 extern "C" __declspec(dllexport) std::atomic<uint64_t> CyberpunkVR_AutoGrassReadiness[4]{};
 
-static uint8_t __fastcall Detour_FeatureBit(uintptr_t work_context, uintptr_t bit) {
-    const uint8_t r = g_orig_feature_bit(work_context, bit);
+// The native leaf preserves R9 (TonemapLut keeps a boolean there across this
+// call), RDX/R10/R11 and all XMM registers. The assembly shim preserves the
+// original's complete output state around this ordinary Win64 observer.
+extern "C" void CvrFeatureBitAfter(uintptr_t work_context, uintptr_t bit, uint8_t r) {
     if (CyberpunkVR_FeatBitProbe && g_exe_base && bit < 64) {
         const uintptr_t base = reinterpret_cast<uintptr_t>(g_exe_base);
         if (t_current_node_work > base &&
@@ -609,9 +614,8 @@ static uint8_t __fastcall Detour_FeatureBit(uintptr_t work_context, uintptr_t bi
             featbit_report();
         }
     }
-    return r;
 }
-CVR_DETOUR("[featbit] per-bit feature test sub_14023AF5C", FEATURE_BIT_TEST_RVA, Detour_FeatureBit, g_orig_feature_bit)
+CVR_DETOUR("[featbit] per-bit feature test sub_14023AF5C", FEATURE_BIT_TEST_RVA, CvrFeatureBitDetour, CvrFeatureBitOriginal)
 
 // The scope view's first-person pass. The render-element pass driver (sub_14023A938) draws a pass
 // flagged 0x20 -- the weapon plane -- only if THIS test passes for RenderMask/WeaponPlane.
@@ -778,7 +782,7 @@ static void node_census_dump() {
 // entirely on the byte at view+5856 (0x16E0): different index, private record; same index, they
 // take turns filling one sky.
 //
-// And the gate reads viewData+0xF94 -- the very field StreamlineHistoryFix WRITES, mirroring
+// And the gate reads viewData+0xFA4 -- the very field StreamlineHistoryFix WRITES, mirroring
 // MAIN's AA mode onto VRCAM. So our own fix is an input to the sky decision, which nobody knew.
 //
 // Report both, for both views. Reading only; nothing here changes engine state.
@@ -791,7 +795,7 @@ extern "C" __declspec(dllexport) uint32_t CyberpunkVR_DebugVrcamAaMode;
 // ---- the cloud lighting shader selector -----------------------------------------------------
 //
 // sub_14061BE74 RenderVolumetricCloudsLighting, decompiled:
-//     v5  = *(int**)(ctx + 7592);        // ctx+0x1DA8, the per-view cloud state
+//     v5  = *(int**)(ctx + 0x2BD8);        // ctx+0x1DA8, the per-view cloud state
 //     v20 = v5[8] == 1;                  // an int at cloudState+32
 //     if (v20) { shader -661749514 } else { shader -298149306 }
 // One int chooses between two different lighting shaders. If the views disagree on it they are
@@ -837,7 +841,7 @@ static size_t cloudst_read(void* dst, uintptr_t src, size_t n) {
     return done;
 }
 static uintptr_t cloudst_ptr(uintptr_t ctx) {
-    __try { return *reinterpret_cast<uintptr_t*>(ctx + 7592); }
+    __try { return *reinterpret_cast<uintptr_t*>(ctx + 0x2BD8); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
 
@@ -921,7 +925,7 @@ char __fastcall Detour_CloudsNode(void* a1, void* a2) {
 static void cloud_sel_note(uintptr_t ctx, bool vrcam) {
     if (!CyberpunkVR_CloudLightProbe || !ctx) return;
     __try {
-        const uintptr_t st = *reinterpret_cast<uintptr_t*>(ctx + 7592);
+        const uintptr_t st = *reinterpret_cast<uintptr_t*>(ctx + 0x2BD8);
         if (!st) return;
         int32_t* sel = reinterpret_cast<int32_t*>(st + 32);
         if (vrcam) {
@@ -954,7 +958,7 @@ static void cloud_sel_note(uintptr_t ctx, bool vrcam) {
 static void sky_probe_note(uintptr_t ctx, bool vrcam) {
     if (!CyberpunkVR_SkyProbe || !ctx) return;
     __try {
-        const uint32_t idx = *reinterpret_cast<uint8_t*>(ctx + 5856);
+        const uint32_t idx = *reinterpret_cast<uint8_t*>(ctx + 0x24C8);
         if (vrcam) CyberpunkVR_DebugSkyIdxVrcam = idx;
         else       CyberpunkVR_DebugSkyIdxMain  = idx;
     } __except (EXCEPTION_EXECUTE_HANDLER) { return; }
@@ -963,8 +967,8 @@ static void sky_probe_note(uintptr_t ctx, bool vrcam) {
     uint64_t due = s_next.load(std::memory_order_relaxed);
     if (now < due) return;
     if (!s_next.compare_exchange_strong(due, now + 5000, std::memory_order_relaxed)) return;
-    log("[sky] sky-record index view+0x16E0 -- MAIN %u  VRCAM %u   %s     "
-        "AA mode viewData+0xF94 -- MAIN %u  VRCAM %u",
+    log("[sky] sky-record index view+0x24C8 -- MAIN %u  VRCAM %u   %s     "
+        "AA mode viewData+0xFA4 -- MAIN %u  VRCAM %u",
         CyberpunkVR_DebugSkyIdxMain, CyberpunkVR_DebugSkyIdxVrcam,
         (CyberpunkVR_DebugSkyIdxMain == CyberpunkVR_DebugSkyIdxVrcam)
             ? "<- SAME RECORD: the two views share one amortised sky"
@@ -978,7 +982,7 @@ static void optics_render_probe(uintptr_t ctx,void* work,uint64_t key,uint32_t r
     if(!CyberpunkVR_OpticsRenderProbe || !ctx || !work)return;
     const int side=key==0?0:key==g_vrcam_ctx_key?1:key==cvr::cname_hash("vr_optics_feed")?2:-1;
     if(side<0)return;
-    constexpr uint32_t nodes[]={0x768510,0xefc110,0x377b58,0x77e610,0x77d308,0x1f8928,0x61f9e0};
+    constexpr uint32_t nodes[]={0x557204,0xF60474,0x3FE078,0xDAC960,0x411B94,0x3E1B20,0x7F3C20};
     uint32_t bit=0;
     for(uint32_t i=0;i<std::size(nodes);++i)if(rva==nodes[i])bit=1u<<i;
     if(!bit)return;
@@ -1153,7 +1157,7 @@ uint8_t __fastcall Detour_NodeDispatch(
     void*  hud_block_saved = nullptr;
     if (work_rva == DRAWHUD_WORK_RVA && work_context) {
         if (!g_hud_viewdata_get && g_exe_base) {
-            g_hud_viewdata_get = reinterpret_cast<HudViewDataFn>(g_exe_base + 0x1ED930);
+            g_hud_viewdata_get = reinterpret_cast<HudViewDataFn>(g_exe_base + 0x33C248);
         }
         if (g_hud_viewdata_get) {
             __try {
@@ -1233,7 +1237,7 @@ uint8_t __fastcall Detour_NodeDispatch(
     t_active_view_key   = view_key;
     cvr::camera::PoseIdentity nodePose{};
     if(view_key_known && (view_key==0 || view_key==g_vrcam_ctx_key.load(std::memory_order_relaxed)))
-        cvr::camera::ReadCameraPoseIdentity(poseContext+0x70,view_key==0 ? 1u : 2u,&nodePose);
+        cvr::camera::ReadCameraPoseIdentity(poseContext+0xE0,view_key==0 ? 1u : 2u,&nodePose);
     if(cvr::framegen::CaptureInputsEnabled() && nodePose)
         nodePose.hasRenderFrameId=cvr::framegen::ReadRenderFrameIndex(&nodePose.renderFrameId);
     const auto previousNodePose=cvr::camera::SetNodePoseIdentity(nodePose);
@@ -1260,7 +1264,7 @@ uint8_t __fastcall Detour_NodeDispatch(
         prof_t0 = prof_now();
     }
     // DrawHUD reads viewData+0x168 too (measured); EngineRvas has no name for it, so one here.
-    constexpr uint32_t DRAWHUD_NODE_RVA_168 = 0x1EE760;
+    constexpr uint32_t DRAWHUD_NODE_RVA_168 = 0x33E388;
     // The composition state, for the measured readers of viewData+0x168. NOT for
     // DrawComposition (0x20A264): it walks a list of composition elements built for another view
     // and crashes on it -- see the note by CyberpunkVR_CompLendScoped.
@@ -1283,7 +1287,7 @@ uint8_t __fastcall Detour_NodeDispatch(
     // Diagnostic only: hold the existing external camera image while the
     // camera, UI and both eye renderers continue normally. Toggling the camera
     // off clears its dynamic texture and cannot isolate sampling artefacts.
-    const bool opticalCopy=view_key_known && view_key==cvr::cname_hash("vr_optics_feed") && work_rva==0x377B58;
+    const bool opticalCopy=view_key_known && view_key==cvr::cname_hash("vr_optics_feed") && work_rva==0x3FE078;
     const bool freezeOpticalImage=CyberpunkVR_OpticsFreezeCopy && opticalCopy;
     // The camera image the scope displays is written here; the port accumulates it right after
     // this node's list runs (optics::camera).
@@ -1291,7 +1295,7 @@ uint8_t __fastcall Detour_NodeDispatch(
     const uint8_t result = freezeOpticalImage ? 1 :
         cvr::stereo::preparation::InvokeGraphContext(g_node_dispatch_orig,node,work_context,args);
     if(opticalCopy && !freezeOpticalImage)cvr::optics::camera::CopyNodeEnd();
-    if(view_key_known && cvr::optics::probe::StageView(view_key,g_vrcam_ctx_key) && work_rva==0x769308)
+    if(view_key_known && cvr::optics::probe::StageView(view_key,g_vrcam_ctx_key) && work_rva==0x416600)
         cvr::optics::probe::StageEnd(g_game_device);
     if (comp_lent_vd) comp_lend_restore(comp_lent_vd, comp_saved);
     // Give the slot back before anything else can run on this view.

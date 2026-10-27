@@ -6,7 +6,7 @@
 // The other three keep ONE context in a renderer-wide manager, and both eyes dispatch into it:
 //
 //   FSR 3.0   ffx_fsr3_x64.dll          FfxFsr3Context at manager+44, manager = renderer+18032
-//   FSR 3.1+  amd_fidelityfx_dx12.dll   ffxContext of the manager at renderer+18024 (FSR 4 goes here too)
+//   FSR 3.1+  amd_fidelityfx_loader_dx12.dll (2.50's statically imported API)
 //   XeSS      libxess.dll               xess_context_handle_t at manager+32
 //
 // With one context each eye's frame is accumulated onto the other eye's history, which is an IPD-wide
@@ -190,6 +190,7 @@ void Install() {
 // header.
 namespace ffxapi {
 struct Header { uint64_t type; Header* next; };
+static_assert(sizeof(Header) == 16);
 constexpr uint64_t kCreateUpscale = 0x00010000, kDispatchUpscale = 0x00010001, kReactiveMask = 0x00010006;
 using Create = uint32_t (*)(void** context, Header* description, const void* allocation);
 using Destroy = uint32_t (*)(void** context, const void* allocation);
@@ -389,26 +390,20 @@ void Install() {
 void Install() {
     fsr3::Install();
     xess::Install();
-    ffxapi::Install(GetModuleHandleW(L"amd_fidelityfx_dx12.dll"));
+    // 2.50 imports these entry points directly. Its old private GetProcAddress
+    // helper no longer exists; hook the loader before engine context creation.
+    // Do not also hook a provider DLL: loader forwarding would be intercepted
+    // twice and could create/destroy the second-eye context twice.
+    ffxapi::Install(GetModuleHandleW(L"amd_fidelityfx_loader_dx12.dll"));
 }
 }  // namespace cvr::stereo::upscaler_views
 
 namespace cvr::detail {
-// sub_141D4DEA0 takes the FidelityFX API entry points right after the engine's LoadLibrary of
-// amd_fidelityfx_dx12 (sub_141D4B800), before any context exists. Hooking there catches the first
-// ffxCreateContext; the DLL is not loaded when the early detours are installed.
-using FfxApiLoaderFn = FARPROC(__fastcall*)(void*, HMODULE);
-static FfxApiLoaderFn g_orig_ffx_api_loader = nullptr;
-static FARPROC __fastcall Detour_FfxApiLoader(void* a1, HMODULE module) {
-    const FARPROC result = g_orig_ffx_api_loader(a1, module);
-    cvr::stereo::upscaler_views::ffxapi::Install(module);
-    return result;
-}
-CVR_DETOUR("[upscaler] FidelityFX API loader sub_141D4DEA0", FFX_API_LOADER_RVA, Detour_FfxApiLoader, g_orig_ffx_api_loader)
-
-// sub_141D4C3D0 asks the FidelityFX API for its upscaler providers (ffxQuery GET_VERSIONS) and keeps
-// one version id per family in the manager: +0x90 "2.x", +0x98 "3.x", +0xA0 "4.x", -1 when absent.
-// The game offers FSR 4 only when +0xA0 is set (sub_141D40FF0), which needs an RDNA 4 driver; the
+// 2.50 RVA 0x2287A20 asks the FidelityFX API for its upscaler providers and keeps
+// IDs at +0x98 "2.x", +0xA0 "3.x", +0xA8 "4.x", +0xB0 default.
+// Native pattern comparisons at 0x2287B45/75/A2 and stores at B5E/B8E/BBE
+// prove those fields; the constructor initializes the absent IDs to -1.
+// The game offers FSR 4 only when its provider ID is set; the
 // ResolutionScaling "FSR4" path then creates its context with that version as an override
 // (sub_141D4C7E0) and runs it through CRenderNode_ApplyFSR3.
 //
@@ -421,14 +416,14 @@ static __int64 __fastcall Detour_FfxApiProviders(int64_t* manager) {
     const __int64 result = g_orig_ffx_api_providers(manager);
     __try {
         Log("[upscaler] FidelityFX API upscalers: 2.x=%llX 3.x=%llX 4.x=%llX default=%llX\n",
-            (unsigned long long)manager[18], (unsigned long long)manager[19], (unsigned long long)manager[20],
-            (unsigned long long)manager[21]);
-        if (cvr::TestMarker("cvr_simulate_fsr4.txt") && manager[20] == -1 && manager[19] != -1) {
-            manager[20] = manager[19];
+            (unsigned long long)manager[19], (unsigned long long)manager[20], (unsigned long long)manager[21],
+            (unsigned long long)manager[22]);
+        if (cvr::TestMarker("cvr_simulate_fsr4.txt") && manager[21] == -1 && manager[20] != -1) {
+            manager[21] = manager[20];
             Log("[upscaler] TEST: FSR 4 simulated with the FSR 3.1 provider (cvr_simulate_fsr4.txt)\n");
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
     return result;
 }
-CVR_DETOUR("[upscaler] FidelityFX API providers sub_141D4C3D0", FFX_API_PROVIDERS_RVA, Detour_FfxApiProviders, g_orig_ffx_api_providers)
+CVR_DETOUR("[upscaler] FidelityFX API providers (2.50)", FFX_API_PROVIDERS_RVA, Detour_FfxApiProviders, g_orig_ffx_api_providers)
 }  // namespace cvr::detail

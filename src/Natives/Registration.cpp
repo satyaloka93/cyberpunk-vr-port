@@ -7,15 +7,24 @@
 #include "Natives/NativeFunctions.hpp"
 #include "Runtimes/Psvr2HapticChannel.hpp"
 #include "Runtimes/OpenXRManager.hpp"
+#include "Runtimes/HapticRouting.hpp"
+#include "Runtimes/Haptics.hpp"
+#include <algorithm>
+extern "C" int CyberpunkVR_Haptics;
+extern "C" float CyberpunkVR_HapticScale;
 
-static void PublishPSVR2Haptic(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, void*, int64_t) {
+static void PublishVRHaptic(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, void*, int64_t) {
     int32_t hand = 1, duration = 0; float amplitude = 0;
     RED4ext::GetParameter(frame, &hand);
     RED4ext::GetParameter(frame, &amplitude);
     RED4ext::GetParameter(frame, &duration);
     frame->code++;
-    if (OpenXRManager::Get().IsRuntimePsvr2())
-        cvr::psvr2::Haptics().Pulse(hand, amplitude, duration);
+    if (!cvr::haptics::HapticRoute().Toolkit()) {
+        cvr::haptics::Pulse(hand, amplitude, duration);
+    } else if (CyberpunkVR_Haptics &&
+        OpenXRManager::Get().IsSessionRunning() && std::isfinite(amplitude) &&
+        amplitude > 0.0f && amplitude <= 1.0f && std::isfinite(CyberpunkVR_HapticScale))
+        cvr::psvr2::Haptics().Pulse(hand, std::clamp(amplitude * CyberpunkVR_HapticScale, 0.0f, 1.0f), duration);
 }
 
 #include <RED4ext/RED4ext.hpp>
@@ -24,7 +33,7 @@ static void PublishPSVR2Haptic(RED4ext::IScriptable*, RED4ext::CStackFrame* fram
 RED4EXT_C_EXPORT void RED4EXT_CALL PostRegisterTypes() {
     auto rtti = RED4ext::CRTTISystem::Get();
     RED4ext::CBaseFunction::Flags flags = {.isNative = true, .isStatic = true};
-    auto haptic = RED4ext::CGlobalFunction::Create("SetVRHapticPulse", "SetVRHapticPulse", &PublishPSVR2Haptic);
+    auto haptic = RED4ext::CGlobalFunction::Create("SetVRHapticPulse", "SetVRHapticPulse", &PublishVRHaptic);
     haptic->flags = flags; haptic->AddParam("Int32", "hand");
     haptic->AddParam("Float", "amplitude"); haptic->AddParam("Int32", "durationMs");
     rtti->RegisterFunction(haptic);
@@ -44,6 +53,15 @@ RED4EXT_C_EXPORT void RED4EXT_CALL PostRegisterTypes() {
     throwFrame->flags=flags;throwFrame->SetReturnType("array:Vector4");rtti->RegisterFunction(throwFrame);
     auto throwEnabled=RED4ext::CGlobalFunction::Create("VRMeleeThrowEnabled","VRMeleeThrowEnabled",&VRMeleeThrowEnabled);
     throwEnabled->flags=flags;throwEnabled->SetReturnType("Bool");rtti->RegisterFunction(throwEnabled);
+    auto handShot=RED4ext::CGlobalFunction::Create("VRWeaponShot","VRWeaponShot",&VRWeaponShot);
+    handShot->flags=flags;handShot->AddParam("Int32","hand");
+    handShot->AddParam("Float","kick");handShot->AddParam("Bool","dual");rtti->RegisterFunction(handShot);
+    auto shotCounts=RED4ext::CGlobalFunction::Create("VRWeaponShotCounts","VRWeaponShotCounts",&VRWeaponShotCounts);
+    shotCounts->flags=flags;shotCounts->SetReturnType("Vector4");rtti->RegisterFunction(shotCounts);
+    auto rightShot=RED4ext::CGlobalFunction::Create("VRRightWeaponShot","VRRightWeaponShot",&VRRightWeaponShot);
+    rightShot->flags=flags;rtti->RegisterFunction(rightShot);
+    auto weaponTrace=RED4ext::CGlobalFunction::Create("VRWeaponTrace","VRWeaponTrace",&VRWeaponTrace);
+    weaponTrace->flags=flags;weaponTrace->AddParam("String","message");rtti->RegisterFunction(weaponTrace);
     auto triggerEnabled=RED4ext::CGlobalFunction::Create("VRWeaponTriggerEnabled","VRWeaponTriggerEnabled",&VRWeaponTriggerEnabled);
     triggerEnabled->flags=flags;triggerEnabled->SetReturnType("Bool");rtti->RegisterFunction(triggerEnabled);
     auto meleeClock=RED4ext::CGlobalFunction::Create("VRMeleeRealTime","VRMeleeRealTime",&VRMeleeRealTime);
@@ -841,6 +859,10 @@ RED4EXT_C_EXPORT void RED4EXT_CALL PostRegisterTypes() {
     fProvReset->flags = flags; rtti->RegisterFunction(fProvReset);
     auto fProvQM = RED4ext::CGlobalFunction::Create("SetVRProvQuatMode", "SetVRProvQuatMode", &SetVRProvQuatMode);
     fProvQM->flags = flags; fProvQM->AddParam("Int32", "mode"); fProvQM->AddParam("Int32", "axis"); rtti->RegisterFunction(fProvQM);
+    auto handMuzzle=RED4ext::CGlobalFunction::Create("SetVRHandMuzzle","SetVRHandMuzzle",&SetVRHandMuzzle);
+    handMuzzle->flags=flags;handMuzzle->AddParam("Int32","hand");
+    handMuzzle->AddParam("handle:gameweaponObject","weapon");handMuzzle->AddParam("Transform","pose");
+    rtti->RegisterFunction(handMuzzle);
     auto fMuzP = RED4ext::CGlobalFunction::Create("SetVRMuzzlePos", "SetVRMuzzlePos", &SetVRMuzzlePos);
     fMuzP->flags = flags;
     fMuzP->AddParam("Float", "x"); fMuzP->AddParam("Float", "y"); fMuzP->AddParam("Float", "z");

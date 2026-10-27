@@ -35,9 +35,12 @@ int main()try {
         if(!cache.Read(mainContext,pair) || (pair!=pairA && pair!=pairB))torn=true;
     }while(!done.load());
     writer.join();Check(!torn.load(),"feature words came from different publications");
-    constexpr uint64_t amdMain=0x0507F008,forcedRtt=0x0517F009;
+    // Synthetic 2.50 graph words, not a replay of the old 2.31 feature schema.
+    // Keep unrelated bits (including the former VRS position) set to prove
+    // the hardware guard clears only native feature 87 in the second word.
+    constexpr uint64_t amdMain=0x0517F008,forcedRtt=0x0597F009;
     const auto safe=SupportedShadingRateFlags(forcedRtt,0);
-    Check(safe==(amdMain|1ull),"recorded AMD graph still requests an unsupported shading-rate image");
+    Check(safe==(amdMain|1ull),"2.50 graph still requests an unsupported shading-rate image");
     Check((safe^forcedRtt)==ShadingRateImageFlagF1,"unrelated graph feature changed");
     Check(SupportedShadingRateFlags(amdMain,0)==amdMain,"already supported AMD flags changed");
     Check(SupportedShadingRateFlags(safe|forcedRtt,0)==safe,"builder OR reinstated unsupported VRS");
@@ -55,9 +58,9 @@ int main()try {
     }
     for(unsigned bit=0;bit<64;++bit) {
         const uint64_t flags=1ull<<bit;
-        Check(SupportedShadingRateFlags(flags,0)==(bit==20?0:flags),"another feature was masked");
+        Check(SupportedShadingRateFlags(flags,0)==(bit==23?0:flags),"another feature was masked");
         Check(SupportedShadingRateFlags(flags,16)==flags,"NVIDIA-capable mask changed");
     }
-    std::cout<<"PASS RT on/off/re-enable, producer identity, coherent flag pair, recorded AMD divide-by-zero graph and supported VRS\n";
+    std::cout<<"PASS RT on/off/re-enable, producer identity, coherent flag pair, 2.50 VRS hardware gating and supported VRS\n";
     return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}

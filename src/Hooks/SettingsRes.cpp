@@ -38,8 +38,8 @@ extern "C" void __fastcall OnSettingsResCallback(void* settingsPtr) {
         uint32_t targetHeight = 0;
         ReadU32Safe(settings + 0x18, &activeWidth);
         ReadU32Safe(settings + 0x1C, &activeHeight);
-        ReadU32Safe(settings + 0x84, &targetWidth);
-        ReadU32Safe(settings + 0x88, &targetHeight);
+        ReadU32Safe(settings + 0xB0, &targetWidth);
+        ReadU32Safe(settings + 0xB4, &targetHeight);
         // On CHANGE only: this line is a status, and a status that repeats is noise. It printed on
         // every hook call, 201 identical lines in one session.
         static uint32_t s_lastA = 0, s_lastB = 0, s_lastC = 0, s_lastD = 0;
@@ -59,12 +59,16 @@ extern "C" void __fastcall OnSettingsResCallback(void* settingsPtr) {
 }
 
 bool InstallSettingsResHook() {
-    const char* pattern = "\x39\x41\x18\x75\x00\x8B\x81\x88\x00\x00\x00\x39\x41\x1C";
-    const char* mask = "xxxx?xxxxxxxxx";
+    // 2.50: exact linker identity 345050585/93b61040 maps the former
+    // 0x21c584 leaf to 0x5d9590. Hook its first load, before either native
+    // conditional branch; target width/height moved from 0x84/88 to 0xB0/B4.
+    const char* pattern = "\x8B\x81\xB0\x00\x00\x00\x39\x41\x18\x75\x19\x8B\x81\xB4\x00\x00\x00";
+    const char* mask = "xxxxxxxxxxxxxxxxx";
     uint8_t* found = static_cast<uint8_t*>(FindPattern("Cyberpunk2077.exe", pattern, mask));
-    if (!found) return false;
+    const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    if (!found || reinterpret_cast<uintptr_t>(found) != base + 0x5D9590) return false;
 
-    constexpr int replaceLen = 14;
+    constexpr int replaceLen = 6;
     void* tramp = AllocateTrampoline(found, 512);
     if (!tramp) return false;
 
@@ -81,11 +85,13 @@ bool InstallSettingsResHook() {
     code[pos++] = 0x41; code[pos++] = 0x53;
     code[pos++] = 0x55;
 
-    code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xEC; code[pos++] = 0x40;
+    code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xEC; code[pos++] = 0x60;
     code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x04; code[pos++] = 0x24;
     code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x4C; code[pos++] = 0x24; code[pos++] = 0x10;
     code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x54; code[pos++] = 0x24; code[pos++] = 0x20;
     code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x5C; code[pos++] = 0x24; code[pos++] = 0x30;
+    code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x64; code[pos++] = 0x24; code[pos++] = 0x40;
+    code[pos++] = 0x0F; code[pos++] = 0x11; code[pos++] = 0x6C; code[pos++] = 0x24; code[pos++] = 0x50;
 
     code[pos++] = 0x48; code[pos++] = 0x89; code[pos++] = 0xE5;
     code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xE4; code[pos++] = 0xF0;
@@ -100,7 +106,9 @@ bool InstallSettingsResHook() {
     code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x4C; code[pos++] = 0x24; code[pos++] = 0x10;
     code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x54; code[pos++] = 0x24; code[pos++] = 0x20;
     code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x5C; code[pos++] = 0x24; code[pos++] = 0x30;
-    code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xC4; code[pos++] = 0x40;
+    code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x64; code[pos++] = 0x24; code[pos++] = 0x40;
+    code[pos++] = 0x0F; code[pos++] = 0x10; code[pos++] = 0x6C; code[pos++] = 0x24; code[pos++] = 0x50;
+    code[pos++] = 0x48; code[pos++] = 0x83; code[pos++] = 0xC4; code[pos++] = 0x60;
 
     code[pos++] = 0x5D;
     code[pos++] = 0x41; code[pos++] = 0x5B;
@@ -112,10 +120,9 @@ bool InstallSettingsResHook() {
     code[pos++] = 0x58;
     code[pos++] = 0x9D;
 
-    code[pos++] = 0x39; code[pos++] = 0x41; code[pos++] = 0x18;
-    code[pos++] = 0x75; code[pos++] = 0x06;
-    code[pos++] = 0x8B; code[pos++] = 0x81; code[pos++] = 0x88; code[pos++] = 0x00; code[pos++] = 0x00; code[pos++] = 0x00;
-    code[pos++] = 0x39; code[pos++] = 0x41; code[pos++] = 0x1C;
+    // Replay the complete load after the callback, so an override is reflected
+    // in EAX before the native comparisons. No branch is relocated.
+    for (int i = 0; i < replaceLen; ++i) code[pos++] = found[i];
 
     code[pos++] = 0xE9;
     *reinterpret_cast<int32_t*>(code + pos) = static_cast<int32_t>((found + replaceLen) - (code + pos + 4));

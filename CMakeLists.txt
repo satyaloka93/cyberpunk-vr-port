@@ -84,6 +84,7 @@ source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${CPVR_SOURCES})
 add_library(cyberpunkvrport_stereo SHARED
     ${CPVR_SOURCES}
     src/Hooks/CameraPoseLeafThunks.asm
+    src/Hooks/FeatureBitThunk.asm
     src/Hooks/SwimmingActionLeafThunk.asm
     src/Hooks/WorldMarkerTextThunk.asm
     src/Hooks/PhotoCaptureClampThunk.asm
@@ -114,8 +115,13 @@ target_link_libraries(cyberpunkvrport_stereo PRIVATE
     d3d12.lib
     d3dcompiler
     bcrypt
+    version
     dxgi.lib        # the SYSTEM import lib -- bare "dxgi" would resolve to our own target
     psapi
+    ole32
+    uuid
+    iphlpapi
+    ws2_32
     RED4ext::SDK
 )
 # Use the JSON parser already selected for the statically linked OpenXR loader.

@@ -42,6 +42,7 @@
 #include "Render/SsrWideMerge.hpp"
 #include "Render/RenderProbeScope.hpp"
 #include "Stereo/StereoInternal.hpp"
+#include "Stereo/EngineCameraLayout.hpp"
 #include <d3d12.h>
 #include <wrl/client.h>
 #include <algorithm>
@@ -190,9 +191,9 @@ uint64_t BoundUav(uintptr_t table,uint32_t slot,uint32_t stage) {
 }
 
 bool ReadCamera(uintptr_t view,float out[3]) {
-    // The view's CameraInput at +0x70: the position as 1/131072 fixed point (Render/StereoCameraInput.hpp).
+    // The 2.50 view descriptor starts at+E0; fixed-point position is unchanged.
     __try {
-        for(int i=0;i<3;++i)out[i]=float(double(*reinterpret_cast<const int32_t*>(view+0x70+4*i))/131072.0);
+        for(int i=0;i<3;++i)out[i]=float(double(*reinterpret_cast<const int32_t*>(view+cvr::stereo::camera_layout::DescriptorBase+4*i))/131072.0);
     } __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
     return std::isfinite(out[0]) && std::isfinite(out[1]) && std::isfinite(out[2]);
 }
@@ -207,7 +208,7 @@ bool CopyBlock(uint8_t* out,const void* src,uint32_t size) {
 bool CurrentContext(uintptr_t base,uintptr_t& table,ID3D12GraphicsCommandList*& list) {
     using Current=uintptr_t(*)();
     __try {
-        const auto context=reinterpret_cast<Current>(base+0x1F405C)();
+        const auto context=reinterpret_cast<Current>(base+0x337230)();
         if(!context)return false;
         table=*reinterpret_cast<const uintptr_t*>(context+0x60);
         list=*reinterpret_cast<ID3D12GraphicsCommandList* const*>(context+0x30);
@@ -224,7 +225,7 @@ std::shared_ptr<StoreSet> BindStores(Channel channel,int side,uint32_t capacity,
     using Bind=void(*)(uintptr_t,uint8_t,uint32_t,uint32_t,const D3D12_CPU_DESCRIPTOR_HANDLE*,bool);
     uintptr_t table{};ID3D12GraphicsCommandList* list{};
     if(!CurrentContext(base,table,list)){++debug[3];return nullptr;}
-    const auto bind=reinterpret_cast<Bind>(base+0x1F3978);
+    const auto bind=reinterpret_cast<Bind>(base+0x336D3C);
     const auto& own=stores->uav[side];
     const auto& other=stores->uav[side^1];
     bind(table,stage,1,kOwnSlot,&own,true);
@@ -245,6 +246,9 @@ std::shared_ptr<StoreSet> BindStores(Channel channel,int side,uint32_t capacity,
 }  // namespace
 
 bool Prepare(Channel channel,int side,uintptr_t view,const void* src,uint32_t size,uint8_t* out,uint32_t* ship) {
+    // Fail closed: old loaded shader assets do not prove that 2.50 has matching 704-byte twins.
+    // In reconstruction-only builds retain native constants and avoid allocating unused GPU stores.
+    if constexpr (!kWideMergeShaderContractReady)return false;
     if(size!=kEngineBlockBytes || !src || !out || !ship || (channel!=kReflections && channel!=kPlanar))return false;
     uint64_t* debug=channel==kPlanar?CyberpunkVR_DebugSsprMerge:CyberpunkVR_DebugSsrMerge;
     if(side!=0 && side!=1){++debug[2];return false;}
@@ -253,8 +257,9 @@ bool Prepare(Channel channel,int side,uintptr_t view,const void* src,uint32_t si
        !CyberpunkVR_AsymSsrPatchLoaded.load(std::memory_order_relaxed) || !cvr::detail::g_exe_base)return false;
     std::memset(out,0,kBlockBytes);
     if(!CopyBlock(out,src,size)){++debug[5];return false;}
-    // Row 16.zw is the pixel size in NDC, 2 / width and 2 / height: ndc = (pixel + 0.5 - row19.zw) * row16.zw - 1.
-    float pixel[2]{};std::memcpy(pixel,out+16*16+8,8);
+    // 2.50 moved pixel steps from row 16.zw to row 32.zw when adding four native matrices.
+    // Read only those steps; retain the complete native block, including its new stereo fields.
+    float pixel[2]{};std::memcpy(pixel,out+kPixelStepRow*16+8,8);
     float camera[3]{};
     const double w=pixel[0]>0?2.0/pixel[0]:0,h=pixel[1]>0?2.0/pixel[1]:0;
     const auto width=uint32_t(std::lround(w)),height=uint32_t(std::lround(h));
@@ -315,7 +320,8 @@ bool PrepareShadowMask(int side,uintptr_t view,uint8_t* block,uint32_t size) {
     // The mask is drawn at half width (checkerboard); its store holds one entry per drawn pixel. The view's
     // render size is in its camera input (+0x378 width, +0x37C height; Render/StereoCameraInput.hpp).
     uint32_t dims[2]{};
-    if(!view || !CopyBlock(reinterpret_cast<uint8_t*>(dims),reinterpret_cast<const void*>(view+0x70+0x378),8) ||
+    if(!view || !CopyBlock(reinterpret_cast<uint8_t*>(dims),reinterpret_cast<const void*>(view+
+       cvr::stereo::camera_layout::DescriptorBase+cvr::stereo::camera_layout::Width),8) ||
        !(dims[0]>=16 && dims[0]<=16384 && dims[1]>=16 && dims[1]<=16384)){++debug[5];return false;}
     const uint32_t capacity=kHeaderEntries+(dims[0]/2+1)*dims[1];
     if(!BindStores(kShadowMask,side,capacity,debug,1))return false;

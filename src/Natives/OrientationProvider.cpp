@@ -1,3 +1,7 @@
+extern void Log(const char*, ...);
+#include "Anim/HandMuzzle.hpp"
+#include <RED4ext/Scripting/Natives/Generated/game/weapon/Object.hpp>
+#include "Render/BarrelHit.hpp"
 #include "Utils/DebugGate.hpp"
 // OrientationProvider -- lifted out of src/Natives/Natives.cpp, where it was one of four instrumentation
 // subsystems sharing the tail of an 8,400-line file behind nothing but a banner comment.
@@ -319,6 +323,18 @@ static bool ProvIsPlayersAttack(int aClass, uintptr_t aProvider) {
     return mine;
 }
 
+static bool ProvWeaponMuzzle(uintptr_t provider,size_t sourceOffset,cvr::aim::HandMuzzle& muzzle) {
+    __try {
+        const uintptr_t src=*reinterpret_cast<uintptr_t*>(provider+sourceOffset);
+        if(!ProvPlausiblePtr(src))return false;
+        const uintptr_t attack=*reinterpret_cast<uintptr_t*>(src+0x10);
+        if(!ProvPlausiblePtr(attack))return false;
+        for(int off:kProvAttackHandleOffsets)
+            if(cvr::aim::ForWeapon(*reinterpret_cast<uintptr_t*>(attack+off),GetTickCount64(),muzzle))return true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {}
+    return false;
+}
+
 // THE PROJECTILE'S LAUNCH POINT (TofuExpress fork, 2026-10-16). The orientation providers above turn
 // a projectile down the barrel, but where it starts is asked of entFuncPositionProvider, and that
 // still answered with the camera: the round left the player's eyes along the barrel's direction.
@@ -362,12 +378,17 @@ static uintptr_t __fastcall PosProvStub33(uintptr_t rcx, uintptr_t rdx, uintptr_
         g_pSharedHands[vrshared::kWeaponFlag] <= 0.5f || g_pSharedHands[27] <= 0.5f ||
         !PosProvIsPlayersAttack(rcx)) return ret;
 
+    cvr::aim::HandMuzzle shotMuzzle;
+    const bool haveWeaponMuzzle=ProvWeaponMuzzle(rcx,0x88,shotMuzzle);
+    if(!haveWeaponMuzzle && cvr::aim::DualMuzzles(GetTickCount64()))return ret;
     float p[3] = {g_provMuzzlePos[0], g_provMuzzlePos[1], g_provMuzzlePos[2]};
+    if(haveWeaponMuzzle)for(int i=0;i<3;++i)p[i]=shotMuzzle.p[i];
     const float l2 = p[0]*p[0] + p[1]*p[1] + p[2]*p[2];
     if (!std::isfinite(l2) || l2 <= 1.0f) return ret;
-    const float forward[3] = {g_pSharedHands[24], g_pSharedHands[25], g_pSharedHands[26]};
+    float forward[3] = {g_pSharedHands[24], g_pSharedHands[25], g_pSharedHands[26]};
+    if(haveWeaponMuzzle)for(int i=0;i<3;++i)forward[i]=shotMuzzle.f[i];
     float lift[3];
-    if (cvr::sight::SightLineOffset(forward, lift)) {
+    if ((!haveWeaponMuzzle || shotMuzzle.hand==1) && cvr::sight::SightLineOffset(forward, lift)) {
         p[0] += lift[0]; p[1] += lift[1]; p[2] += lift[2];
     }
 
@@ -465,7 +486,10 @@ static uintptr_t __fastcall ProvStub(uintptr_t rcx, uintptr_t rdx, uintptr_t r8,
                         const LONG recoilSeen = g_provRecoilSeqSeen;
                         if (recoilSeen != recoilSeq &&
                             InterlockedCompareExchange(&g_provRecoilSeqSeen, recoilSeq, recoilSeen) == recoilSeen) {
-                            RecoilOnShot();
+                            cvr::aim::HandMuzzle recoilMuzzle;
+                            const bool haveRecoilMuzzle=C==2 && ProvWeaponMuzzle(rcx,0x78,recoilMuzzle);
+                            if((haveRecoilMuzzle && recoilMuzzle.hand==1) ||
+                               (!haveRecoilMuzzle && !cvr::aim::DualMuzzles(GetTickCount64())))RecoilOnShot();
                         }
                     }
                     g_provOrigQ[0]=q[0]; g_provOrigQ[1]=q[1]; g_provOrigQ[2]=q[2]; g_provOrigQ[3]=q[3];
@@ -502,6 +526,9 @@ static uintptr_t __fastcall ProvStub(uintptr_t rcx, uintptr_t rdx, uintptr_t r8,
                                  g_pSharedHands[27] > 0.5f && S == 30 &&
                                  ProvIsPlayersAttack(C, rcx));
                 bool nativeOn = (g_provOverrideCls == C && g_provOverrideSlot == S);
+                cvr::aim::HandMuzzle shotMuzzle;
+                const bool haveWeaponMuzzle=C==2 && (sharedOn || nativeOn) && ProvWeaponMuzzle(rcx,0x78,shotMuzzle);
+                if(sharedOn && !haveWeaponMuzzle && C==2 && cvr::aim::DualMuzzles(GetTickCount64()))sharedOn=false;
                 if ((sharedOn || nativeOn) && g_pSharedHands) {
                     // shared (VR-overlay) path defaults to mode 6 = muzzle + preserved spread.
                     const int mode = sharedOn ? 6 : g_provQuatMode;
@@ -512,16 +539,20 @@ static uintptr_t __fastcall ProvStub(uintptr_t rcx, uintptr_t rdx, uintptr_t r8,
                         //   qNew  = delta (X) q               -- per pellet
                         // 1 pellet (pistol) -> qNew = muzzle exactly. N pellets -> pattern around muzzle.
                         float mq[4]={g_provMuzzleQ[0],g_provMuzzleQ[1],g_provMuzzleQ[2],g_provMuzzleQ[3]};
+                        if(haveWeaponMuzzle)for(int i=0;i<4;++i)mq[i]=shotMuzzle.q[i];
+                        static thread_local uintptr_t coneProvider{};
+                        static thread_local uint32_t coneSequence=0xffffffffu;
+                        static thread_local float coneDelta[4]{};
                         if (mq[0]*mq[0]+mq[1]*mq[1]+mq[2]*mq[2]+mq[3]*mq[3] > 0.5f) {
-                            if (g_provDeltaSeq != g_provMuzzleSeq) {   // recompute once per frame (first pellet)
+                            if (coneSequence != g_provMuzzleSeq || coneProvider != rcx) {   // recompute once per frame (first pellet)
                                 float cqx=-q[0],cqy=-q[1],cqz=-q[2],cqw=q[3];           // conj(q)
-                                g_provDeltaQ[0]=mq[3]*cqx+mq[0]*cqw+mq[1]*cqz-mq[2]*cqy; // mq (X) conj(q)
-                                g_provDeltaQ[1]=mq[3]*cqy-mq[0]*cqz+mq[1]*cqw+mq[2]*cqx;
-                                g_provDeltaQ[2]=mq[3]*cqz+mq[0]*cqy-mq[1]*cqx+mq[2]*cqw;
-                                g_provDeltaQ[3]=mq[3]*cqw-mq[0]*cqx-mq[1]*cqy-mq[2]*cqz;
-                                g_provDeltaSeq = g_provMuzzleSeq;
+                                coneDelta[0]=mq[3]*cqx+mq[0]*cqw+mq[1]*cqz-mq[2]*cqy; // mq (X) conj(q)
+                                coneDelta[1]=mq[3]*cqy-mq[0]*cqz+mq[1]*cqw+mq[2]*cqx;
+                                coneDelta[2]=mq[3]*cqz+mq[0]*cqy-mq[1]*cqx+mq[2]*cqw;
+                                coneDelta[3]=mq[3]*cqw-mq[0]*cqx-mq[1]*cqy-mq[2]*cqz;
+                                coneSequence = g_provMuzzleSeq;coneProvider=rcx;
                             }
-                            float dx=g_provDeltaQ[0],dy=g_provDeltaQ[1],dz=g_provDeltaQ[2],dw=g_provDeltaQ[3];
+                            float dx=coneDelta[0],dy=coneDelta[1],dz=coneDelta[2],dw=coneDelta[3];
                             float ax=q[0],ay=q[1],az=q[2],aw=q[3];                       // delta (X) q
                             q[0]=dw*ax+dx*aw+dy*az-dz*ay;
                             q[1]=dw*ay-dx*az+dy*aw+dz*ax;
@@ -534,6 +565,7 @@ static uintptr_t __fastcall ProvStub(uintptr_t rcx, uintptr_t rdx, uintptr_t r8,
                         // weapon:GetMuzzleSlotWorldTransform). Pure game-world, NO controller-space math.
                         // g_provMuzzleFwdAxis selects which muzzle local axis = barrel (default +Y).
                         float mq[4]={g_provMuzzleQ[0],g_provMuzzleQ[1],g_provMuzzleQ[2],g_provMuzzleQ[3]};
+                        if(haveWeaponMuzzle)for(int i=0;i<4;++i)mq[i]=shotMuzzle.q[i];
                         if (mq[0]*mq[0]+mq[1]*mq[1]+mq[2]*mq[2]+mq[3]*mq[3] > 0.5f) {
                             if (g_provFwdAxis == 1) {            // muzzle orientation used directly
                                 q[0]=mq[0]; q[1]=mq[1]; q[2]=mq[2]; q[3]=mq[3];
@@ -691,6 +723,24 @@ void SetVRProvQuatMode(RED4ext::IScriptable*, RED4ext::CStackFrame* aFrame, void
     int32_t mode = 1, axis = 1; RED4ext::GetParameter(aFrame, &mode); RED4ext::GetParameter(aFrame, &axis);
     aFrame->code++; g_provQuatMode = mode; g_provFwdAxis = axis;
 }
+void SetVRHandMuzzle(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, void*, int64_t) {
+    int32_t hand{}; RED4ext::Handle<RED4ext::game::weapon::Object> weapon;
+    RED4ext::Transform pose;
+    RED4ext::GetParameter(frame,&hand);RED4ext::GetParameter(frame,&weapon);
+    RED4ext::GetParameter(frame,&pose);frame->code++;
+    cvr::aim::HandMuzzle m; m.hand=hand; m.weapon=reinterpret_cast<uintptr_t>(weapon.instance);
+    m.p[0]=pose.position.X;m.p[1]=pose.position.Y;m.p[2]=pose.position.Z;
+    m.q[0]=pose.orientation.i;m.q[1]=pose.orientation.j;m.q[2]=pose.orientation.k;m.q[3]=pose.orientation.r;
+    const float dx=m.p[0]-g_provMuzzlePos[0],dy=m.p[1]-g_provMuzzlePos[1],dz=m.p[2]-g_provMuzzlePos[2];
+    const float distanceSq=dx*dx+dy*dy+dz*dz;
+    m.stamp=GetTickCount64();
+    // Reject transient local-space transforms without erasing a recent valid sample.
+    const bool accepted=(!g_provMuzzlePosSeq || distanceSq<=9.0f) && cvr::aim::PublishHand(m);
+    static std::atomic<unsigned> publishLogs[2]{};
+    if(hand>=0 && hand<2 && publishLogs[hand].fetch_add(1)<4)
+        Log("[hand-muzzle] hand=%d accepted=%d weapon=%p distanceSq=%.3f position=(%.3f %.3f %.3f)\n",hand,int(accepted),weapon.instance,distanceSq,m.p[0],m.p[1],m.p[2]);
+}
+
 void SetVRMuzzleQuat(RED4ext::IScriptable*, RED4ext::CStackFrame* aFrame, void*, int64_t) {
     float i=0,j=0,k=0,r=1; RED4ext::GetParameter(aFrame,&i); RED4ext::GetParameter(aFrame,&j);
     RED4ext::GetParameter(aFrame,&k); RED4ext::GetParameter(aFrame,&r); aFrame->code++;
@@ -794,6 +844,7 @@ void SetVRAimHit(RED4ext::IScriptable*, RED4ext::CStackFrame* aFrame, void*, int
     g_provAimNormal[0] = nx; g_provAimNormal[1] = ny; g_provAimNormal[2] = nz;
     ++g_provAimHitSeq;
     g_provAimHitStampMs = GetTickCount64();
+    cvr::aim::PublishHit(x,y,z,g_provAimHitStampMs);
 }
 
 // THE WEAPON'S OWN RECOIL, HANDED TO THE HAND SPRING. Called on every draw by the weapon module, with

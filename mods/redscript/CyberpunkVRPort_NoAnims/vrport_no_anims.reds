@@ -82,8 +82,8 @@ public final func HasPlayedFirstEquip(itemID: TweakDBID) -> Bool {
 protected const func HandleWeaponEquip(scriptInterface: ref<StateGameScriptInterface>,
                                         stateContext: ref<StateContext>,
                                         stateMachineInstanceData: StateMachineInstanceData,
-                                        item: ItemID) -> Void {
-  wrappedMethod(scriptInterface, stateContext, stateMachineInstanceData, item);
+                                        item: ItemID, isLeftWeapon: Bool) -> Void {
+  wrappedMethod(scriptInterface, stateContext, stateMachineInstanceData, item, isLeftWeapon);
 }
 
 @wrapMethod(SingleWieldEvents)
@@ -245,9 +245,12 @@ protected func OnTick(timeDelta: Float, stateContext: ref<StateContext>, scriptI
   // Per-tick refresh of the weapon PSM value and the ADS aim-in clock, for the non-VRIK ADS muzzle
   // stabilizer. Reported here as well as on the state entries because the aim-in clock counts down.
   VRPortPublishWeaponPoseState(scriptInterface);
+  // Only the right hand has a controller-driven VR recoil spring today.
+  // Preserve left-hand native recoil until it has its own VR spring.
+  if !this.IsRightWeaponLogic() { return; };
   let f = new AnimFeature_WeaponHandlingStats();
   f.weaponRecoil = 0.0;
   f.weaponSpread = GameInstance.GetStatsSystem(scriptInterface.GetGame())
     .GetStatValue(Cast<StatsObjectID>(scriptInterface.ownerEntityID), gamedataStatType.SpreadAnimation);
-  scriptInterface.SetAnimationParameterFeature(n"WeaponHandlingData", f, scriptInterface.executionOwner);
+  scriptInterface.SetAnimationParameterFeature(n"RightWeaponHandlingData", f, scriptInterface.executionOwner);
 }

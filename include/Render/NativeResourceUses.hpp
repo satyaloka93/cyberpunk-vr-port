@@ -1,5 +1,6 @@
 #pragma once
 #include "Render/NativeGraphSnapshot.hpp"
+#include "Render/NativeResourceLayout.hpp"
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -10,12 +11,7 @@
 
 namespace cvr::stereo::resource_uses {
 using ReadMemory=bool(*)(void*,uint64_t,void*,size_t);
-inline constexpr uint64_t SlotStride=0x5e00,Declarations=0x48,DeclarationCount=0x5e08;
-inline constexpr uint64_t UseCount=0x50c840,UseIds=0x50c848,AuxCount=0x514848,AuxKeys=0x51484c;
-inline constexpr uint64_t BoundaryCount=0x51494c,BoundaryIds=0x514950;
-inline constexpr uint32_t MaxSlots=220,MaxDeclarations=500,MaxUses=4096,MaxAuxKeys=64,MaxBoundaries=24;
-static_assert(SlotStride*MaxSlots==0x50c800 && Declarations+48*MaxDeclarations==DeclarationCount);
-static_assert(UseIds+8*MaxUses==AuxCount && AuxKeys+4*MaxAuxKeys==BoundaryCount && BoundaryIds+8*MaxBoundaries==0x514a10);
+using namespace resource_layout;
 enum class Failure:uint32_t {None,Arguments,SourceGraph,Header,Limit,Ids,Slot,Index,Declaration,Changed,Allocation};
 struct Declaration {
     uint32_t slot{},index{},key{},kind{},nodeHandle{},nodeOrder{};

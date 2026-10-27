@@ -9,6 +9,8 @@ inline constexpr size_t TargetingCameraTransformOffset=0x31100;
 inline constexpr size_t TargetingDefaultPositionOffset=0x311F0;
 inline constexpr size_t TargetingDefaultForwardOffset=0x31200;
 inline constexpr size_t TargetingDefaultAnglesOffset=0x31210;
+inline constexpr size_t TargetingSourceCacheOffset=0x30CC8;
+inline constexpr size_t TargetingSourceForwardOffset=0x280;
 
 // Re-aim the native head-gaze cache without moving its origin, camera or muzzle.
 // The original update refreshes the cache before this is called on each frame.
@@ -38,15 +40,17 @@ inline bool CenterHeadGaze(void* state,uintptr_t player,uint64_t entity,float ta
                         std::atan2(-forward[0],forward[1])*degrees};
     std::memcpy(bytes+TargetingDefaultForwardOffset,forward,sizeof(forward));
     std::memcpy(bytes+TargetingDefaultAnglesOffset,angles,sizeof(angles));
-    // GetDefaultCrosshairData (2.31, +2512D70) reads the FPP source cache
+    // GetDefaultCrosshairData (2.50, +2AB53C0) reads the FPP source cache
     // directly, whereas native target selection uses the copy above.
-    // Keep both directions in step; never move sourceCache+0x350 (origin).
-    uintptr_t sourceCache{};std::memcpy(&sourceCache,bytes+0x30CC8,sizeof(sourceCache));
-    if(sourceCache)std::memcpy(reinterpret_cast<void*>(sourceCache+0x370),forward,sizeof(forward));
+    // Both native readers (19C75C/2AB53C0) changed source origin350->260
+    // and forward370->280. State offsets above stayed unchanged.
+    // Keep both directions in step; never move sourceCache+0x260 (origin).
+    uintptr_t sourceCache{};std::memcpy(&sourceCache,bytes+TargetingSourceCacheOffset,sizeof(sourceCache));
+    if(sourceCache)std::memcpy(reinterpret_cast<void*>(sourceCache+TargetingSourceForwardOffset),forward,sizeof(forward));
     return true;
 }
 
-// 2.31 TargetingSystemUser: +4B9D84 first reads the active camera, then
+// 2.50 TargetingSystemUser: +19C75C first reads the active camera, then
 // overwrites the default ray from the player's FPP cache. +23D544 uses that
 // default ray to reject targets behind it before quest CameraFocus runs.
 inline bool RefreshTakeoverTargeting(void* state,uintptr_t player,uint64_t entity) {

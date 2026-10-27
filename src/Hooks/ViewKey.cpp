@@ -21,6 +21,8 @@
 #include <windows.h>
 #include <MinHook.h>
 #include <cstdint>
+#include <cstring>
+#include "Stereo/EngineRvas.hpp"
 
 extern "C" __declspec(dllexport) int CyberpunkVR_IsMainViewActive();
 extern "C" __declspec(dllexport) extern int CyberpunkVR_StereoModuleLoaded;
@@ -33,7 +35,7 @@ namespace {
 bool ViewKeyWanted() { return CyberpunkVR_StereoModuleLoaded == 0; }
 }  // namespace
 
-constexpr uintptr_t NODE_DISPATCH_RVA = 0x1EC404;
+constexpr uintptr_t NODE_DISPATCH_RVA = cvr::detail::NODE_DISPATCH_RVA;
 using NodeDispatchFnP = uint8_t (__fastcall*)(uintptr_t* node, uint8_t* work_context, void* args);
 static NodeDispatchFnP g_origNodeDispatch = nullptr;
 thread_local uint64_t t_dxgiViewKey = 0;
@@ -111,6 +113,11 @@ bool InstallViewKeyHook() {
         s_mhReady = true;
     }
     void* target = reinterpret_cast<void*>(g_gameModuleBase + NODE_DISPATCH_RVA);
+    // Exact 2.50 dispatcher entry. The fallback must not attach at an obsolete
+    // address when the stereo module did not install its shared observer.
+    constexpr uint8_t expected[]{0x48,0x89,0x5C,0x24,0x18,0x55,0x56,0x57,
+        0x41,0x54,0x41,0x55,0x41,0x56,0x41,0x57};
+    if (std::memcmp(target, expected, sizeof(expected)) != 0) return false;
     if (MH_CreateHook(target, reinterpret_cast<void*>(&Detour_ViewKeyDispatch),
                       reinterpret_cast<void**>(&g_origNodeDispatch)) != MH_OK) {
         return false;

@@ -16,6 +16,8 @@
 //     below is for, and it is why it copies a snapshot rather than sharing a pointer.
 
 #include "Stereo/SyncStereo.hpp"
+#include "Stereo/ViewReuseLayout250.hpp"
+#include "Stereo/CascadeFreshness.hpp"
 #include "Utils/StereoLog.hpp"
 #include "Stereo/VrcamConfig.hpp"   // vrcam.json access + CName hashing, shared with the launcher
 #include "Render/ColorBlit.hpp"   // HUD debug overlay on the mirror image
@@ -43,8 +45,46 @@
 #include "Stereo/EngineRvas.hpp"
 #include "Stereo/DetourRegistry.hpp"
 
+namespace cvr::stereo::cascade_freshness {
+void Report(const char* operation,const Context& current,bool accepted) {
+    static uint64_t last{};
+    // Preserve the first occurrence of each reason: a generic record rejection
+    // must not hide the one failed sampling setup that latches native fallback.
+    struct Seen { const char* operation{}; bool accepted{}; };
+    static std::array<Seen,32> seen{};
+    bool first=true;
+    for(const auto& entry:seen) {
+        if(entry.operation && entry.accepted==accepted && std::strcmp(entry.operation,operation)==0) {first=false;break;}
+    }
+    const auto now=GetTickCount64();
+    if(!first && last && now-last<5000)return;
+    if(first) for(auto& entry:seen) if(!entry.operation) {entry={operation,accepted};break;}
+    last=now;
+    Log("[cascfresh] op=%s accepted=%d generation=%llu renderer=%p owner=%p source_frame=%u current_frame=%u delta=%u current_renderer=%p current_owner=%p accept_checks=%llu reject_checks=%llu confirmed_uploads=%llu\n",
+        operation,int(accepted),(unsigned long long)policy.generation,reinterpret_cast<void*>(policy.source.renderer),
+        reinterpret_cast<void*>(policy.source.owner),policy.source.frame,current.frame,uint32_t(current.frame-policy.source.frame),
+        reinterpret_cast<void*>(current.renderer),reinterpret_cast<void*>(current.owner),
+        (unsigned long long)policy.accepted,(unsigned long long)policy.rejected,(unsigned long long)policy.confirmed);
+}
+Context ReadContext(uintptr_t view) {
+    Context result;
+    __try {
+        const auto base=cvr::detail::g_exe_base;
+        if(!base || !view)return result;
+        result.renderer=*reinterpret_cast<const uintptr_t*>(base+cvr::detail::RENDERER_GLOBAL_RVA);
+        result.owner=*reinterpret_cast<const uintptr_t*>(view+reuse_layout::SceneManager);
+        if(!result.renderer || !result.owner)return {};
+        result.frame=*reinterpret_cast<const uint32_t*>(result.renderer+reuse_layout::RendererFrame);
+    } __except(EXCEPTION_EXECUTE_HANDLER) {return {};}
+    return result;
+}
+}
+
 namespace cvr {
 namespace detail {
+
+namespace reuse_layout = cvr::stereo::reuse_layout;
+extern "C" __declspec(dllexport) int32_t CyberpunkVR_CascSampleLend;
 
 static bool shared_world_view(uint64_t key) {
     return (key && key==g_vrcam_ctx_key) || key==cvr::cname_hash("vr_optics_feed");
@@ -288,7 +328,7 @@ static void cloud_cb_apply_vrcam(__int64 cb) {
 //   1 = the holes only (MAIN has a value, the second view has zero)
 //   2 = every differing run, including the ones where both views hold their own value
 extern "C" __declspec(dllexport) int32_t CyberpunkVR_ViewDataDiff = 0;
-constexpr size_t VIEWDATA_BYTES = 0xFF0;      // the view object's size, from the HUD reversing
+constexpr size_t VIEWDATA_BYTES = reuse_layout::ViewDataSnapshotBytes; // bounded diagnostic snapshot
 static uint8_t g_vd_main[VIEWDATA_BYTES];
 static std::atomic<bool> g_vd_have{false};
 // Bumped under g_cloud_cb_mtx with every write of g_vd_main, so a reader holding the value it saw
@@ -309,7 +349,13 @@ static std::atomic<uint64_t> g_vd_write_epoch{0};
 //                          puddles back
 //   0xF88, 0xFCC, 0xFE0 -> one block based at 0xF80, read by CompositionPostProcess and
 //        RenderDebugSystems
-struct ViewDataHole { uint16_t off, len; const char* note; };
+// Table coordinates below remain historical so setting bits retain their meaning.
+// Convert each independently validated contiguous range into the 2.50 layout.
+struct ViewDataHole {
+    uint16_t off, len; const char* note;
+    constexpr ViewDataHole(uint16_t old, uint16_t bytes, const char* label)
+        : off(reuse_layout::ViewDataOffset(old)), len(bytes), note(label) {}
+};
 static const ViewDataHole kViewDataHoles[] = {
     { 0x150,  4, "rain block" },      // bit 0
     { 0x168, 16, "composition out" }, // bit 1  -- DANGEROUS: resource set, see above
@@ -395,7 +441,7 @@ static void block_diff_log(const char* tag, const uint8_t* refb, const uint8_t* 
 // The graph CONTEXT is the other place per-view state lives, and it is where the remaining
 // symptom has to be: the viewData holes are all accounted for above and none of them is
 // lighting. Same treatment -- capture MAIN's, diff VRCAM's, report the holes.
-constexpr size_t CTX_BYTES = 0x2000;      // covers everything we have ever seen used (0x1E10+)
+constexpr size_t CTX_BYTES = 0x3000;      // bounded diagnostic capture of migrated view fields
 static uint8_t g_ctx_main[CTX_BYTES];
 static std::atomic<bool> g_ctx_have{false};
 
@@ -489,8 +535,8 @@ static void viewdata_diff_vrcam(__int64 vd) {
         char fl[700];
         int u = 0;
         fl[0] = 0;
-        static const uint16_t kFogOff[] = { 0x8C0, 0x8C4, 0x8C8, 0x8CC, 0x8D0, 0x8D4,
-                                            0x918, 0x91C, 0x920, 0x924 };
+        static const uint16_t kFogOff[] = { reuse_layout::ViewDataOffset(0x8C0), reuse_layout::ViewDataOffset(0x8C4), reuse_layout::ViewDataOffset(0x8C8), reuse_layout::ViewDataOffset(0x8CC), reuse_layout::ViewDataOffset(0x8D0), reuse_layout::ViewDataOffset(0x8D4),
+                                            reuse_layout::ViewDataOffset(0x918), reuse_layout::ViewDataOffset(0x91C), reuse_layout::ViewDataOffset(0x920), reuse_layout::ViewDataOffset(0x924) };
         for (size_t k = 0; k < sizeof(kFogOff) / sizeof(kFogOff[0]); ++k) {
             float fm = 0.0f, fv = 0.0f;
             memcpy(&fm, ref + kFogOff[k], 4);
@@ -807,7 +853,11 @@ extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugFogMirrors = 0;
 // v19 = (float*)(viewData + 0x8C0), so the parameter array is 36 floats -- 0x8C0 .. 0x94F --
 // and 0x910/0x914 are read by the other branch beside 0x918/0x91C/0x920. Bit 2 now covers all
 // of it, which makes bits 0 and 1 subsets kept only for bisecting.
-struct FogRange { uint16_t off, len; };
+struct FogRange {
+    uint16_t off, len;
+    constexpr FogRange(uint16_t old, uint16_t bytes)
+        : off(reuse_layout::ViewDataOffset(old)), len(bytes) {}
+};
 static const FogRange kFogMirror[3] = { { 0x920, 4 }, { 0x910, 0x14 }, { 0x8C0, 0x90 } };
 
 // ---- the atmosphere block, mirrored in bisectable pieces -----------------------------------
@@ -889,7 +939,11 @@ extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugEnvMirrorPtrSkips = 0
 // drift together frame to frame (405B9BA0 against 405B9BB9) -- that is per-eye camera-derived
 // data and copying it would break the stereo. 0x6E0, 0xF58, 0xF88, 0xFB8 are pointers/resources.
 static const FogRange kEnvMirror[] = {
-    { 0x370, 0x90 }, { 0x400, 0x60 }, { 0x460, 0xA0 }, { 0x500, 0xE0 },
+    { 0x370, 0x90 },
+    // Preserve the new2.50 DWORD at40C and padding414..41F. All three
+    // old radiance fragments still belong to setting bit1.
+    { 0x400, 0x0C }, { 0x40C, 0x04 }, { 0x410, 0x50 },
+    { 0x460, 0xA0 }, { 0x500, 0xE0 },
     { 0x610, 0x28 }, { 0x6FC, 0x10 },
     { 0x830, 0x88 }, { 0x950, 0x18 }, { 0x998, 0x08 },
     { 0xA14, 0x04 }, { 0xAC4, 0x34 }, { 0xB20, 0x18 },
@@ -1137,7 +1191,7 @@ static const FogRange kEnvMirror[] = {
     // set xr_env_mirror_mask=40FFFF to test it, FFFF to go back.
     { 0x810, 0x04 },
 };
-static const uint32_t kEnvBit[] = { 0, 1, 2, 3, 4, 4, 5, 6, 6, 7, 7, 8, 9, 10,
+static const uint32_t kEnvBit[] = { 0, 1, 1, 1, 2, 3, 4, 4, 5, 6, 6, 7, 7, 8, 9, 10,
                                     12, 13, 14, 14, 15,
                                     16, 17, 18, 18, 19, 20, 21,
                                     11, 11, 11, 11, 11, 11, 11, 22 };
@@ -1360,7 +1414,7 @@ static __int64 __fastcall Detour_CloudCbFill(__int64 a1, __int64 a2, __int64 a3,
                            cloud_cb_apply_vrcam(a2); }
     }
     if (a4 && (CyberpunkVR_ViewDataDiff || CyberpunkVR_ViewDataFixMask)) {
-        const __int64 viewData = a4 - 0x430;
+        const __int64 viewData = a4 - reuse_layout::CloudInput;
         __int64 ctx = 0;
         if (CyberpunkVR_ViewDataDiff) {
             __try { ctx = *reinterpret_cast<__int64*>(a3 + 0x18); }
@@ -1479,7 +1533,7 @@ namespace {
 using EnvViewDataFn = void*(__fastcall*)(void*);
 EnvViewDataFn g_env_viewdata = nullptr;
 
-constexpr uint16_t kEnvPtrOff[4] = { 0x6E0, 0xF58, 0xF88, 0xFB8 };
+constexpr uint16_t kEnvPtrOff[4] = { reuse_layout::ViewDataOffset(0x6E0), reuse_layout::ViewDataOffset(0xF58), reuse_layout::ViewDataOffset(0xF88), reuse_layout::ViewDataOffset(0xFB8) };
 uintptr_t g_envptr[2][4] = {};
 bool      g_envptr_have[2] = {};
 
@@ -1584,7 +1638,7 @@ static __int64 __fastcall Detour_SkyScattering(void* a1, void* a2) {
                 slot.glob = -1;
                 if (g_exe_base) {
                     const uintptr_t pp = *reinterpret_cast<uintptr_t*>(
-                        reinterpret_cast<uint8_t*>(g_exe_base) + 0x3427C00);
+                        reinterpret_cast<uint8_t*>(g_exe_base) + RENDERER_GLOBAL_RVA);
                     slot.glob = (pp && *reinterpret_cast<uintptr_t*>(pp + 200)) ? 1 : 0;
                 }
                 slot.have = true;
@@ -1597,7 +1651,7 @@ static __int64 __fastcall Detour_SkyScattering(void* a1, void* a2) {
     if (CyberpunkVR_EnvPtrProbe && a2 && g_exe_base) {
         if (!g_env_viewdata)
             g_env_viewdata = reinterpret_cast<EnvViewDataFn>(
-                reinterpret_cast<uint8_t*>(g_exe_base) + 0x1ED930);
+                reinterpret_cast<uint8_t*>(g_exe_base) + reuse_layout::ViewDataGetterRva);
         __try {
             uint8_t* vd = reinterpret_cast<uint8_t*>(g_env_viewdata(a2));
             const uintptr_t ctx = *reinterpret_cast<uintptr_t*>(
@@ -1821,7 +1875,7 @@ static char __fastcall Detour_WindImpulseNode(void* a1, void* a2) {
         const uintptr_t renderer =
             *reinterpret_cast<uintptr_t*>(g_exe_base + RENDERER_GLOBAL_RVA);
         if (!wind || !renderer) return g_orig_wind_node(a1, a2);
-        const uint32_t rframe = *reinterpret_cast<uint32_t*>(renderer + 0x4CA4);
+        const uint32_t rframe = *reinterpret_cast<uint32_t*>(renderer + reuse_layout::RendererFrame);
         const uintptr_t ctx = *reinterpret_cast<uintptr_t*>(wc + 0x18);
         const bool vrcam = ctx && shared_world_view(*reinterpret_cast<uint64_t*>(ctx + 0x28));
         // The pass's own InterlockedExchange leaves the frame id behind either way, so no other
@@ -1849,7 +1903,7 @@ static char __fastcall Detour_WindImpulseNode(void* a1, void* a2) {
 //     if ((wc[0x30] & 2) != 0)                          // the owner bit
 //         return sub_140200B4C(*(*(wc + 0x20) + 0x80));  // the SpeedTree wind manager
 //   and inside:
-//     if (latch(mgr + 0x48, renderer + 0x4CA4))          // the same once-per-frame latch
+//     if (latch(mgr + 0x48, renderer + reuse_layout::RendererFrame))          // the same once-per-frame latch
 //         for each wind instance: push the current wind, then sub_1401F088C(idx, 416, inst + 0x4538)
 //
 // So one view per frame uploads 416 bytes of wind state and the other view's vegetation is left with
@@ -1922,7 +1976,7 @@ static int64_t __fastcall Detour_SpeedTreeWind(void* a1, void* a2) {
         const uintptr_t renderer =
             *reinterpret_cast<uintptr_t*>(g_exe_base + RENDERER_GLOBAL_RVA);
         if (!mgr || !renderer) return g_orig_st_wind(a1, a2);
-        const uint32_t rframe = *reinterpret_cast<uint32_t*>(renderer + 0x4CA4);
+        const uint32_t rframe = *reinterpret_cast<uint32_t*>(renderer + reuse_layout::RendererFrame);
 
         // MODE 2: one wind state per eye-pair. The second view is handed the latch already claimed, so it
         // skips the advance and reads what the first view uploaded. The first view is left alone, so the
@@ -1968,7 +2022,7 @@ static int64_t __fastcall Detour_SpeedTreeWind(void* a1, void* a2) {
 // a cable, a fence slat, a branch. Which is exactly the set of objects reported.
 //
 // What IS verified, live in the debugger: the two views' cascade passes reach the same scene manager --
-// *(view_ctx + 0x1E10) reads 0x2A926A675C0 for both -- so the cascade records are one shared object, not
+// *(view_ctx + reuse_layout::SceneManager) reads 0x2A926A675C0 for both -- so the cascade records are one shared object, not
 // one per view. But a shared pointer is not a shared VALUE at draw time: this project's own notes record
 // the pattern of two views rebuilding one global in turn, and if each view writes its placement before
 // its own pass, both read "their own" matrix out of the same memory.
@@ -2071,9 +2125,9 @@ extern "C" __declspec(dllexport) int32_t  CyberpunkVR_CascRecLend = 1;
 extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugCascRecLends = 0;
 
 namespace {
-constexpr uintptr_t kCascRecBase = 801616;       // scene_mgr + 801616 + 1104 * idx
-constexpr uintptr_t kCascRecStride = 1104;
-constexpr uint32_t  kCascRecScan = 1104;         // how much of it to diff for the report
+constexpr uintptr_t kCascRecBase = reuse_layout::CascadeRecordBase;
+constexpr uintptr_t kCascRecStride = reuse_layout::CascadeRecordStride;
+constexpr uint32_t  kCascRecScan = reuse_layout::CascadeRecordStride;         // how much of it to diff for the report
 // The groups measured to differ and safe to copy: the extent pair and the centre triple.
 constexpr uint32_t kCascExtentOff = 0x40;
 constexpr uint32_t kCascExtentLen = 8;
@@ -2083,7 +2137,7 @@ constexpr uint32_t kCascCentreLen = 12;
 uint8_t g_casc_rec[8][kCascRecScan] = {};
 bool    g_casc_rec_have[8] = {};
 
-constexpr uintptr_t kCascBiasOffset = 2664;      // viewData + 2664 + 16 * cascade_idx
+constexpr uintptr_t kCascBiasOffset = reuse_layout::CascadeBias;      // viewData + A78 + 16 * cascade_idx
 float g_casc_bias_main[8] = {};
 bool  g_casc_bias_have[8] = {};
 // Its own pointer to the viewData getter rather than the file's shared one, which is declared further
@@ -2415,6 +2469,63 @@ static int64_t __fastcall Detour_CascadeClear(void* a1, void* a2) {
 }
 CVR_DETOUR("[cascade] clear sub_141D59B40", CASCADE_CLEAR_NODE_RVA, Detour_CascadeClear, g_orig_cascade_clear)
 
+static void CascadeRecordWorker(void* a2,int32_t idx) {
+        __try {
+            const uintptr_t ctx = *reinterpret_cast<uintptr_t*>(
+                reinterpret_cast<uint8_t*>(a2) + 0x18);
+            const uintptr_t mgr = ctx ? *reinterpret_cast<uintptr_t*>(ctx + reuse_layout::SceneManager) : 0;
+            const bool vrcam = ctx && *reinterpret_cast<uint64_t*>(ctx + 0x28) == g_vrcam_ctx_key;
+            if (mgr) {
+                uint8_t* rec = reinterpret_cast<uint8_t*>(mgr + kCascRecBase + kCascRecStride * idx);
+                if (vrcam) {
+                    g_casc_rec_have[idx]=false;
+                    cvr::stereo::cascade_freshness::policy.ready[idx]=0;
+                    cvr::stereo::cascade_freshness::policy.pending[idx]=0;
+                    cvr::stereo::cascade_freshness::stagedRecords[idx]=0;
+                    memcpy(g_casc_rec[idx], rec, kCascRecScan);
+                    // A snapshot alone is not usable: the native node may early-out
+                    // before uploading its cascade camera. Grading confirms that upload.
+                    g_casc_rec_have[idx] = true;
+                    cvr::stereo::cascade_freshness::stagedRecords[idx]=
+                        cvr::stereo::cascade_freshness::policy.Stage(
+                            reuse_layout::PlainCascadeRecord(g_casc_rec[idx])?
+                                cvr::stereo::cascade_freshness::ReadContext(ctx):
+                                cvr::stereo::cascade_freshness::Context{},unsigned(idx));
+                } else if ((!CyberpunkVR_CascSampleLend || cvr::stereo::cascade_freshness::policy.sampled) &&
+                        g_casc_rec_have[idx] && cvr::stereo::cascade_freshness::policy.Record(
+                        cvr::stereo::cascade_freshness::ReadContext(ctx),unsigned(idx))) {
+                    casc_rec_report(idx, rec, g_casc_rec[idx]);
+                    if (CyberpunkVR_CascFitProbe) cascfit_note_pre(rec, idx);
+                    // THE WHOLE FIT, not two field groups. The first attempt copied only the extent and the
+                    // centre and left everything else -- including the transform the pass actually builds its
+                    // constants from, which sits elsewhere in this record -- so MAIN kept rasterising and
+                    // sampling with its own fitting and nothing changed. Copying two fields out of a fit is
+                    // not lending the fit.
+                    //
+                    // In2.50 this record starts with the enlarged camera descriptor.
+                    // Preserve the existing first16-byte policy, but never lend a
+                    // shallow snapshot whose source or destination owns eye cameras.
+                    if (reuse_layout::LendPlainCascadeFit(rec, g_casc_rec[idx])) {
+                        cvr::stereo::cascade_freshness::Report("record",cvr::stereo::cascade_freshness::ReadContext(ctx),true);
+                        CVR_DIAGNOSTIC(InterlockedIncrement64(
+                            reinterpret_cast<volatile LONG64*>(&CyberpunkVR_DebugCascRecLends)));
+                    } else {
+                        cvr::stereo::cascade_freshness::Report("record-native-mode",cvr::stereo::cascade_freshness::ReadContext(ctx),false);
+                        static std::atomic<bool> warned{false};
+                        if (!warned.exchange(true, std::memory_order_relaxed))
+                            log("[cascade] native camera has nested/projection state; preserving its own fit");
+                    }
+                } else if(!vrcam) {
+                    cvr::stereo::cascade_freshness::Report("record",cvr::stereo::cascade_freshness::ReadContext(ctx),false);
+                }
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) { }
+}
+static void CascadeRecordExchange(void* work,int32_t index) {
+    std::lock_guard lock(cvr::stereo::cascade_freshness::mutex);
+    CascadeRecordWorker(work,index);
+}
+
 static int64_t __fastcall Detour_CascadeNode(void* a1, void* a2) {
     // This camera has its own frustum and shadow sampling transforms. Keep it
     // out of the two-eye cascade-record exchange; skipping its native draws
@@ -2455,39 +2566,8 @@ static int64_t __fastcall Detour_CascadeNode(void* a1, void* a2) {
         casc_count_report();
     }
 
-    // The cascade placement: snapshot it from the view that runs FIRST and give it to the one that runs
-    // second, so both eyes rasterise on one texel grid within the same frame.
-    if (CyberpunkVR_CascRecLend && idx >= 0 && idx < 8 && a2) {
-        __try {
-            const uintptr_t ctx = *reinterpret_cast<uintptr_t*>(
-                reinterpret_cast<uint8_t*>(a2) + 0x18);
-            const uintptr_t mgr = ctx ? *reinterpret_cast<uintptr_t*>(ctx + 0x1E10) : 0;
-            const bool vrcam = ctx && *reinterpret_cast<uint64_t*>(ctx + 0x28) == g_vrcam_ctx_key;
-            if (mgr) {
-                uint8_t* rec = reinterpret_cast<uint8_t*>(mgr + kCascRecBase + kCascRecStride * idx);
-                if (vrcam) {
-                    memcpy(g_casc_rec[idx], rec, kCascRecScan);
-                    g_casc_rec_have[idx] = true;
-                } else if (g_casc_rec_have[idx]) {
-                    casc_rec_report(idx, rec, g_casc_rec[idx]);
-                    if (CyberpunkVR_CascFitProbe) cascfit_note_pre(rec, idx);
-                    // THE WHOLE FIT, not two field groups. The first attempt copied only the extent and the
-                    // centre and left everything else -- including the transform the pass actually builds its
-                    // constants from, which sits elsewhere in this record -- so MAIN kept rasterising and
-                    // sampling with its own fitting and nothing changed. Copying two fields out of a fit is
-                    // not lending the fit.
-                    //
-                    // Everything from +0x10 on is safe to copy because this record is ONE SHARED object that
-                    // each view rewrites before its own pass; there is no per-view half of it to protect. The
-                    // first sixteen bytes are left alone: they change every frame (serials, measured across
-                    // three dumps) and copying them buys nothing.
-                    memcpy(rec + 16, g_casc_rec[idx] + 16, kCascRecScan - 16);
-                    CVR_DIAGNOSTIC(InterlockedIncrement64(
-                        reinterpret_cast<volatile LONG64*>(&CyberpunkVR_DebugCascRecLends)));
-                }
-            }
-        } __except (EXCEPTION_EXECUTE_HANDLER) { }
-    }
+    // The snapshot becomes lendable only when Grading observes its native camera upload.
+    if(CyberpunkVR_CascRecLend && idx>=0 && idx<8 && a2)CascadeRecordExchange(a2,idx);
 
     // How far apart the two views fit this cascade, in metres, read AFTER the lend on purpose. With the lend
     // off it measures the engine's own separation (9-13 cm on cascade 0, 21-36 cm on cascade 1 while turning);
@@ -2498,7 +2578,7 @@ static int64_t __fastcall Detour_CascadeNode(void* a1, void* a2) {
         __try {
             const uintptr_t ctx = *reinterpret_cast<uintptr_t*>(
                 reinterpret_cast<uint8_t*>(a2) + 0x18);
-            const uintptr_t mgr = ctx ? *reinterpret_cast<uintptr_t*>(ctx + 0x1E10) : 0;
+            const uintptr_t mgr = ctx ? *reinterpret_cast<uintptr_t*>(ctx + reuse_layout::SceneManager) : 0;
             const bool vrcam = ctx && *reinterpret_cast<uint64_t*>(ctx + 0x28) == g_vrcam_ctx_key;
             if (mgr)
                 cascfit_note(reinterpret_cast<const uint8_t*>(mgr + kCascRecBase +
@@ -2509,7 +2589,7 @@ static int64_t __fastcall Detour_CascadeNode(void* a1, void* a2) {
 
     if (CyberpunkVR_CascadeBiasLend && idx >= 0 && idx < 8 && a2 && g_exe_base) {
         if (!g_casc_viewdata)
-            g_casc_viewdata = reinterpret_cast<CascViewDataFn>(g_exe_base + 0x1ED930);
+            g_casc_viewdata = reinterpret_cast<CascViewDataFn>(g_exe_base + reuse_layout::ViewDataGetterRva);
         __try {
             uint8_t* vd = reinterpret_cast<uint8_t*>(g_casc_viewdata(a2));
             const uintptr_t ctx = *reinterpret_cast<uintptr_t*>(
@@ -2719,7 +2799,7 @@ static __int64 __fastcall Detour_LightBuffers(void* a1, void* a2) {
     if (!CyberpunkVR_LightBlockLend || !a2 || !t_vrcam_node_active || !g_main_block_v5)
         return g_orig_lightbuffers(a1, a2);
     if (!g_viewdata_get && g_exe_base)
-        g_viewdata_get = reinterpret_cast<ViewDataGetterFn>(g_exe_base + 0x1ED930);
+        g_viewdata_get = reinterpret_cast<ViewDataGetterFn>(g_exe_base + reuse_layout::ViewDataGetterRva);
     if (!g_viewdata_get) return g_orig_lightbuffers(a1, a2);
     void** slot = nullptr;
     void* saved = nullptr;
@@ -2839,7 +2919,7 @@ static CompAssignFn g_orig_comp_assign = nullptr;
 static std::atomic<uintptr_t> g_comp_set{0};
 
 // THE LENT OBJECT IS THE ONE THE ENGINE GAVE MAIN, AND THE PORT HOLDS A COUNT ON IT (2026-10-17).
-// The lend used to read the set's live handle (holder at set+176, pair at +600) on every dispatch of
+// The lend used to read the set's live handle (holder at set+176, pair at +0x288) on every dispatch of
 // the second view, with no count of its own. The set belongs to the UI and moves on while the render
 // of the previous frame is still running. With a long world tick the game thread drew the next frame's
 // UI after the second view's graph had finished. In a pause the tick is short and the drawing overlaps
@@ -2986,7 +3066,8 @@ static bool comp_lend_full_size(const uint32_t wh[2]) {
     return wh[0] > (vrcam_w + 1u) / 2u && wh[1] > (vrcam_h + 1u) / 2u;
 }
 
-// The set's live object: holder at set+176 (branch A), {value, refcount} at holder+600.
+// The set's live object: holder at set+B0 (branch A), {value, refcount} at holder+288.
+// Native 2.50 assign545769..545777; the old holder+258 is no longer the handle.
 static uint64_t comp_lend_set_object() {
     const uintptr_t set = g_comp_set.load(std::memory_order_acquire);
     if (!set) return 0;
@@ -2994,7 +3075,7 @@ static uint64_t comp_lend_set_object() {
     if (!cloud_cb_raw_copy(&holder, reinterpret_cast<const uint8_t*>(set) + 176, 8) || !holder)
         return 0;
     uint64_t pair[2] = {0, 0};
-    if (!cloud_cb_raw_copy(pair, reinterpret_cast<const uint8_t*>(holder) + 600, 16)) return 0;
+    if (!cloud_cb_raw_copy(pair, reinterpret_cast<const uint8_t*>(holder) + 0x288, 16)) return 0;
     return pair[0];
 }
 
@@ -3063,7 +3144,7 @@ static bool comp_lend_fetch(uint64_t out[2]) {
 uintptr_t comp_lend_install(void* work_context, uint64_t saved[2]) {
     if (!CyberpunkVR_CompLendScoped || !work_context) return 0;
     if (!g_viewdata_get && g_exe_base)
-        g_viewdata_get = reinterpret_cast<ViewDataGetterFn>(g_exe_base + 0x1ED930);
+        g_viewdata_get = reinterpret_cast<ViewDataGetterFn>(g_exe_base + reuse_layout::ViewDataGetterRva);
     if (!g_viewdata_get) return 0;
     uintptr_t vd = 0;
     __try { vd = static_cast<uintptr_t>(g_viewdata_get(work_context)); }

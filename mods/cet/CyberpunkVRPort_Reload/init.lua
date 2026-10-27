@@ -409,6 +409,7 @@ local function publishOwnedHand(hand)
     pcall(function() SetVRReloadOwnedHand(v == nil and -1 or v) end)
 end
 
+local lastReloadError, reloadErrors = nil, 0
 registerForEvent('onUpdate', function(dt)
     if type(VRHandRawModel) ~= 'function' or type(VRHandStopModel) ~= 'function' then return end
     if type(VRBoneModelPos) ~= 'function' or type(VRBoneModelRot) ~= 'function' then return end
@@ -439,6 +440,10 @@ registerForEvent('onUpdate', function(dt)
         else
             local okF, errF = pcall(Reload.frame, lastW, slotComp, holder, dt)
             dbgNote2 = okF and '-' or ('FRAME-ERR: ' .. tostring(errF))
+            if not okF and tostring(errF) ~= lastReloadError and reloadErrors < 8 then
+                lastReloadError = tostring(errF); reloadErrors = reloadErrors + 1
+                spdlog.error('[Reload] update failed: ' .. lastReloadError)
+            end
         end
     end
 

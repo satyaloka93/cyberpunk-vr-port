@@ -249,12 +249,12 @@ void __fastcall BlendFinalize(uintptr_t array) {
     // This call site is under our Blend scope; unrelated array frees never
     // acquire a camera label. Read the actual entries, not a table sampled
     // before the director took its own lock.
-    if(t_blendDirector && reinterpret_cast<uintptr_t>(_ReturnAddress())==s_exe+0x127A62) {
+    if(t_blendDirector && reinterpret_cast<uintptr_t>(_ReturnAddress())==s_exe+0x5FBE2B) {
         uintptr_t entries{};uint32_t count{};
         const bool diagnostics=cvr::RuntimeDiagnosticsEnabled();
         PoseBlendDebug diagnostic{};
         diagnostic.director=t_blendDirector;
-        const auto output=t_blendDirector+0x4C0;
+        const auto output=t_blendDirector+0x500;
         bool accepted=false;
         if(ReadU64Safe(array,&entries) && ReadU32Safe(array+12,&count) && count>0 && count<=64) {
             std::vector<WeightedPoseReceipt> inputs;
@@ -333,10 +333,10 @@ void __fastcall GenericSerialize(uintptr_t interfacePointer,uintptr_t destinatio
     CVR_DIAGNOSTIC(RecordExternal(0,destination,interfacePointer-0x120,t_externalHead));
 }
 uintptr_t __fastcall MainRead(uintptr_t director,uintptr_t destination,uintptr_t setup) {
-    // Bind the actual selected setup argument. Reading director+4C0 here would
+    // Bind the actual selected setup argument. Reading director+500 here would
     // mislabel an override chosen by the director after an earlier observation.
     SourceScope scope(CapturePoseAddress(setup));
-    if(!t_source)CVR_DIAGNOSTIC(CyberpunkVR_PoseMainReadMissing[setup==director+0x4C0 ? 0 : 1].fetch_add(1,std::memory_order_relaxed));
+    if(!t_source)CVR_DIAGNOSTIC(CyberpunkVR_PoseMainReadMissing[setup==director+0x500 ? 0 : 1].fetch_add(1,std::memory_order_relaxed));
     InvalidatePoseAddress(destination);
     const auto result=s_mainRead(director,destination,setup);
     TransferPoseAddress(t_source,destination);
@@ -365,7 +365,7 @@ void __fastcall RttRefresh(uintptr_t component) {
 }
 uintptr_t __fastcall DescriptorBuild(uintptr_t destination,uintptr_t descriptor) {
     if(t_rttComponent && t_rttComponent==cvr::detail::g_vrcam_comp.load(std::memory_order_acquire) &&
-       reinterpret_cast<uintptr_t>(_ReturnAddress())==s_exe+0xAC2CE5) {
+       reinterpret_cast<uintptr_t>(_ReturnAddress())==s_exe+0xD29C8C) {
         if(t_externalRtt) {
             const auto& source=*t_externalRtt;
             auto opposite=source.main;
@@ -374,7 +374,12 @@ uintptr_t __fastcall DescriptorBuild(uintptr_t destination,uintptr_t descriptor)
                 // This is the native builder's temporary descriptor, not the
                 // player's placed component. Matrices/culling are constructed
                 // by the original from these fields; no late camera rewrite.
-                alignas(16) std::array<std::byte,0x60> copy{};
+                // 2.50's descriptor includes stereo parameters through+84 and
+                // a16-byte reference at+88. Borrow its bits while the native
+                // caller owns them:2135EC/1975BC reads that source and takes
+                // its own reference for the output. This byte copy must never
+                // run a descriptor destructor or steal the caller's reference.
+                alignas(16) std::array<std::byte,0x98> copy{};
                 std::memcpy(copy.data(),reinterpret_cast<const void*>(descriptor),copy.size());
                 std::memcpy(copy.data(),&opposite.rotation,16);
                 std::memcpy(copy.data()+0x10,opposite.position.data(),12);
@@ -399,12 +404,14 @@ uintptr_t __fastcall CameraClone(uintptr_t destination,uintptr_t source) {
     TransferPoseAddress(receipt,destination);return result;
 }
 uintptr_t __fastcall RenderBuild(uintptr_t destination,uintptr_t descriptor,uintptr_t clipPlanes) {
-    // The verified call at4E50F9 passes context+20A0. Its descriptor is made
-    // from context+1E20, populated by the registered-camera copy (36FD7C).
+    // Both 2.50 builder paths pass input descriptor+280, at context+2ED0.
+    // The input descriptor itself starts at2C50. The alternate native path
+    // constructs the same descriptor before copying it into a selected view.
     PoseReceipt source{};
-    if(reinterpret_cast<uintptr_t>(_ReturnAddress())==s_exe+0x4E50FE && clipPlanes>0x20A0) {
-        const auto context=clipPlanes-0x20A0;
-        source=CapturePoseAddress(context+0x1E20);
+    const auto caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
+    if((caller==s_exe+0x424956 || caller==s_exe+0x4248FB) && clipPlanes>0x2ED0) {
+        const auto context=clipPlanes-0x2ED0;
+        source=CapturePoseAddress(context+0x2C50);
         if(!DescriptorMatches(descriptor,&source))source={};
     }
     InvalidatePoseAddress(destination);
@@ -439,7 +446,7 @@ bool InstallCameraPoseTransport() {
         {cvr::camera::sites::RenderBuild,reinterpret_cast<void*>(&RenderBuild),reinterpret_cast<void**>(&s_render)}
     };
     for(const auto& site:sites)if(!Matches(site.expected))return false;
-    if(!Matches(cvr::camera::sites::RenderCall) || !Matches(cvr::camera::sites::BlendFinalizeCall) ||
+    if(!Matches(cvr::camera::sites::RenderCall) || !Matches(cvr::camera::sites::RenderAlternateCall) || !Matches(cvr::camera::sites::BlendFinalizeCall) ||
        !Matches(cvr::camera::sites::RttDescriptorCall)||
        !EnsureCameraPoseCopyHook())return false;
     bool ok=true;

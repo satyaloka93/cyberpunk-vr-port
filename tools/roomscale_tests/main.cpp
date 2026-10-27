@@ -910,6 +910,13 @@ void ManualAnchorFrames() {
         }
     }
     const AnchorVector seat{.026f,-.187f,.17f};
+    const AnchorVector bikeSeat{-.014f,.032f,.05f};
+    const auto carSelected=SelectVehicleCameraOffset(seat,bikeSeat,false);
+    const auto bikeSelected=SelectVehicleCameraOffset(seat,bikeSeat,true);
+    Near(Vec2{carSelected.x,carSelected.y},{seat.x,seat.y},"car must select its own seated camera adjustment");
+    Near(carSelected.z,seat.z,"car offset selection changed height");
+    Near(Vec2{bikeSelected.x,bikeSelected.y},{bikeSeat.x,bikeSeat.y},"bike must select its independent seated camera adjustment");
+    Near(bikeSelected.z,bikeSeat.z,"bike offset selection changed height");
     const auto mounted=MakeAnchorRecipe(manual,seat,{},true,1,pi/2,0);
     const auto position=ComposeAnchorTranslation({.2f,.1f,-.1f},mounted.trackingOffset,mounted.modelOffset,pi/2,0);
     Near(Vec2{position.x,position.y},{-.087f,.214f},"seated manual and vehicle offsets retain view basis");

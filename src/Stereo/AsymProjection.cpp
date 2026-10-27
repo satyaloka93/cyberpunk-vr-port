@@ -7,23 +7,24 @@
 // 94x99 deg panel, a third of every rendered pixel never shown and the centre that much softer.
 //
 // REDengine 4 can draw the off-centre frustum itself; nothing has to be faked. Its camera matrix
-// builder (sub_1401E412C) takes, besides the vertical fov, aspect and zoom, an NDC shift of the
+// builder takes, besides the vertical fov, aspect and zoom, an NDC shift of the
 // projection centre at camera+0x30/+0x34 and post-multiplies the projection by that translation
 // (row 3 = (x, y, 0, 1), so P20/P21 carry it) -- the same multiply it uses for the TAA jitter, but a
 // separate field: the history camera is rebuilt with the jitter zeroed and the shift kept
-// (sub_1401E2C94 -> sub_140787D84), so motion vectors and DLSS see an unjittered camera that is
+// (as established on the earlier engine), so motion vectors and DLSS see an unjittered camera that is
 // simply off-centre.
 //
-// Where the shift goes in. Every eye view is prepared by sub_1404E4AFC(ctx, spec, view): it builds
-// the view's four camera descriptors (view+0x70 + i*0x3A0, one per rendering plane) from the view's
-// camera INPUT block at view+0x1E20 -- the same layout as a descriptor: fov +0x1E40, aspect +0x1E48,
-// zoom +0x1E4C, shift +0x1E50/+0x1E54, near/far +0x1E60/+0x1E64 -- then adds the jitter and rebuilds.
+// Where the shift goes in. On game 2.50, sub_1404240DC(ctx, spec, view) builds
+// four camera descriptors (view+0xE0 + i*0x3E0, one per rendering plane) from
+// the input block at view+0x2C50: fov +0x2C70, aspect +0x2C78, zoom +0x2C7C,
+// shift +0x2C80/+0x2C84, near/far +0x2C90/+0x2C94. The paired 2.31/2.50
+// native audit establishes these fields separately, not by a uniform delta.
 // Writing the input block on the way in reaches the descriptors, their copies, the jittered rebuild,
 // the history, the view-state matrices and the Streamline constants through the engine's own code, in
 // one place, for both eyes. FinalCamera is too late: it runs in PrepareSceneRendering, after the
-// matrices exist. Only the two eye views pass through here (measured: 0 other views).
+// matrices exist. Earlier-engine measurements saw only the two eye views here (0 other views).
 //
-// Measured on the live game with MAIN shifted by hand (mode 2), time frozen: the picture moves by
+// Measured on the earlier live game with MAIN shifted by hand (mode 2), time frozen: the picture moves by
 // exactly shift * size / 2 (144 px at 0.3 of a 960 px eye, 96 px at 0.2 vertically, 288 at 0.6), and
 // the overlap is the same picture -- lighting, reflections and AO stay on their geometry; what differs
 // is DLSS resampling and the auto exposure seeing a different frame. The screen-space HUD stays where
@@ -34,6 +35,7 @@
 
 #include "Stereo/StereoInternal.hpp"
 #include "Stereo/DetourRegistry.hpp"
+#include "Stereo/EngineCameraLayout.hpp"
 #include "Core/VrCoreShared.hpp"
 #include "Runtimes/OpenXRManager.hpp"
 #include "Runtimes/AsymmetricProjection.hpp"
@@ -58,7 +60,7 @@ __declspec(dllexport) float CyberpunkVR_AsymTest[8] = {};
 // Prepare calls seen: MAIN, VRCAM, other views.
 __declspec(dllexport) uint64_t CyberpunkVR_DebugAsymPrepare[3] = {};
 // The input block as the engine left it, per eye (MAIN [0..7], VRCAM [8..15]):
-// fov, +0x1E44, aspect, zoom, shift x, shift y, near, far.
+// fov, +0x2C74, aspect, zoom, shift x, shift y, near, far.
 __declspec(dllexport) float CyberpunkVR_DebugAsymView[16] = {};
 // The plane overrides as the engine left them, per eye and plane (4 x 8 floats each):
 // fov, zoom, shift x, shift y, [4], [5], near, far; zeros where the plane has none.
@@ -68,7 +70,7 @@ __declspec(dllexport) float CyberpunkVR_DebugAsymPlanes[64] = {};
 // P21. Read right after the producer returns -- the numbers the frame is drawn with.
 __declspec(dllexport) float CyberpunkVR_DebugAsymBuilt[32] = {};
 // The terms the input fov goes through on the way to the descriptor, per eye:
-// descriptor fov = [view+0x17F4] * input fov + [view+0x1D40].
+// descriptor fov = [view+0x25D4] * input fov + [view+0x2B70].
 __declspec(dllexport) float CyberpunkVR_DebugAsymFovTerms[4] = {};
 // The window each eye was given in mode 1, tangents l, r, d, u (MAIN [0..3], VRCAM [4..7]).
 __declspec(dllexport) float CyberpunkVR_DebugAsymWindow[8] = {};
@@ -87,29 +89,30 @@ __declspec(dllexport) float CyberpunkVR_DebugAsymCascadeWindow[8] = {};
 namespace cvr::detail {
 namespace {
 
-constexpr uintptr_t VIEW_PREPARE_RVA = 0x4E4AFC;
-constexpr size_t kInputFov = 0x1E40;   // fov, ?, aspect, zoom, shift x, shift y, ?, ?, near, far
-constexpr size_t kFovScale = 0x17F4;
-constexpr size_t kFovAdd   = 0x1D40;
+namespace camera_layout = cvr::stereo::camera_layout;
+constexpr uintptr_t VIEW_PREPARE_RVA = camera_layout::ViewPrepareRva;
+constexpr size_t kInputFov = camera_layout::InputFov; // fov, ?, aspect, zoom, shift x/y, ?, ?, near/far
+constexpr size_t kFovScale = camera_layout::FovScale;
+constexpr size_t kFovAdd   = camera_layout::FovAdd;
 // THE FIRST-PERSON PLANE HAS ITS OWN PROJECTION, AND ITS OWN SHIFT. After building the descriptors the
-// producer hands each one whose plane carries an override (the pointer at view+0x1688 + i*0x10) to
-// sub_140781CE8, which rebuilds that descriptor from the override: fov [0], zoom [1], NDC shift
-// [2]/[3], near/far [6]/[7]. The weapon pass draws with descriptor 2 (sub_14023A938) and plane 2 carries
+// producer hands each one whose plane carries an override (the pointer at view+0x2470 + i*0x10) to
+// sub_140422D2C, which rebuilds that descriptor from the override: fov [0], zoom [1], NDC shift
+// [2]/[3], near/far [6]/[7]. Earlier live tests found the weapon pass uses descriptor 2 and plane 2 carries
 // the override (fov = the scene's, far 4000). Measured with the override left alone: the world moved
 // and the arms and the gun stayed put. The shift is a ratio of the frustum's own span, so the same
 // number is right at the plane's own fov.
 //
 // WRITTEN WHERE IT IS APPLIED, NOT ON THE WAY IN. MAIN's override exists when the producer is entered;
 // VRCAM's is attached DURING the producer (measured: null at entry, set at exit), so a write at entry
-// left the second eye's gun unshifted -- 116 px off its hand at a Quest 3 shift. sub_140781CE8 has one
-// caller, this producer, so a detour on it told which eye is being prepared covers both.
-constexpr size_t kPlaneOverrides = 0x1688;
-constexpr int kPlanes = 4;
-constexpr size_t kDesc = 0x70, kDescStride = 0x3A0;
+// left the second eye's gun unshifted -- 116 px off its hand at a Quest 3 shift.
+// The producer's override call still supplies that plane's descriptor in 2.50.
+constexpr size_t kPlaneOverrides = camera_layout::PlaneOverrides;
+constexpr int kPlanes = camera_layout::PlaneCount;
+constexpr size_t kDesc = camera_layout::DescriptorBase, kDescStride = camera_layout::DescriptorStride;
 
 using ViewPrepareFn = __int64(__fastcall*)(void*, void*, uint8_t*);
 ViewPrepareFn g_orig_view_prepare = nullptr;
-constexpr uintptr_t PLANE_OVERRIDE_RVA = 0x781CE8;
+constexpr uintptr_t PLANE_OVERRIDE_RVA = camera_layout::PlaneOverrideRva;
 using PlaneOverrideFn = __int64(__fastcall*)(float*, void*);
 PlaneOverrideFn g_orig_plane_override = nullptr;
 
@@ -135,7 +138,7 @@ void NoteAspect(const uint8_t* view, const cvr::projection::EyeWindow& w, const 
     static uint32_t lastW = 0, lastH = 0;
     static float lastAspect = 0.0f, lastLens = 0.0f;
     uint32_t size[2]{};
-    std::memcpy(size, view + 0x34, sizeof(size));
+    std::memcpy(size, view + camera_layout::RenderSize, sizeof(size));
     const float aspect = (w.r - w.l) / (w.u - w.d);
     const float lensAspect = (content.r - content.l) / (content.u - content.d);
     if (!size[0] || !size[1] || size[0] > 16384 || size[1] > 16384 || !(aspect > 0.05f) || !(lensAspect > 0.05f)) return;
@@ -170,7 +173,7 @@ void Apply(uint8_t* view, int side) {
     if (!s.active || in[2] != s.wroteAspect) s.engineAspect = in[2];
     float* plane[kPlanes] = {};
     for (int i = 0; i < kPlanes; ++i) {
-        plane[i] = *reinterpret_cast<float**>(view + kPlaneOverrides + i * 0x10);
+        plane[i] = *reinterpret_cast<float**>(view + kPlaneOverrides + i * camera_layout::PlaneOverrideStride);
     }
     if (!s.active) {
         float* dbg = CyberpunkVR_DebugAsymView + side * 8;
@@ -254,7 +257,7 @@ void ReadBuilt(const uint8_t* view, int side) {
         o[0] = d[0x20 / 4]; o[1] = d[0x28 / 4]; o[2] = d[0x2C / 4]; o[3] = d[0x30 / 4]; o[4] = d[0x34 / 4];
         o[5] = d[0x370 / 4]; o[6] = d[0x374 / 4]; o[7] = d[0x1B0 / 4];
         CyberpunkVR_DebugAsymPlanePtr[side * 4 + i] =
-            *reinterpret_cast<const uintptr_t*>(view + kPlaneOverrides + i * 0x10) ? 1u : 0u;
+            *reinterpret_cast<const uintptr_t*>(view + kPlaneOverrides + i * camera_layout::PlaneOverrideStride) ? 1u : 0u;
     }
     float* o = CyberpunkVR_DebugAsymBuilt + side * 16;
     const float* d0 = reinterpret_cast<const float*>(view + kDesc);
@@ -270,7 +273,7 @@ __int64 __fastcall Detour_ViewPrepare(void* ctx, void* spec, uint8_t* view) {
     t_preparing.side = -1;
     if (view) {
         __try {
-            const uint64_t key = *reinterpret_cast<const uint64_t*>(view + 0x28);
+            const uint64_t key = *reinterpret_cast<const uint64_t*>(view + camera_layout::ViewKey);
             if (key != 0 && key == g_vrcam_ctx_key.load(std::memory_order_relaxed)) side = 1;
             else if (is_main_view(view)) side = 0;
             CVR_DIAGNOSTIC(++CyberpunkVR_DebugAsymPrepare[side < 0 ? 2 : side]);
@@ -287,9 +290,9 @@ __int64 __fastcall Detour_ViewPrepare(void* ctx, void* spec, uint8_t* view) {
 
 // ONE SET OF SUN CASCADES HAS TO COVER BOTH EYES.
 //
-// The cascade fit (sub_1404E59CC, called by the cascade-setup node sub_14079B03C with the view's scene
-// descriptor at ctx+0x70) takes the eight corners of each depth slice by unprojecting NDC (+-1, +-1, z)
-// through the descriptor's own projection (sub_1404E6384 -> sub_1404E6474), and that projection carries the
+// The 2.50 cascade fit (sub_1402A23AC) takes the scene descriptor at ctx+0xE0
+// and the eight corners of each depth slice by unprojecting NDC (+-1, +-1, z)
+// through its own projection (sub_1402A2E68 -> sub_1402A2F58), which carries the
 // NDC shift (camera+0x30/+0x34, the same field the view producer is given). So every view fits its
 // cascades to exactly its own window -- and the port then hands the second view's fit to MAIN (the record,
 // the cascade camera and the sampling matrices: Stereo/ViewReuse.cpp CascRecLend, Grading.cpp
@@ -304,7 +307,7 @@ __int64 __fastcall Detour_ViewPrepare(void* ctx, void* spec, uint8_t* view) {
 // projection), and the lends above are exact again. Only the fit sees the union: the descriptor itself,
 // and everything else that reads it, keeps the eye's own window. The union is scaled to the descriptor's
 // own vertical span, so a zoom or a fov the engine changed on top stays applied.
-constexpr uintptr_t CASCADE_FIT_RVA = 0x4E59CC;
+constexpr uintptr_t CASCADE_FIT_RVA = camera_layout::CascadeFitRva;
 using CascadeFitFn = __int64(__fastcall*)(void*, void*, void*, uint8_t*, void*);
 CascadeFitFn g_orig_cascade_fit = nullptr;
 
@@ -334,24 +337,31 @@ bool CascadeUnion(const uint8_t* camera, int side, float out[4]) {
 }
 
 __int64 __fastcall Detour_CascadeFit(void* records, void* a2, void* a3, uint8_t* camera, void* a5) {
-    // The fit copies the descriptor before using it and reads nothing else of it but the cascade count,
-    // so a patched copy is all it needs; the view's own descriptor is never written.
-    alignas(16) uint8_t copy[kDescStride];
+    // The 2.50 fit makes its own native descriptor copy, including new mode
+    // flags and child cameras. Lend an isolated plain descriptor only; native
+    // nested/projection modes retain the original fit and its object ownership.
+    alignas(16) camera_layout::DescriptorBytes copy;
     uint8_t* use = camera;
     int side = -1;
     if (camera) {
         __try {
             const uint8_t* view = camera - kDesc;
-            const uint64_t key = *reinterpret_cast<const uint64_t*>(view + 0x28);
+            const uint64_t key = *reinterpret_cast<const uint64_t*>(view + camera_layout::ViewKey);
             if (key != 0 && key == g_vrcam_ctx_key.load(std::memory_order_relaxed)) side = 1;
             else if (is_main_view(view)) side = 0;
             float u[4];
             if (side >= 0 && CascadeUnion(camera, side, u)) {
-                std::memcpy(copy, camera, kDescStride);
-                float* f = reinterpret_cast<float*>(copy);
-                f[0x20 / 4] = u[0]; f[0x28 / 4] = u[1]; f[0x30 / 4] = u[2]; f[0x34 / 4] = u[3];
-                std::memcpy(CyberpunkVR_DebugAsymCascadeWindow + side * 4, u, sizeof(u));
-                use = copy;
+                if (camera_layout::CopyIndependentDescriptor(copy, camera)) {
+                    float* f = reinterpret_cast<float*>(copy.data());
+                    f[camera_layout::Fov / 4] = u[0]; f[camera_layout::Aspect / 4] = u[1];
+                    f[camera_layout::ShiftX / 4] = u[2]; f[camera_layout::ShiftY / 4] = u[3];
+                    std::memcpy(CyberpunkVR_DebugAsymCascadeWindow + side * 4, u, sizeof(u));
+                    use = copy.data();
+                } else {
+                    static std::atomic<bool> warned{false};
+                    if (!warned.exchange(true, std::memory_order_relaxed))
+                        Log("[asym] native camera has nested/projection state; preserving its original cascade fit.\n");
+                }
             }
         } __except (EXCEPTION_EXECUTE_HANDLER) { use = camera; }
     }
@@ -361,9 +371,9 @@ __int64 __fastcall Detour_CascadeFit(void* records, void* a2, void* a3, uint8_t*
 
 }  // namespace
 
-CVR_DETOUR("[asym] view prepare sub_1404E4AFC", VIEW_PREPARE_RVA, Detour_ViewPrepare, g_orig_view_prepare)
-CVR_DETOUR("[asym] plane override sub_140781CE8", PLANE_OVERRIDE_RVA, Detour_PlaneOverride, g_orig_plane_override)
-CVR_DETOUR("[asym] cascade fit sub_1404E59CC", CASCADE_FIT_RVA, Detour_CascadeFit, g_orig_cascade_fit)
+CVR_DETOUR("[asym] view prepare 2.50", VIEW_PREPARE_RVA, Detour_ViewPrepare, g_orig_view_prepare)
+CVR_DETOUR("[asym] plane override 2.50", PLANE_OVERRIDE_RVA, Detour_PlaneOverride, g_orig_plane_override)
+CVR_DETOUR("[asym] cascade fit 2.50", CASCADE_FIT_RVA, Detour_CascadeFit, g_orig_cascade_fit)
 
 }  // namespace cvr::detail
 

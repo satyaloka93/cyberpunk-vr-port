@@ -35,6 +35,7 @@ tools/body_rotation_tests/__pycache__/
 !tools/hud_submit_tests/
 !tools/single_pass_tests/
 !tools/render_parity_tests/
+!tools/compatibility_tests/
 !tools/asym_tests/
 tools/asym_tests/__pycache__/
 !tools/game_settings_tests/
@@ -164,3 +165,6 @@ tools/quickboot_tests/__pycache__/
 !tools/foveated_tests/*.py
 !tools/hidden_area_tests/*.py
 tools/foveated_tests/__pycache__/
+
+# Python test interpreter caches
+__pycache__/

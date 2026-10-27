@@ -59,6 +59,9 @@ bool InstallOnFootMoveXYHook() {
     uint8_t* found = static_cast<uint8_t*>(FindPattern("Cyberpunk2077.exe", pattern, mask));
     if (!found) return false;
 
+    // Exact 2.50 site; matching bytes elsewhere must not activate this hook.
+    if (found != reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr)) + 0x6486A8) return false;
+
     constexpr int replaceLen = 8; // movss [rsi+94h],xmm0
     void* tramp = AllocateTrampoline(found, 256);
     if (!tramp) return false;

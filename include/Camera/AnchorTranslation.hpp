@@ -6,6 +6,10 @@ struct AnchorVector {
     float x{}, y{}, z{};
 };
 
+inline AnchorVector SelectVehicleCameraOffset(AnchorVector car,AnchorVector bike,bool onBike) {
+    return onBike ? bike : car;
+}
+
 inline AnchorVector ActiveVehicleCameraOffset(AnchorVector configured,bool passengerCombat) {
     return passengerCombat ? AnchorVector{} : configured;
 }

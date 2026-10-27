@@ -25,16 +25,21 @@ int main(){
     std::memcpy(cache.data()+TargetingCameraTransformOffset,camera,sizeof(camera));
     std::memcpy(cache.data()+TargetingDefaultPositionOffset,origin,sizeof(origin));
     std::memcpy(cache.data()+TargetingDefaultForwardOffset,forward,sizeof(forward));
-    std::memcpy(source.data()+0x350,origin,sizeof(origin));
-    std::memcpy(source.data()+0x370,forward,sizeof(forward));
+    // Verified 2.50 FPP cache layout. Guard the former direction slot so a
+    // stale write cannot pass merely by also updating the public target ray.
+    std::memcpy(source.data()+0x260,origin,sizeof(origin));
+    std::memcpy(source.data()+0x280,forward,sizeof(forward));
+    const float oldSlotGuard[]{17,18,19,20};
+    std::memcpy(source.data()+0x370,oldSlotGuard,sizeof(oldSlotGuard));
     Check(!CenterHeadGaze(cache.data(),player,entity+1,gaze.tangentY));
     Check(CenterHeadGaze(cache.data(),player,entity,gaze.tangentY));
     float ray[4];std::memcpy(ray,cache.data()+TargetingDefaultForwardOffset,sizeof(ray));
     Check(std::abs(ray[2]/ray[1]-gaze.tangentY)<1.e-6f);
     Check(!std::memcmp(cache.data()+TargetingCameraTransformOffset,camera,sizeof(camera)));
     Check(!std::memcmp(cache.data()+TargetingDefaultPositionOffset,origin,sizeof(origin)));
-    Check(!std::memcmp(source.data()+0x350,origin,sizeof(origin)));
-    Check(!std::memcmp(source.data()+0x370,ray,sizeof(ray)));
+    Check(!std::memcmp(source.data()+0x260,origin,sizeof(origin)));
+    Check(!std::memcmp(source.data()+0x280,ray,sizeof(ray)));
+    Check(!std::memcmp(source.data()+0x370,oldSlotGuard,sizeof(oldSlotGuard)));
     Check(cvr::gaze::FromWindows(1,-1,1,-1).tangentY==0);
     cvr::gaze::Publish(gaze);cvr::gaze::headLook=false;Check(cvr::gaze::Read().tangentY==0);cvr::gaze::headLook=true;
     cvr::input::ScannerEarZone zone;

@@ -1,4 +1,5 @@
-// Native world-UI allocation, verified against CP2077 a7de82945c03e041...
+// Native world-UI allocation, migrated against CP2077 2.50 d36e74c47592e9c6...
+// Paired native ABI evidence: reference-231/physical-optics-migration/REPORT.md.
 // The shared world atlas has only 1/2/4 slots at 2048/1024/512. A physical
 // scope must not compete with city screens for its camera's pixel resolution.
 #include "Hooks/Hook.hpp"
@@ -31,13 +32,13 @@ template<uintptr_t Release> struct Lease {
     ~Lease(){if(handle.control)reinterpret_cast<void(*)(NativeHandle*)>(base+Release)(&handle);}
 };
 struct Surface {
-    Lease<0x100bc8> texture;
-    Lease<0x2185e8> owner;
+    Lease<0x198368> texture;
+    Lease<0x409774> owner;
     uint32_t width{},height{};
     ~Surface(){if(texture.handle.object)CyberpunkVR_OpticsSurfaceReleased.fetch_add(1,std::memory_order_relaxed);}
 };
 struct Binding {
-    Lease<0x2185e8> owner; // weak component: never prolongs its game lifetime
+    Lease<0x409774> owner; // weak component: never prolongs its game lifetime
     std::shared_ptr<Surface> surface;
 };
 // Native engine ownership must end with the renderer, before its pools are torn
@@ -102,19 +103,20 @@ uintptr_t SetTexture(uintptr_t component,uintptr_t texture) {
 }
 
 bool OpticsSize(uintptr_t renderer,uint32_t& width,uint32_t& height,uintptr_t& owner,uint32_t& slot) {
-    if(At<uintptr_t>(renderer,0)!=base+0x2b36fb8)return false;
-    Lease<0x1cc3e0> provider;
-    reinterpret_cast<void(*)(NativeHandle*,const void*)>(base+0x149c10)(
+    if(At<uintptr_t>(renderer,0)!=base+0x3111dc8)return false;
+    Lease<0x1c075c> provider;
+    reinterpret_cast<void(*)(NativeHandle*,const void*)>(base+0x27c10c)(
         &provider.handle,reinterpret_cast<const void*>(renderer+400));
-    if(!provider.handle.object || At<uintptr_t>(provider.handle.object,0)!=base+0x2b41aa0)return false;
-    Lease<0x100bc8> component;
-    reinterpret_cast<void(*)(const void*,NativeHandle*)>(base+0x1012b4)(
+    if(!provider.handle.object || At<uintptr_t>(provider.handle.object,0)!=base+0x30636e8)return false;
+    Lease<0x198368> component;
+    reinterpret_cast<void(*)(const void*,NativeHandle*)>(base+0x189688)(
         reinterpret_cast<const void*>(provider.handle.object+8),&component.handle);
     if(!component.handle.object || !OpticsPanelName(At<uint64_t>(component.handle.object,0x40)))return false;
     owner=At<uintptr_t>(component.handle.object,0x50);
     if(!owner)return false;
     const auto name=At<uint64_t>(component.handle.object,0x40);
     slot=name==0x77ebca883421763eull?0:(name==0xb2aeacea1ebe33bdull?1:2);
+    // Native WorldWidgetComponent setter 606EFC retains these two float fields.
     const float w=At<float>(component.handle.object,0x2b0),h=At<float>(component.handle.object,0x2b4);
     if(!std::isfinite(w) || !std::isfinite(h) || w<256 || h<256 || w>2048 || h>2048)return false;
     width=static_cast<uint32_t>(std::ceil(w));height=static_cast<uint32_t>(std::ceil(h));
@@ -140,12 +142,12 @@ std::shared_ptr<Surface> GetSurface(uintptr_t renderer,uintptr_t owner) {
     next->owner.handle=identity;
     if(identity.control)InterlockedIncrement(reinterpret_cast<volatile LONG*>(identity.control+4));
     // Same descriptor and factory as WorldDTManager's standalone (full-size)
-    // texture path, RVA82099C. The game creates its GPU backing and transitions.
+    // texture path, RVA5EAFE0 (descriptor constructor RVA5EA914). The game creates its GPU backing and transitions.
     struct Desc {uint32_t width,height,flags,reserved;uintptr_t backing;};
     static_assert(sizeof(Desc)==24);
     constexpr uint32_t width=2048,height=2048;
     const Desc desc{width,height,0x13070100,0,0}; // RGBA_Float16 retains scene HDR through ink.
-    reinterpret_cast<NativeHandle*(*)(NativeHandle*,const Desc*)>(base+0x7f8ffc)(
+    reinterpret_cast<NativeHandle*(*)(NativeHandle*,const Desc*)>(base+0x5ea8a4)(
         &next->texture.handle,&desc);
     if(!next->texture.handle.object || !next->texture.handle.control)return {};
     next->width=width;next->height=height;
@@ -158,11 +160,12 @@ std::shared_ptr<Surface> GetSurface(uintptr_t renderer,uintptr_t owner) {
 
 void BindWindow(uintptr_t window,uintptr_t texture,const std::array<float,4>& uv) {
     if(!window)return;
-    const bool textureChanged=At<uintptr_t>(window,1240)!=texture;
-    const bool rectChanged=std::memcmp(reinterpret_cast<const void*>(window+1264),uv.data(),sizeof(uv))!=0;
-    if(rectChanged)reinterpret_cast<void(*)(uintptr_t,const float*)>(base+0x961750)(window,uv.data());
+    // 2.50 adds 16 bytes before the window texture/UV fields; renderer fields stay unchanged.
+    const bool textureChanged=At<uintptr_t>(window,0x4e8)!=texture;
+    const bool rectChanged=std::memcmp(reinterpret_cast<const void*>(window+0x500),uv.data(),sizeof(uv))!=0;
+    if(rectChanged)reinterpret_cast<void(*)(uintptr_t,const float*)>(base+0x30fc34)(window,uv.data());
     if(textureChanged || rectChanged)
-        reinterpret_cast<void(*)(uintptr_t,uintptr_t,uint8_t)>(base+0x961820)(window,texture,1);
+        reinterpret_cast<void(*)(uintptr_t,uintptr_t,uint8_t)>(base+0x30fd04)(window,texture,1);
 }
 
 uintptr_t Publish(uintptr_t renderer) {
@@ -199,23 +202,23 @@ uintptr_t Destroy(uintptr_t renderer,uint8_t flags) {
 bool Install() {
     struct Signature {uintptr_t rva;std::initializer_list<uint8_t> bytes;};
     const Signature checks[]={
-        {0x2a0f90,{0x48,0x89,0x5c,0x24,0x08,0x48,0x89,0x74,0x24,0x10,0x48,0x89,0x7c,0x24,0x18,0x55,0x48,0x8b,0xec}},
-        {0x962414,{0x48,0x89,0x5c,0x24,0x08,0x57,0x48,0x83,0xec,0x20,0x48,0x8b,0xf9,0x8b,0xda}},
-        {0x2a1160,{0x40,0x53,0x48,0x83,0xec,0x40,0x48,0x8b,0x81,0x30,0x02,0x00,0x00}},
-        {0x7f8ffc,{0x48,0x89,0x5c,0x24,0x08,0x48,0x89,0x74,0x24,0x10,0x57,0x48,0x83,0xec,0x30}},
-        {0x961750,{0x48,0x83,0xec,0x28,0xf3,0x0f,0x10,0x42,0x0c,0x0f,0x2f,0x42,0x04}},
-        {0x961820,{0x48,0x89,0x5c,0x24,0x08,0x57,0x48,0x83,0xec,0x20,0x48,0x89,0x91,0xd8,0x04,0x00,0x00}},
-        {0x149c10,{0x48,0x8b,0x42,0x08,0x4c,0x8b,0xc2,0x4c,0x8b,0xc9}},
-        {0x1012b4,{0x48,0x83,0x22,0x00,0x4c,0x8b,0xc2,0x48,0x83,0x62,0x08,0x00}},
-        {0x1cc3e0,{0x48,0x89,0x5c,0x24,0x08,0x57,0x48,0x83,0xec,0x30,0x48,0x8b,0xf9}},
-        {0x100bc8,{0x40,0x53,0x48,0x83,0xec,0x20,0x48,0x8b,0xd9,0x48,0x8b,0x49,0x08}},
-        {0x2185e8,{0x40,0x53,0x48,0x83,0xec,0x30,0x48,0x8b,0xd9,0x48,0x8b,0x49,0x08}},
+        {0x606660,{0x48,0x89,0x5c,0x24,0x08,0x48,0x89,0x74,0x24,0x10,0x48,0x89,0x7c,0x24,0x18,0x55,0x48,0x8b,0xec}},
+        {0xdd98a4,{0x48,0x89,0x5c,0x24,0x08,0x57,0x48,0x83,0xec,0x20,0x48,0x8b,0xf9,0x8b,0xda}},
+        {0x6069f0,{0x40,0x53,0x48,0x83,0xec,0x40,0x48,0x8b,0x81,0x30,0x02,0x00,0x00}},
+        {0x5ea8a4,{0x48,0x89,0x5c,0x24,0x08,0x48,0x89,0x74,0x24,0x10,0x57,0x48,0x83,0xec,0x30}},
+        {0x30fc34,{0x48,0x83,0xec,0x28,0xf3,0x0f,0x10,0x42,0x0c,0x0f,0x2f,0x42,0x04}},
+        {0x30fd04,{0x48,0x89,0x5c,0x24,0x08,0x57,0x48,0x83,0xec,0x20,0x48,0x89,0x91,0xe8,0x04,0x00,0x00}},
+        {0x27c10c,{0x48,0x8b,0x42,0x08,0x4c,0x8b,0xc2,0x4c,0x8b,0xc9}},
+        {0x189688,{0x48,0x83,0x22,0x00,0x4c,0x8b,0xc2,0x48,0x83,0x62,0x08,0x00}},
+        {0x1c075c,{0x48,0x89,0x5c,0x24,0x08,0x57,0x48,0x83,0xec,0x30,0x48,0x8b,0xf9}},
+        {0x198368,{0x40,0x53,0x48,0x83,0xec,0x20,0x48,0x8b,0xd9,0x48,0x8b,0x49,0x08}},
+        {0x409774,{0x40,0x53,0x48,0x83,0xec,0x30,0x48,0x8b,0xd9,0x48,0x8b,0x49,0x08}},
     };
     for(const auto& check:checks)
         if(std::memcmp(reinterpret_cast<const void*>(base+check.rva),check.bytes.begin(),check.bytes.size()))return false;
-    void* publish=reinterpret_cast<void*>(base+0x2a0f90);
-    void* destroy=reinterpret_cast<void*>(base+0x962414);
-    void* setTexture=reinterpret_cast<void*>(base+0x2a1160);
+    void* publish=reinterpret_cast<void*>(base+0x606660);
+    void* destroy=reinterpret_cast<void*>(base+0xdd98a4);
+    void* setTexture=reinterpret_cast<void*>(base+0x6069f0);
     if(MH_CreateHook(publish,reinterpret_cast<void*>(&Publish),reinterpret_cast<void**>(&originalPublish))!=MH_OK)return false;
     if(MH_CreateHook(destroy,reinterpret_cast<void*>(&Destroy),reinterpret_cast<void**>(&originalDestroy))!=MH_OK){MH_RemoveHook(publish);return false;}
     if(MH_CreateHook(setTexture,reinterpret_cast<void*>(&SetTexture),reinterpret_cast<void**>(&originalSetTexture))!=MH_OK){MH_RemoveHook(publish);MH_RemoveHook(destroy);return false;}

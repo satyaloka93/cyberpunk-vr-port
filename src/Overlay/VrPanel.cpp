@@ -2,6 +2,8 @@
 #include "Camera/ImagePoseIdentity.hpp"
 #include <array>
 #include <mutex>
+#include <atomic>
+extern void Log(const char*, ...);
 
 namespace cvr::vrui {
 namespace {
@@ -45,7 +47,16 @@ const XrCompositionLayerBaseHeader* Panel::Prepare(XrSession session,XrSpace spa
         if(std::find(formats.begin(),formats.end(),format)==formats.end())return nullptr;
         XrSwapchainCreateInfo ci{XR_TYPE_SWAPCHAIN_CREATE_INFO};ci.usageFlags=XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT|XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
         ci.format=format;ci.sampleCount=1;ci.width=CanvasWidth;ci.height=CanvasHeight;ci.faceCount=1;ci.arraySize=1;ci.mipCount=1;
-        if(XR_FAILED(xrCreateSwapchain(session,&ci,&swapchain)))return nullptr;
+        const XrResult created=xrCreateSwapchain(session,&ci,&swapchain);
+        if(XR_FAILED(created)){
+            static std::atomic<unsigned> failures{};
+            if(failures.fetch_add(1,std::memory_order_relaxed)<4)
+                Log("[vr-menu] F10 xrCreateSwapchain failed result=%d format=%lld size=%ux%u usage=%llu session=%p\n",
+                    int(created),static_cast<long long>(ci.format),ci.width,ci.height,
+                    static_cast<unsigned long long>(ci.usageFlags),reinterpret_cast<void*>(session));
+            return nullptr;
+        }
+        Log("[vr-menu] F10 swapchain created size=%ux%u format=%lld\n",ci.width,ci.height,static_cast<long long>(ci.format));
         if(XR_FAILED(xrEnumerateSwapchainImages(swapchain,0,&count,nullptr)) || !count){Shutdown();return nullptr;}
         images.assign(count,{XR_TYPE_SWAPCHAIN_IMAGE_D3D12_KHR});
         if(XR_FAILED(xrEnumerateSwapchainImages(swapchain,count,&count,reinterpret_cast<XrSwapchainImageBaseHeader*>(images.data()))) ||

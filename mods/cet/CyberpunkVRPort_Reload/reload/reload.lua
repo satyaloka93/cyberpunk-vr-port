@@ -341,6 +341,9 @@ end
 local slotNames = {}
 local function slotTransform(comp, name) return comp:GetSlotTransform(name) end
 local function slotModel(slotComp, name, bx, by, bz, ci, cj, ck, cr)
+    -- Revolver/rotor profiles can omit a slide. Never pass nil to CName.new;
+    -- that aborts the entire update before magazine/cylinder handling runs.
+    if not slotComp or type(name) ~= 'string' or name == '' then return nil end
     local cn = slotNames[name]
     if not cn then cn = CName.new(name); slotNames[name] = cn end
     local o, found, tr = pcall(slotTransform, slotComp, cn)
@@ -381,7 +384,7 @@ end
 
 local function handModel(side)
     local h = VRHandRawModel(side)
-    if not h then return nil end
+    if not h or (h.w or 0) < 0.5 then return nil end
     return h.x, h.y, h.z
 end
 
@@ -720,6 +723,12 @@ local ownS  = { tagged = false }   -- whether the weapon's own animation is curr
 -- poses at once -- the finger natives take the hand as an argument, so the single-slot fade above is a convenience
 -- and not a limit -- and this one has to run on the other wrist from everything else.
 local pressS = { t = -1, blend = 0.0, hand = nil, on = false }
+local reloadAudit = { count = 0, weapon = nil, time = 0 }
+local function auditReload(message)
+    if reloadAudit.count >= 64 then return end
+    reloadAudit.count = reloadAudit.count + 1
+    pcall(function() spdlog.info('[ReloadAudit] ' .. message) end)
+end
 local exitAt = '-'           -- where M.frame last returned, for the diagnostic line
 
 -- THE MAGAZINE, as a little state machine of its own:
@@ -770,6 +779,95 @@ local function beltMagRadius()
     local r = nil
     if b ~= nil and type(b.magRadius) == 'function' then pcall(function() r = b.magRadius() end) end
     return r or 0.12
+end
+
+-- Accessible spare-magazine zone: chest through waist, independent of avatar
+-- hip height and IK calibration. Shared positions are HMD-local OpenXR metres;
+-- rotate into the recenter frame so looking down does not tilt the grab volume.
+-- Only consulted for an empty well, never for extracting a seated magazine.
+local function bodyMagReach(side)
+    if type(GetVRSharedSlot) ~= 'function' then return false end
+    local seq = GetVRSharedSlot(127)
+    if not seq or seq % 2 ~= 0 then return false end
+    local b = side == 0 and 0 or 8
+    if (GetVRSharedSlot(b) or 0) < 0.5 then return false end
+    local x, y, z = GetVRSharedSlot(b+1), GetVRSharedSlot(b+2), GetVRSharedSlot(b+3)
+    local i, j, k, r = GetVRSharedSlot(16), GetVRSharedSlot(17), GetVRSharedSlot(18), GetVRSharedSlot(19)
+    local function finite(v) return type(v) == 'number' and v == v and math.abs(v) < math.huge end
+    if not (finite(x) and finite(y) and finite(z) and finite(i) and finite(j) and finite(k) and finite(r))
+        or GetVRSharedSlot(127) ~= seq then return false end
+    local n = math.sqrt(i*i+j*j+k*k+r*r)
+    if n < 0.5 or n > 1.5 then return false end
+    x, y, z = qrot(i/n, j/n, k/n, r/n, x, y, z)
+    return y <= -0.18 and y >= -1.10 and x*x + z*z <= 0.42*0.42
+end
+
+-- Wrist roll can close a cylinder without translating the controller. Require
+-- a deliberate, sustained roll about the bore, not ordinary aiming yaw/pitch.
+local function cylinderRollFlick(state, q, ax, ay, az, dt)
+    local prev = state.rollQ
+    state.rollQ = nil
+    if not q or dt <= 0 or dt > 0.10 then state.rollTravel, state.rollSamples = 0, 0; return false end
+    local n = math.sqrt(q.i*q.i + q.j*q.j + q.k*q.k + q.r*q.r)
+    if not (n >= 0.5 and n <= 1.5) then state.rollTravel, state.rollSamples = 0, 0; return false end
+    local i,j,k,r = q.i/n,q.j/n,q.k/n,q.r/n
+    state.rollQ = {i,j,k,r}
+    if not prev then state.rollTravel, state.rollSamples = 0, 0; return false end
+    local x,y,z,w = qmul(i,j,k,r,-prev[1],-prev[2],-prev[3],prev[4])
+    if w < 0 then x,y,z,w = -x,-y,-z,-w end
+    local sn = math.sqrt(x*x+y*y+z*z)
+    local angle = sn > 1e-6 and 2*math.atan2(sn,w) or 0
+    local roll = sn > 1e-6 and angle*(x*ax+y*ay+z*az)/sn or 0
+    local speed = math.abs(roll)/dt
+    state.rollPeak = math.max(state.rollPeak or 0, math.deg(speed))
+    if speed < math.rad(250) then state.rollTravel, state.rollSamples = 0, 0; return false end
+    local travel = state.rollTravel or 0
+    if travel*roll < 0 then travel = 0; state.rollSamples = 0 end
+    state.rollTravel = travel + roll
+    state.rollSamples = (state.rollSamples or 0) + 1
+    -- At least 20 degrees at speed: a single tiny tracking jitter cannot close it.
+    return state.rollSamples >= 2 and math.abs(state.rollTravel) >= math.rad(20)
+end
+
+-- Capture a stable CLOSED crane before any opening animation/write. The old
+-- native relative rotation latched its base on the first open frame, which
+-- could already contain the game's reload swing and doubled the rotation.
+local function captureCraneRest(state, hc, dt)
+    if state.rest or state.open or (state.p or 0) > 0 or type(VRRigBone) ~= 'function' then return end
+    local p = {}
+    for i=0,6 do
+        local v = VRRigBone(hc.which,hc.bone,i)
+        if type(v) ~= 'number' or v ~= v or math.abs(v) == math.huge then state.restCandidate=nil;state.restTime=0;return end
+        p[i+1]=v
+    end
+    local norm=math.sqrt(p[4]^2+p[5]^2+p[6]^2+p[7]^2)
+    if norm < .95 or norm > 1.05 or p[1]^2+p[2]^2+p[3]^2 > .36 then
+        state.restCandidate=nil;state.restTime=0;return
+    end
+    for i=4,7 do p[i]=p[i]/norm end
+    local prev=state.restCandidate
+    local stable=false
+    if prev then
+        local d=(p[1]-prev[1])^2+(p[2]-prev[2])^2+(p[3]-prev[3])^2
+        local dot=math.abs(p[4]*prev[4]+p[5]*prev[5]+p[6]*prev[6]+p[7]*prev[7])
+        stable=d < .000001 and dot > .99999
+    end
+    state.restTime=stable and ((state.restTime or 0)+math.min(dt,.05)) or 0
+    if not stable then state.restCandidate=p end
+    if state.restTime >= .15 then state.rest=p end
+end
+local function driveCraneRest(state,hc,angle)
+    local p=state.rest
+    if not p then return false end
+    local ax,ay,az=hc.axis[1],hc.axis[2],hc.axis[3]
+    local n=math.sqrt(ax*ax+ay*ay+az*az)
+    if n < .001 then return false end
+    local h=math.rad(angle*(hc.sign or 1))*.5
+    local sn=math.sin(h)/n
+    local i,j,k,r=qmul(p[4],p[5],p[6],p[7],ax*sn,ay*sn,az*sn,math.cos(h))
+    VRRigWriteRot(hc.which,hc.bone,0,ax,ay,az)
+    state.writeSlot = VRRigWriteAbs(hc.which,hc.bone,p[1],p[2],p[3],i,j,k,r,1)
+    return true
 end
 
 -- Said every frame with the current truth rather than on transitions: a missed edge would leave the
@@ -1101,6 +1199,19 @@ local function magHome()
     magS.dropTouch = nil
     -- a cover belongs to the weapon that has one: holster mid-reload and the next gun must not inherit an opening
     hatchS.p, hatchS.wrote = 0.0, false
+    -- Reset the manual latch and velocity history too. Retaining `open` makes
+    -- a redraw reopen the crane without a button; an old hp sample can also
+    -- turn the first new pose into a false closing flick.
+    hatchS.open, hatchS.btnPrev, hatchS.openT = false, false, 0.0
+    hatchS.hp, hatchS.lat, hatchS.read = nil, nil, nil
+    hatchS.rollQ, hatchS.rollTravel, hatchS.rollPeak = nil, 0, 0
+    hatchS.rest, hatchS.restCandidate, hatchS.restTime = nil, nil, 0
+    -- These parts belong to the same weapon instance as the cylinder.
+    hamS.p, hamS.want, hamS.wrote, hamS.fired, hamS.fall = 0, 0, false, false, nil
+    hamS.prev, hamS.last, hamS.seq = false, nil, nil
+    spinS.ang, spinS.pp, spinS.hand, spinS.w, spinS.det = 0, nil, nil, 0, nil
+    spinS.on, spinS.wrote, spinS.faded = false, false, false
+    ownS.tagged = false
     -- and a magazine caught mid-glide is simply gone with the entity that was doing it
     if magS.state == 'glide' then magS.state = 'gone' end
     magS.glide = nil
@@ -1150,9 +1261,10 @@ local function gameReloading()
         local pl = Game.GetPlayer()
         local bb = pl and pl:GetPlayerStateMachineBlackboard()
         if not bb then return nil end
-        return bb:GetInt(GetAllBlackboardDefs().PlayerStateMachine.Weapon)
+        local fields = GetAllBlackboardDefs().PlayerStateMachine
+        return bb:GetInt(fields.RightWeapon or fields.Weapon)
     end)
-    return ok and v == 2                     -- gamePSMRangedWeaponStates.Reload
+    return ok and type(v) == "number" and EnumValueToString("gamePSMRangedWeaponStates", v) == "Reload"
 end
 
 local function oursActive()
@@ -1178,6 +1290,7 @@ local function yieldAll(weapon)
     -- magHome releases the magazine tracks of rig 0; a weapon that keeps its magazine on another rig or track
     -- gets the same release, or its own magazine would stay hidden under the game's reload.
     local cfg = weapon and cfgFor(weapon)
+
     local mc = cfg and cfg.mag
     if mc and type(VRRigTrackWrite) == 'function' and ((mc.which or 0) ~= 0 or (mc.showTrack or 0) ~= 0) then
         pcall(function() VRRigTrackWrite(mc.which or 0, mc.showTrack or 0, 1.0, 0) end)
@@ -1345,13 +1458,32 @@ function M.frame(weapon, slotComp, holder, dt)
     -- THE PULL-IN BELONGS TO ONE GRAB. Cleared while nothing is grabbed, so the next grip starts
     -- from the hand instead of from wherever the last one left the weight.
     if not slideS.grabbed then pullInReset() end
-    if (not weapon) or (not slotComp) or (holder ~= 0 and holder ~= 1) then
+    local cfg = weapon and cfgFor(weapon)
+    local auditOk, auditId = pcall(function() return tostring(weapon:GetEntityID().hash) end)
+    local auditKey = (auditOk and auditId or 'none') .. ':' .. (cfg and cfg.id or 'unsupported')
+    if auditKey ~= reloadAudit.weapon then
+        reloadAudit.weapon = auditKey
+        local ok, id = pcall(function() return tostring(weapon:GetItemID().id) end)
+        auditReload(string.format('weapon=%s profile=%s holder=%s',
+            ok and id or '?', cfg and cfg.id or 'unsupported', tostring(holder)))
+    end
+    -- An unsupported weapon must release the previous reload's hand too.
+    -- Otherwise its finger ownership suppresses native two-hand gripping.
+    if (not cfg) or (not slotComp) or (holder ~= 0 and holder ~= 1) then
         setTrg(0)                                -- the trigger is the game's again the moment the gun is not ours
+        -- A cylinder/hammer can own native writes without holding a hand or
+        -- a loose magazine. Clear BEFORE resetting its state, including when
+        -- the next weapon (e.g. arm launcher) has no reload profile.
+        if oursActive() or slideS.wasActive then
+            pcall(VRRigWriteClear)
+            magHome()
+            slideS.wasActive = false
+        end
         -- ...and a hand-turned cylinder does not outlive the grip: angle, momentum and detent all go
         spinS.ang, spinS.pp, spinS.hand, spinS.w, spinS.det, spinS.on = 0.0, nil, nil, 0.0, nil, false
         if spinS.faded then fadeOut(); spinS.faded = nil end
         if magS.state ~= 'in' or magS.entId then magHome() end   -- weapon put away: no floating magazine, none hidden
-        if slideS.grabbed or fadeS.hand then
+        if slideS.grabbed or fadeS.hand or pressS.on then
             pcall(VRRigWriteClear); slideS.grabbed = false; slideS.hand = nil; fadeReset()
             if pressS.on then clearGrip(pressS.hand) end
             pressS.t, pressS.on, pressS.hand = -1, false, nil
@@ -1361,10 +1493,8 @@ function M.frame(weapon, slotComp, holder, dt)
                 pcall(function() VRHandStopRot(0, 0, 0, 0, 0, 1); VRHandStopRot(1, 0, 0, 0, 0, 1) end)
             end
         end
-        exitAt = 'noholder'; return
+        exitAt = cfg and 'noholder' or 'nocfg'; return
     end
-    local cfg = cfgFor(weapon)
-    if not cfg then exitAt = 'nocfg'; return end
     local snd = cfg.sounds
 
     -- A weapon switch/redraw invalidates the identified rig buffers and every latched write base. Reset both, or
@@ -1386,15 +1516,10 @@ function M.frame(weapon, slotComp, holder, dt)
         -- ever be seen. Now each config carries its own signature (bone count plus named bones at their indices) and
         -- registers it here; the plugin hashes the names itself (FNV1a64, which IS the CName hash, verified against
         -- all five of the old constants). Re-registering the same pair overwrites, so a redraw costs nothing.
-        -- Every KNOWN signature (reload/rigs.lua) plus whatever this weapon's own config declares. The shared list
-        -- exists because a rig has to be identified before it can be recorded, and a config is written from that
-        -- recording -- so it cannot be the only source. Nothing about any weapon lives in the plugin.
-        local sigs = {}
-        do
-            local ok, list = pcall(function() return require('reload/rigs') end)
-            if ok and list then for _, r in ipairs(list) do sigs[#sigs + 1] = r end end
-        end
-        if cfg.rigs then for _, r in ipairs(cfg.rigs) do sigs[#sigs + 1] = r end end
+        -- Only the active weapon may receive physical-reload writes. Registering
+        -- every known weapon lets a holstered/second gun replace the readback
+        -- and receive this weapon's bone-index writes.
+        local sigs = cfg.rigs or {}
         if type(VRRigSignature) == 'function' then
             for _, r in ipairs(sigs) do
                 local n = r.names or {}
@@ -3486,6 +3611,7 @@ function M.frame(weapon, slotComp, holder, dt)
                 despawnMag(); holdHide(); dropClear(); gunMag(true); magFade(false)
                 itemDrop(0, 'AttachmentSlots.WeaponLeft'); itemDrop(1, 'AttachmentSlots.WeaponRight')
                 if H then magMagnet(H, 0) end
+                auditReload('mag seated previous='..tostring(magS.state))
                 magS.state, magS.hand, magS.armed = 'in', nil, false
                 magS.depth = 0.0
                 magS.glide = nil
@@ -3547,25 +3673,26 @@ function M.frame(weapon, slotComp, holder, dt)
             local catchW = snapW
             local takeAnywhere = false
             if magS.state == 'gone' then
-                -- OFF THE BELT WHEN THE BELT HAS ONE. The distance is the pouch's, so the fingers fade in as
-                -- the hand goes down to the hip and the grip only bites there -- the same gesture as taking a
-                -- grenade, and the pouch is already lit by then.
                 local beltD = beltMagDist(free)
-                local gx, gy, gz = magFromRaw(free)          -- from the RAW hand: a weight must never feed itself
+                local atBody = bodyMagReach(free)
+                local gx, gy, gz = magFromRaw(free)
                 local goneD = gx and len3(gx - wx, gy - wy, gz - wz) or -1
                 if beltD ~= nil then goneD = beltD end
                 catchW = pullW(goneD, beltD ~= nil and beltMagRadius() or (mc.seatSnapRadius or 0.12))
-                -- the same rule, and it matters more here: with the well empty a squeeze conjures a magazine
-                -- ANYWHERE, so without this a hand on the slide of a dry gun got a magazine instead of a rack
                 local slD2 = slideS.dist or -1
+                -- A real slide grab retains priority. Merely being closer to a
+                -- distant slide than a low pouch must not block the body zone.
                 local busy = slideS.grabbed or slideS.releasing
-                             or (magS.slideHasPose and slD2 >= 0 and goneD >= 0 and slD2 < goneD)
+                    or (magS.slideHasPose and slD2 >= 0
+                        and (atBody and slD2 <= (sc.previewRadius or 0.05)
+                             or not atBody and goneD >= 0 and slD2 < goneD))
+                if atBody then catchW = 1.0 end
                 if busy then catchW = 0.0 end
                 magS.insD = goneD
-                -- ...and with a pouch there is no "anywhere" any more: the hand has to be AT it. Without one
-                -- nothing changes -- a squeeze conjures a magazine as it always did.
                 magS.fromBelt = (beltD ~= nil)
-                takeAnywhere = (not busy) and (beltD == nil)
+                -- Retain the existing belt-less fallback; the body zone also
+                -- works when a pouch exists but is too low or unavailable.
+                takeAnywhere = (not busy) and (atBody or beltD == nil)
             end
 
             if magS.state == 'in' or magS.state == 'gone' then
@@ -3646,6 +3773,10 @@ function M.frame(weapon, slotComp, holder, dt)
                     -- ...and the gun is empty only when the last one has actually left its chamber
                     if magS.casesOut and REVOLVER.spent() then
                         magS.state, magS.hand, magS.carried = 'gone', nil, nil
+                        -- Preserve an intentional body grab while ejection finishes;
+                        -- a squeeze beside the cylinder must still be released first.
+                        magS.gripLock = grip and not bodyMagReach(free)
+                        auditReload('revolver ejection complete; bodyGrab=' .. tostring(not magS.gripLock and grip))
                         setMagAmmo(weapon, 0)
                         playSnd(weapon, snd and snd.magOut)
                         magS.casesOut = false
@@ -3714,6 +3845,7 @@ function M.frame(weapon, slotComp, holder, dt)
                             dropRelease(sx3, sy3, sz3, s1, s2, s3, s4, kx, ky, kz)
                         end
                         magS.state, magS.hand, magS.carried = 'gone', nil, nil
+                        magS.gripLock = true -- ejecting must not also pick up/reseat a fresh loader
                         setMagAmmo(weapon, 0)                -- dropped: the gun is empty and those rounds are gone
                         playSnd(weapon, snd and snd.magOut)
                     end
@@ -3793,6 +3925,7 @@ function M.frame(weapon, slotComp, holder, dt)
                         -- A magazine pulled OUT OF THE GUN did not come off the belt, whatever the last
                         -- frame in `gone` decided -- and the pouch must not go empty because of it.
                         if magS.state == 'in' then magS.fromBelt = false end
+                        auditReload('mag picked up route='..tostring(magS.route)..' previous='..tostring(magS.state))
                         magS.state, magS.hand = 'hand', free
                         magS.armed = false                   -- the well cannot pull until this has left the well
                         magFade(true, free)
@@ -4058,9 +4191,14 @@ function M.frame(weapon, slotComp, holder, dt)
         -- crane is the gun's own part and has nothing to do with whether the magazine is in.
         local want = (magS.state ~= 'in') and 1.0 or 0.0
         if hc.manual then
+            local hadRest = hatchS.rest ~= nil
+            captureCraneRest(hatchS,hc,dt)
+            if not hadRest and hatchS.rest then auditReload('crane closed baseline ready profile=' .. cfg.id) end
             local b2 = (GetVRSharedSlot(157) or 0.0) > 0.5
             if b2 and not hatchS.btnPrev then
-                hatchS.open = not hatchS.open
+                -- Do not latch an arbitrary animated base if the rig is not
+                -- ready yet. Usually the closed-pose capture finishes on draw.
+                hatchS.open = not hatchS.open and hatchS.rest ~= nil
                 -- on the EDGE, not on arrival: a crane is heard leaving the frame, not reaching the end of its swing
                 playSnd(weapon, snd and (hatchS.open and snd.hatchOpen or snd.hatchShut))
             end
@@ -4083,7 +4221,18 @@ function M.frame(weapon, slotComp, holder, dt)
             hatchS.openT = hatchS.open and ((hatchS.openT or 0.0) + dt) or 0.0
             if hatchS.open and hc.flickSpeed and gFx then
                 local hfx, hfy, hfz = handModel(holder)
-                if hfx and hatchS.hp and dt > 1e-4 then
+                local rollClose = false
+                if hatchS.openT > (hc.flickArm or 0.30) and hfx and type(VRHandRawRot) == 'function' then
+                    rollClose = cylinderRollFlick(hatchS, VRHandRawRot(holder), ax, ay, az, dt)
+                else
+                    hatchS.rollQ, hatchS.rollTravel = nil, 0
+                end
+                if rollClose then
+                    hatchS.open = false
+                    playSnd(weapon, snd and snd.hatchShut)
+                    auditReload('cylinder closed by wrist roll')
+                end
+                if hfx and hatchS.hp and dt > 1e-4 and dt <= 0.10 then
                     local vx6 = (hfx - hatchS.hp[1]) / dt
                     local vy6 = (hfy - hatchS.hp[2]) / dt
                     local vz6 = (hfz - hatchS.hp[3]) / dt
@@ -4091,7 +4240,7 @@ function M.frame(weapon, slotComp, holder, dt)
                     -- the PEAK since the last log line, not the instant: a flick lasts two or three frames, and a
                     -- sample taken every few seconds will never once land on one
                     if lat > (hatchS.lat or 0.0) then hatchS.lat = lat end
-                    if hatchS.openT > (hc.flickArm or 0.30) and lat >= hc.flickSpeed then
+                    if hatchS.open and hatchS.openT > (hc.flickArm or 0.30) and lat >= hc.flickSpeed then
                         hatchS.open = false
                         playSnd(weapon, snd and snd.hatchShut)
                     end
@@ -4099,6 +4248,7 @@ function M.frame(weapon, slotComp, holder, dt)
                 if hfx then hatchS.hp = { hfx, hfy, hfz } else hatchS.hp = nil end
             else
                 hatchS.hp = nil
+                hatchS.rollQ, hatchS.rollTravel = nil, 0
             end
             want = hatchS.open and 1.0 or 0.0
         end
@@ -4121,12 +4271,20 @@ function M.frame(weapon, slotComp, holder, dt)
         end
         if p <= 0.0 then
             if hatchS.wrote then
-                VRRigWriteRot(hc.which, hc.bone, 0.0, hc.axis[1], hc.axis[2], hc.axis[3])  -- angle 0 = hand it back
+                if hc.manual and type(VRRigWriteOff) == 'function' then
+                    VRRigWriteOff(hc.which,hc.bone)
+                else
+                    VRRigWriteRot(hc.which, hc.bone, 0.0, hc.axis[1], hc.axis[2], hc.axis[3])
+                end
                 hatchS.wrote = false
             end
         else
-            VRRigWriteRot(hc.which, hc.bone, ang * (hc.sign or 1.0), hc.axis[1], hc.axis[2], hc.axis[3])
-            hatchS.wrote = true
+            if hc.manual then
+                hatchS.wrote = driveCraneRest(hatchS,hc,ang)
+            else
+                VRRigWriteRot(hc.which, hc.bone, ang * (hc.sign or 1.0), hc.axis[1], hc.axis[2], hc.axis[3])
+                hatchS.wrote = true
+            end
         end
     end
 
@@ -4567,6 +4725,19 @@ function M.frame(weapon, slotComp, holder, dt)
         local a = math.deg(2.0 * math.acos(w))
         local sn = math.sqrt(math.max(1e-9, 1.0 - w * w))
         hatchS.read = string.format('%.0f/(%+.2f,%+.2f,%+.2f)', a, q[1] / sn, q[2] / sn, q[3] / sn)
+    end
+    if cfg.hatch and cfg.hatch.manual then
+        reloadAudit.time = reloadAudit.time + dt
+        if reloadAudit.time >= 1.0 and (hatchS.p or 0) > 0 then
+            reloadAudit.time = 0
+            if hatchS.writeSlot and type(VRRigWriteDiag)=='function' then
+                auditReload(string.format('crane writer slot=%d applied=%d destination=%d',hatchS.writeSlot,
+                    VRRigWriteDiag(hatchS.writeSlot,3),VRRigWriteDiag(hatchS.writeSlot,10)))
+            end
+            auditReload(string.format('profile=%s open=%s progress=%.2f peakLateral=%.2f threshold=%.2f bone=%s mag=%s holder=%s trigger=%s rollPeak=%.0f',
+                cfg.id or '?', tostring(hatchS.open), hatchS.p or 0, latPeak(),
+                cfg.hatch.flickSpeed or 0, tostring(hatchS.read), magS.state, tostring(holder), tostring(hamS.dbg), hatchS.rollPeak or 0))
+        end
     end
     if cfg.ownAnim then
         local mine = (hatchS.p or 0.0) > 0.0 or (hamS.p or 0.0) > 0.0 or (spinS.wrote or false)

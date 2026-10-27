@@ -1,8 +1,8 @@
 option casemap:none
 EXTERN CvrWorldMarkerTextTag:PROC
 .code
-; Entered by CALL from the replaced native LEA. Preserve volatile state, then
-; perform that LEA and RET so the native frame also remains visible to unwinding.
+; Entered by CALL at the final native matrix-row store (2.50 RVA 22F6674).
+; Replay the store before tagging; retain all live volatile state and flags.
 CvrWorldMarkerTextPublishDetour PROC FRAME
     push rbp
     .pushreg rbp
@@ -27,6 +27,7 @@ CvrWorldMarkerTextPublishDetour PROC FRAME
     movdqu [rsp+90h],xmm3
     movdqu [rsp+0A0h],xmm4
     movdqu [rsp+0B0h],xmm5
+    movups XMMWORD PTR [rbx+160h],xmm3
     mov rcx,rbx
     call CvrWorldMarkerTextTag
     movdqu xmm0,[rsp+60h]
@@ -46,7 +47,6 @@ CvrWorldMarkerTextPublishDetour PROC FRAME
     mov r11,[rsp+50h]
     lea rsp,[rbp+0C0h]
     pop rbp
-    lea rcx,[rbx+1F8h]
     ret
 CvrWorldMarkerTextPublishDetour ENDP
 END

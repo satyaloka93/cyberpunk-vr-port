@@ -41,7 +41,10 @@ namespace {
 using DequeueFn = char (*)(uint8_t*, void*, uint8_t*);
 DequeueFn g_orig_dequeue = nullptr;
 
-constexpr uintptr_t GT_DEQUEUE_RVA = 0x14AF14;
+// Exact shipped symbol identity: 2.31 14AF14 -> 2.50 26DE10.
+// 2.50 keeps the three ring layouts and 40-byte entry copy. Its out-of-line
+// helpers 22D6620/22D6640 are the same lock CMPXCHG / lock XADD operations.
+constexpr uintptr_t GT_DEQUEUE_RVA = 0x26DE10;
 
 // The dispatcher's job queues as sub_14014AF14 reads them (relative to dispatcher+64): +1152 the count
 // of queued jobs, +1160 the workers' semaphore; queue n's ring at 128 + 256*n: +32 entries (40 bytes),

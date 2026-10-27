@@ -2485,9 +2485,9 @@ void STDMETHODCALLTYPE probe_CopyTextureRegion(ID3D12GraphicsCommandList* self,c
             }
         }
     }
-    // First 848B CB upload after the vrcam tonemap 2-RT bind = the pass's constants
+    // First 864B camera CB upload (2.50) after the vrcam tonemap 2-RT bind.
     // (observed: bind ev95006 -> upload ev95009, one per window).
-    if (t_in_vrcam_2rt && t_2rt_cb_armed && dst && num_bytes == 848) {
+    if (t_in_vrcam_2rt && t_2rt_cb_armed && dst && num_bytes == 864) {
         t_2rt_cb_armed = false;
         ID3D12Resource* prev = g_cb_res.exchange(dst, std::memory_order_acq_rel);
         if (prev != dst) {
@@ -2504,12 +2504,12 @@ void STDMETHODCALLTYPE probe_CopyTextureRegion(ID3D12GraphicsCommandList* self,c
         if (const uint8_t* sp = upload_map_read(src))
             filled_note_guarded(dst, dst_off, num_bytes, sp + src_off);
     }
-    // The per-frame constants the HUD composite reads as b0 -- 30 float4, and its first float is
-    // the time that drives the HUD's scanline flicker. Exactly one 480-byte constant upload
+    // The per-frame constants the HUD composite reads as b0 -- 33 float4 in 2.50. Its first float is
+    // the time that drives the HUD's scanline flicker. The native 528-byte constant upload
     // happens per frame, which is what identifies it. Captured so our port can bind the SAME
     // buffer as a root CBV and read the SAME value: the flicker is a spatial pattern, so a phase
     // of our own would make the two eyes disagree pixel by pixel.
-    if (dst && num_bytes == 480 && dst_off == 0) {
+    if (dst && num_bytes == 528 && dst_off == 0) {
         ID3D12Resource* prev = g_frame_cb.load(std::memory_order_acquire);
         if (prev != dst) {
             dst->AddRef();
