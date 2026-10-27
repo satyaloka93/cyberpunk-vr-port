@@ -168,3 +168,5 @@ tools/foveated_tests/__pycache__/
 
 # Python test interpreter caches
 __pycache__/
+!tools/game250_regression_tests/
+!tools/game250_regression_tests/*.py
