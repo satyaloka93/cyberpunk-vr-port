@@ -26,9 +26,9 @@ $CacheRoot = [IO.Path]::GetFullPath($CacheRoot)
 $BackupRoot = [IO.Path]::GetFullPath($BackupRoot)
 $interactiveMenu = $Action -eq 'Menu'
 $release = [pscustomobject]@{
-    name='CyberpunkVRPort upstream 0.1.8'; fileName='CyberpunkVRPort-0.1.8.zip'
-    url='https://github.com/dariulone/cyberpunk-vr-port/releases/download/0.1.8/CyberpunkVRPort-0.1.8.zip'
-    sha256='4275d620f695ee1e864678b68c2c660f536d9cef017fd9b06bf5639177a377fa'
+    name='CyberpunkVRPort upstream 0.1.9'; fileName='CyberpunkVRPort-0.1.9.zip'
+    url='https://github.com/dariulone/cyberpunk-vr-port/releases/download/0.1.9/CyberpunkVRPort-0.1.9.zip'
+    sha256='adc255885f24ede400c1510a9dd34ae5e32a3a61b3cd55bef3a017f802d48bf0'
 }
 function Set-EditionRelease {
     if ($Edition -ne 'Fork') { return }
@@ -66,7 +66,7 @@ function Show-PSVR2ToolkitGuidance {
     if ($detected) { Write-Host "`nPSVR2/Sense hardware detected." -ForegroundColor Green }
     if ($detected -or $Edition -eq 'Fork') {
         if ($Edition -eq 'Upstream') {
-            Write-Host 'Official upstream 0.1.8 has native controller haptics, not our isolated Toolkit bridge integration. Select our fork for that integration.' -ForegroundColor Yellow
+            Write-Host 'Official upstream 0.1.9 has native controller haptics, not our isolated Toolkit bridge integration. The published 0.1.8 RC1 predates game 2.5; use Restore to return to your local 2.5 checkpoint.' -ForegroundColor Yellow
             Write-Host 'The switcher does not start/stop a bridge or change Toolkit drivers or OpenXR layers.'
             return
         }
@@ -163,6 +163,14 @@ function Test-Dependency($Mod, [string]$Root) {
         if (-not (Test-Path -LiteralPath $path)) { return $false }
         if ((Get-Item -LiteralPath $path).PSIsContainer -and @(Get-ChildItem -LiteralPath $path -File -Recurse).Count -eq 0) { return $false }
     }
+    if ($Mod.PSObject.Properties.Name -contains 'binarySha256') {
+        return (Get-FileHash -LiteralPath (Join-Path $Root $probes[$Mod.id][0]) -Algorithm SHA256).Hash -ieq $Mod.binarySha256
+    }
+    if ($Mod.PSObject.Properties.Name -contains 'minimumVersion') {
+        $v = (Get-Item -LiteralPath (Join-Path $Root $probes[$Mod.id][0])).VersionInfo.FileVersion
+        if (-not $v -or $v -notmatch '^(\d+)\.(\d+)\.(\d+)') { return $false }
+        return [version]$Matches[0] -ge [version]$Mod.minimumVersion
+    }
     if ($Mod.id -eq 'codeware') {
         $v = (Get-Item -LiteralPath (Join-Path $Root $probes['codeware'][0])).VersionInfo.FileVersion
         # Codeware's fourth component is a timestamp that can exceed Int32.
@@ -177,7 +185,7 @@ function New-ReleaseStage([string]$Root) {
     New-Item -ItemType Directory -Path $stage -Force | Out-Null
     $missing = @()
     foreach ($mod in $dependencies) {
-        if (Test-Dependency $mod $Root) { Write-Host "KEEP installed: $($mod.name) [presence check; not a runtime compatibility test]"; continue }
+        if (Test-Dependency $mod $Root) { Write-Host "KEEP installed: $($mod.name) [installed requirement satisfied; not a runtime compatibility test]"; continue }
         $archive = Get-VerifiedArchive $mod
         if ($archive) {
             Write-Host "STAGE: $($mod.name)"
@@ -233,7 +241,7 @@ function Show-Plan([string]$Root, [string]$Stage, [string[]]$Remove) {
     $writes = @(Get-ChildItem -LiteralPath $Stage -Recurse -File)
     Write-Host "`nGame: $Root"
     Write-Host "Stage: $Stage"
-    Write-Host "$($Remove.Count) existing port/conflict files backed up; $($writes.Count) staged files installed."
+    Write-Host "$($Remove.Count) existing port/conflict files to back up; $($writes.Count) staged files to install."
     Write-Host 'Clean replacement: back up ALL originals, remove selected old port files, install, then verify hashes and retired-file removal.'
     Write-Host "Backup parent: $BackupRoot"
     Write-Host 'Game files, saves, unrelated mods, DLSS replacements and game UserSettings.json are preserved.'
@@ -300,14 +308,22 @@ try {
     }
     $dependencies = @((Get-Content -LiteralPath (Join-Path $repo 'wabbajack\switcher-dependencies.json') -Raw | ConvertFrom-Json).mods | Sort-Object priority)
     foreach ($mod in $dependencies) { if (-not $probes.ContainsKey($mod.id)) { throw "Unknown dependency probe: $($mod.id)" } }
-    if ($dependencies.Count -ne $probes.Count) { throw 'Dependency manifest is incomplete.' }
+
     $settingsFile = Join-Path $env:LOCALAPPDATA 'CD Projekt Red\Cyberpunk 2077\UserSettings.json'
     if ($Action -eq 'Menu') {
-        Write-Host "CyberpunkVR Port switcher -- official upstream 0.1.8 or PSVR2 fork 0.1.8-psvr2.1-rc1`nGame: $root"
-        Write-Host "1  Preview / download and stage upstream 0.1.8`n2  Install upstream 0.1.8`n3  Preview / stage PSVR2 fork`n4  Install PSVR2 fork`n5  Restore previous port`n6  Installed dependency status`n7  Open required Nexus download pages`nQ  Quit"
+        Write-Host "CyberpunkVR Port switcher -- official upstream 0.1.9 or PSVR2 fork 0.1.8-psvr2.1-rc1`nGame: $root"
+        Write-Host "1  Preview / download and stage upstream 0.1.9`n2  Install upstream 0.1.9`n3  Preview / stage PSVR2 fork`n4  Install PSVR2 fork`n5  Restore previous port`n6  Installed dependency status`n7  Open required Nexus download pages`nQ  Quit"
         $choice = Read-Host 'Choose'
         $Action = switch ($choice) { '1' { 'Prepare' }; '2' { 'Install' }; '3' { $Edition='Fork'; 'Prepare' }; '4' { $Edition='Fork'; 'Install' }; '5' { 'Restore' }; '6' { 'Status' }; '7' { 'Nexus' }; default { return } }
         if ($Edition -eq 'Fork' -and -not $ForkArchive) { $ForkArchive = (Read-Host 'Optional path to local fork ZIP (Enter downloads pinned release)').Trim('"') }
+    }
+    if ($Edition -eq 'Upstream') {
+        $dependencies = @((Get-Content -LiteralPath (Join-Path $repo 'wabbajack\switcher-dependencies-019.json') -Raw | ConvertFrom-Json).mods | Sort-Object priority)
+        foreach ($mod in $dependencies) { if (-not $probes.ContainsKey($mod.id)) { throw "Unknown dependency probe: $($mod.id)" } }
+        if ($Action -in @('Install','Prepare')) {
+            $gameVersion = (Get-Item -LiteralPath (Join-Path $root 'bin\x64\Cyberpunk2077.exe')).VersionInfo.ProductVersion
+            if ($gameVersion -notmatch '^2\.5(?:\.0)?$') { throw "Upstream 0.1.9 requires game 2.5; detected '$gameVersion'. Nothing changed." }
+        }
     }
     if ($Action -eq 'Nexus') {
         $links = @($dependencies | Where-Object { $_.PSObject.Properties.Name -contains 'manualUrl' -and -not (Test-Dependency $_ $root) } | ForEach-Object { $_.manualUrl })
@@ -325,7 +341,7 @@ try {
         }
         Write-Host "More Occluders script present: $(Test-Path -LiteralPath (Get-SafePath $root 'r6\scripts\MoreOccluders.reds'))"
         Write-Host "dxgi proxy present: $(Test-Path -LiteralPath (Get-SafePath $root 'bin\x64\dxgi.dll'))"
-        Write-Host 'Dependency presence is not a runtime compatibility guarantee. Codeware is also version-checked (>=1.20).'
+        Write-Host 'Framework versions are checked against the selected manifest. redscript 0.5.32 uses its pinned compiler hash (no file version). Other mods are presence-checked.'
         Show-PSVR2ToolkitGuidance
         return
     }

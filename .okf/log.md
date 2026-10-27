@@ -1,5 +1,9 @@
 # Update Log
 
+## 2026-10-28
+
+* Updated switcher for upstream 0.1.9/game 2.5 with pinned release and framework hashes, framework version checks and optional Visible Bullets. Forty transaction regressions and new requirement checks pass; real ZIP staged successfully without game writes. Updated Downloads launcher package; local 2.50 fork remains installed. See repository docs/SWITCHER-019.md.
+
 ## 2026-10-27
 
 * User accepted aiming correction. Deployed Overture assisted case extraction and preserved body-grab grip after ejection, with actual Lua extraction tests at30/60/90Hz; runtime visual verification pending. See [migration evidence](game-250-migration.md).
