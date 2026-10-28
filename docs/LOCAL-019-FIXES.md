@@ -150,3 +150,14 @@ remaining splash limitations. Package 0.1.9-psvr2.1-rc1 preserves the exact
 09:56 tested DLL. The installer selects upstream or PSVR2 0.1.9, uses game-2.5
 dependency requirements for both, preserves personal haptics/camera settings,
 and retains clean port replacement, rollback and restore.
+
+## More Occluders installer correction
+
+The maintainer's installed MoreOccluders.reds was locally patched on October 26
+for game 2.5: ordinary worldMeshNode optimization retained; incompatible
+worldInstancedMeshNode property writes removed. The switcher preserved that file
+but required new users to download the original. This masked a fresh-install
+compatibility problem. The external mod is no longer a required dependency or
+installed by the switcher for either edition. Existing copies are warned about
+and preserved. Test-OptionalOccluders.ps1 verifies staging without it, no prompt,
+ignored legacy archive argument, preservation and removal from required links.

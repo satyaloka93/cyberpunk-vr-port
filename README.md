@@ -211,7 +211,9 @@ Repository: <https://github.com/dariulone/cyberpunk-vr-port>
 - Equipment-EX
 - Nova Optics
 - Input Loader
-- [More Occluders (Scripted v0.3)](https://www.nexusmods.com/cyberpunk2077/mods/33136)
+
+More Occluders is not required or installed by our switcher. Its scripted variant
+has reported game-2.5 compilation failures; omit it until compatibility is verified.
 
 HUDitor is not required for the native VR HUD and is not bundled.
 

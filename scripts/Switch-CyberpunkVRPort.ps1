@@ -194,31 +194,18 @@ function New-ReleaseStage([string]$Root) {
             $missing += "$($mod.name): $($mod.manualUrl)"
         }
     }
-    $occluders = Get-SafePath $Root 'r6\scripts\MoreOccluders.reds'
-    if (-not (Test-Path -LiteralPath $occluders) -and -not $MoreOccludersArchive -and $interactiveMenu) {
-        Write-Host 'More Occluders (Scripted v0.3) needs your Nexus account:'
-        Write-Host 'https://www.nexusmods.com/cyberpunk2077/mods/33136?tab=files'
-        $MoreOccludersArchive = (Read-Host 'Paste the downloaded ZIP path, or Enter to get the missing-download report').Trim('"')
+    # Optional external optimization, not required by the port. Game 2.5 script
+    # compatibility is unverified; do not solicit or install it.
+    if ($MoreOccludersArchive) {
+        Write-Warning 'MoreOccludersArchive is deprecated and ignored. More Occluders is not installed by this switcher.'
     }
-    if (Test-Path -LiteralPath $occluders -PathType Leaf) {
-        Write-Host 'KEEP MoreOccluders.reds (installed; version is not encoded in this script).'
-    } elseif ($MoreOccludersArchive) {
-        # User-supplied, account-downloaded ZIP. Only accept the one expected script.
-        $check = Join-Path $CacheRoot ('occluders-' + [guid]::NewGuid().ToString('N'))
-        Expand-SafeModZip $MoreOccludersArchive $check
-        $files = @(Get-ChildItem -LiteralPath $check -Recurse -File)
-        if ($files.Count -ne 1 -or $files[0].FullName -ine (Join-Path $check 'r6\scripts\MoreOccluders.reds')) {
-            throw 'Select More Occluders (Scripted v0.3), not the ArchiveXL variant.'
-        }
-        Write-Host "User-provided More Occluders ZIP SHA256: $((Get-FileHash -LiteralPath $MoreOccludersArchive).Hash)"
-        Copy-VerifiedFile $files[0].FullName (Get-SafePath $stage 'r6\scripts\MoreOccluders.reds')
-    } else {
-        $missing += 'More Occluders: https://www.nexusmods.com/cyberpunk2077/mods/33136?tab=files (Optional files: Scripted v0.3; pass -MoreOccludersArchive "path-to.zip")'
+    if (Test-Path -LiteralPath (Get-SafePath $Root 'r6\scripts\MoreOccluders.reds')) {
+        Write-Warning 'Existing MoreOccluders.reds preserved. Script compilation failures are reported on game 2.5; disable this external mod if affected. It is not required by the VR port.'
     }
     if ($missing.Count) {
         Write-Host "`nNexus sign-in/manual downloads required. Nothing in the game has been changed." -ForegroundColor Yellow
         $missing | ForEach-Object { Write-Host $_ }
-        Write-Host "Save ZIPs in $DownloadsDir and rerun. For More Occluders supply its ZIP explicitly."
+        Write-Host "Save ZIPs in $DownloadsDir and rerun."
         $missing | Set-Content -LiteralPath (Join-Path $CacheRoot 'NEXUS-DOWNLOADS.txt') -Encoding UTF8
         throw 'Dependencies incomplete. All game changes blocked.'
     }
@@ -327,10 +314,9 @@ try {
     }
     if ($Action -eq 'Nexus') {
         $links = @($dependencies | Where-Object { $_.PSObject.Properties.Name -contains 'manualUrl' -and -not (Test-Dependency $_ $root) } | ForEach-Object { $_.manualUrl })
-        if (-not (Test-Path -LiteralPath (Get-SafePath $root 'r6\scripts\MoreOccluders.reds'))) { $links += 'https://www.nexusmods.com/cyberpunk2077/mods/33136?tab=files' }
         if (-not $links.Count) { Write-Host 'All Nexus-required mods are already present. No account downloads needed.'; return }
         foreach ($link in $links) { Write-Host $link; if (-not $WhatIf) { Start-Process $link } }
-        Write-Host "Use Manual Download while signed in, save ZIPs to $DownloadsDir, then rerun this switcher. More Occluders: select Scripted v0.3."
+        Write-Host "Use Manual Download while signed in, save ZIPs to $DownloadsDir, then rerun this switcher."
         return
     }
     if ($Action -eq 'Status') {
@@ -339,7 +325,7 @@ try {
             $label = if (Test-Dependency $mod $root) { 'KEEP (installed)' } else { 'MISSING / REPAIR' }
             Write-Host "$label : $($mod.name)"
         }
-        Write-Host "More Occluders script present: $(Test-Path -LiteralPath (Get-SafePath $root 'r6\scripts\MoreOccluders.reds'))"
+        Write-Host "Optional More Occluders (not required; game-2.5 compatibility unverified) present: $(Test-Path -LiteralPath (Get-SafePath $root 'r6\scripts\MoreOccluders.reds'))"
         Write-Host "dxgi proxy present: $(Test-Path -LiteralPath (Get-SafePath $root 'bin\x64\dxgi.dll'))"
         Write-Host 'Framework versions are checked against the selected manifest. redscript 0.5.32 uses its pinned compiler hash (no file version). Other mods are presence-checked.'
         Show-PSVR2ToolkitGuidance

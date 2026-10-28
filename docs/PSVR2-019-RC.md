@@ -147,3 +147,12 @@ has been transplanted into this renderer. Some splash cropping remains.
 The tested DLL is packaged unchanged, SHA256:
 471d1e72e37d870d96b9fecdfc7381f05303ff3ece233e504514cf5830d500e1
 The release tag records the patched source. This remains a release candidate.
+
+## Installer correction — 2026-10-28
+
+More Occluders is **not required**. The updated switcher no longer requests,
+installs or blocks on it for either upstream or PSVR2. Existing copies are
+preserved with a compatibility warning. If the scripted variant fails compilation,
+disable it through your mod manager or move `r6/scripts/MoreOccluders.reds` outside
+the game. The reported game-2.5 script/type errors do not establish CET as the cause
+or establish that every variant is broken. The game/DLL ZIP is unchanged.

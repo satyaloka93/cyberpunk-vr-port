@@ -32,3 +32,12 @@ claim. Loading panels remain imperfect. No new native framegen compatibility cla
 
 The tested DLL is packaged unchanged. MSVC build, input/routing/playback/listener
 and driving regression checks passed; user accepted controls/haptics/driving in game.
+
+## Installer correction — 2026-10-28
+
+More Occluders is **not required**. The updated switcher no longer requests,
+installs or blocks on it for either upstream or PSVR2. Existing copies are
+preserved with a compatibility warning. If the scripted variant fails compilation,
+disable it through your mod manager or move `r6/scripts/MoreOccluders.reds` outside
+the game. The reported game-2.5 script/type errors do not establish CET as the cause
+or establish that every variant is broken. The game/DLL ZIP is unchanged.
