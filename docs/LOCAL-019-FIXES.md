@@ -165,3 +165,14 @@ ignored legacy archive argument, preservation and removal from required links.
 Option 8 now offers a hash-guarded compatibility patch matching the locally tested
 script. Verified exact output, preview, backup, idempotence, unknown refusal, ZIP
 input and partial-write rollback. No full third-party source redistributed.
+
+## Installer portability — October29
+
+Steam library discovery used Join-Path on stale library drive letters, causing
+a fatal missing-drive error even when another valid library existed. Use lexical
+Path.Combine and check candidate executable existence; remove maintainer-specific
+D/F candidates. Keep VDF double-backslash unescaping, never strip all separators.
+Archive intake now validates file versus directory and ZIP extension, trims pasted
+quotes/whitespace, and reports the actual failing archive path when opening fails.
+Windows regression covers missing-drive registry/VDF entries, spaced paths,
+explicit GameRoot, directory rejection and quoted ZIP extraction.

@@ -46,7 +46,15 @@ function Copy-VerifiedFile([string]$Source, [string]$Destination) {
 }
 
 function Expand-SafeModZip([string]$Archive, [string]$Destination) {
-    $zip = [IO.Compression.ZipFile]::OpenRead($Archive)
+    $Archive = $Archive.Trim().Trim([char[]]'"').Trim([char[]]"'").Trim()
+    if (-not $Archive) { throw 'No ZIP file selected. Paste the full path to the downloaded .zip file.' }
+    if (Test-Path -LiteralPath $Archive -PathType Container) {
+        throw "Selected a folder, not a ZIP: $Archive. Use Copy as path on the downloaded .zip file, not its folder."
+    }
+    if ([IO.Path]::GetExtension($Archive) -ine '.zip') { throw "Select the downloaded .zip file: $Archive" }
+    if (-not (Test-Path -LiteralPath $Archive -PathType Leaf)) { throw "ZIP file not found or inaccessible: $Archive" }
+    try { $zip = [IO.Compression.ZipFile]::OpenRead($Archive) }
+    catch { throw "Cannot read ZIP '$Archive': $($_.Exception.GetBaseException().Message)" }
     try {
         $seen = @{}; [long]$total = 0
         # Validate the entire archive before extracting anything.

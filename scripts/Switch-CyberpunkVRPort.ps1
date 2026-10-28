@@ -96,7 +96,7 @@ function Find-Game {
         if (-not (Test-Path -LiteralPath (Get-SafePath $root 'bin\x64\Cyberpunk2077.exe') -PathType Leaf)) { throw "Not a Cyberpunk game folder: $root" }
         return $root
     }
-    $candidates = @('D:\SteamLibrary\steamapps\common\Cyberpunk 2077','F:\SteamLibrary\steamapps\common\Cyberpunk 2077')
+    $candidates = @()
     foreach ($key in @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Steam App 1091500',
         'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Steam App 1091500')) {
         $value = Get-ItemProperty -Path $key -Name InstallLocation -ErrorAction SilentlyContinue
@@ -104,15 +104,25 @@ function Find-Game {
     }
     $steam = Get-ItemProperty -Path 'HKCU:\Software\Valve\Steam' -Name SteamPath -ErrorAction SilentlyContinue
     if ($steam) {
-        $candidates += Join-Path $steam.SteamPath 'steamapps\common\Cyberpunk 2077'
-        $libraries = Join-Path $steam.SteamPath 'steamapps\libraryfolders.vdf'
-        if (Test-Path -LiteralPath $libraries) {
+        $candidates += [IO.Path]::Combine($steam.SteamPath, 'steamapps\common\Cyberpunk 2077')
+        $libraries = [IO.Path]::Combine($steam.SteamPath, 'steamapps\libraryfolders.vdf')
+        if (Test-Path -LiteralPath $libraries -PathType Leaf -ErrorAction SilentlyContinue) {
             foreach ($match in [regex]::Matches((Get-Content -LiteralPath $libraries -Raw), '"path"\s+"([^"]+)"')) {
-                $candidates += Join-Path ($match.Groups[1].Value.Replace('\\','\')) 'steamapps\common\Cyberpunk 2077'
+                $candidates += [IO.Path]::Combine($match.Groups[1].Value.Replace('\\','\'), 'steamapps\common\Cyberpunk 2077')
             }
         }
     }
-    $found = @($candidates | Where-Object { $_ -and (Test-Path -LiteralPath (Join-Path $_ 'bin\x64\Cyberpunk2077.exe')) } | ForEach-Object { [IO.Path]::GetFullPath($_).TrimEnd('\') } | Sort-Object -Unique)
+    # Steam can retain disconnected libraries. Join-Path consults PowerShell's
+    # drives and throws before Test-Path can reject them; Path.Combine does not.
+    $found = @($candidates | ForEach-Object {
+        if ($_ -and [IO.Path]::IsPathRooted($_)) {
+            try {
+                $candidate = [IO.Path]::GetFullPath($_).TrimEnd('\')
+                $exe = [IO.Path]::Combine($candidate, 'bin\x64\Cyberpunk2077.exe')
+                if (Test-Path -LiteralPath $exe -PathType Leaf -ErrorAction SilentlyContinue) { $candidate }
+            } catch { Write-Verbose "Skipping unavailable/invalid game candidate '$($_)': $($_.Exception.Message)" }
+        }
+    } | Sort-Object -Unique)
     if ($found.Count -ne 1) { throw "Found $($found.Count) game installs. Specify -GameRoot explicitly: $($found -join ', ')" }
     return $found[0]
 }
