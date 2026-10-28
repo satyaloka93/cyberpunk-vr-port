@@ -9,7 +9,7 @@ param(
     [string]$RestoreFrom,
     [string]$MoreOccludersArchive,
     [switch]$PatchMoreOccluders,
-    [ValidateSet('Upstream','Fork')][string]$Edition = 'Upstream',
+    [ValidateSet('Upstream','Fork','Vrcam')][string]$Edition = 'Upstream',
     [string]$ForkArchive,
     [string]$ForkSha256,
     [switch]$KeepReShade,
@@ -33,6 +33,16 @@ $release = [pscustomobject]@{
     sha256='adc255885f24ede400c1510a9dd34ae5e32a3a61b3cd55bef3a017f802d48bf0'
 }
 function Set-EditionRelease {
+    if ($Edition -eq 'Vrcam') {
+        if ($ForkArchive) { throw 'ForkArchive is for the current PSVR2 fork; Vrcam uses its pinned comparison release.' }
+        $selection = Get-Content (Join-Path $repo 'wabbajack\release-selection.json') -Raw | ConvertFrom-Json
+        if (-not $selection.vrcam.url -or $selection.vrcam.sha256 -notmatch '^[0-9a-fA-F]{64}$') { throw 'Missing/invalid VRCAM release metadata.' }
+        $script:release = $selection.vrcam
+        Write-Host "Comparison release: $($release.name)"
+        Write-Host "Download: $($release.url)"
+        Write-Host 'This is the patched game-2.5 VRCAM checkpoint, not the old game-2.31 release.'
+        return
+    }
     if ($Edition -ne 'Fork') { return }
     $metadataPath = Join-Path $repo 'wabbajack\release-selection.json'
     $forkMetadata = if (Test-Path -LiteralPath $metadataPath -PathType Leaf) { Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json } else { $null }
@@ -66,7 +76,7 @@ function Show-PSVR2ToolkitGuidance {
         }).Count -gt 0
     } catch { Write-Verbose "PSVR2 hardware detection unavailable: $_" }
     if ($detected) { Write-Host "`nPSVR2/Sense hardware detected." -ForegroundColor Green }
-    if ($detected -or $Edition -eq 'Fork') {
+    if ($detected -or $Edition -in @('Fork','Vrcam')) {
         if ($Edition -eq 'Upstream') {
             Write-Host 'Official upstream 0.1.9 has native controller haptics, not our isolated Toolkit bridge integration. Select our PSVR2 0.1.9 fork for Auto bridge/OpenXR routing.' -ForegroundColor Yellow
             Write-Host 'The switcher does not start/stop a bridge or change Toolkit drivers or OpenXR layers.'
@@ -297,18 +307,18 @@ try {
 
     $settingsFile = Join-Path $env:LOCALAPPDATA 'CD Projekt Red\Cyberpunk 2077\UserSettings.json'
     if ($Action -eq 'Menu') {
-        Write-Host "CyberpunkVR Port switcher -- official upstream 0.1.9 or PSVR2 fork 0.1.9-psvr2.1-rc1`nGame: $root"
-        Write-Host "1  Preview / download and stage upstream 0.1.9`n2  Install upstream 0.1.9`n3  Preview / stage PSVR2 fork`n4  Install PSVR2 fork`n5  Restore previous port`n6  Installed dependency status`n7  Open required Nexus download pages`n8  Patch / install optional More Occluders for game 2.5`nQ  Quit"
+        Write-Host "CyberpunkVR Port switcher -- official upstream 0.1.9 or PSVR2 0.1.9 / game-2.5 VRCAM 0.1.8`nGame: $root"
+        Write-Host "1  Preview / download and stage upstream 0.1.9`n2  Install upstream 0.1.9`n3  Preview / stage PSVR2 fork`n4  Install PSVR2 fork`n5  Restore previous port`n6  Installed dependency status`n7  Open required Nexus download pages`n8  Patch / install optional More Occluders for game 2.5`n9  Preview / stage game-2.5 VRCAM 0.1.8 comparison`n10 Install game-2.5 VRCAM 0.1.8 comparison`nQ  Quit"
         $choice = Read-Host 'Choose'
-        $Action = switch ($choice) { '1' { 'Prepare' }; '2' { 'Install' }; '3' { $Edition='Fork'; 'Prepare' }; '4' { $Edition='Fork'; 'Install' }; '5' { 'Restore' }; '6' { 'Status' }; '7' { 'Nexus' }; '8' { 'PatchOccluders' }; default { return } }
+        $Action = switch ($choice) { '1' { 'Prepare' }; '2' { 'Install' }; '3' { $Edition='Fork'; 'Prepare' }; '4' { $Edition='Fork'; 'Install' }; '5' { 'Restore' }; '6' { 'Status' }; '7' { 'Nexus' }; '8' { 'PatchOccluders' }; '9' { $Edition='Vrcam'; 'Prepare' }; '10' { $Edition='Vrcam'; 'Install' }; default { return } }
         if ($Edition -eq 'Fork' -and -not $ForkArchive) { $ForkArchive = (Read-Host 'Optional path to local fork ZIP (Enter downloads pinned release)').Trim('"') }
     }
-    if ($Edition -in @('Upstream','Fork')) {
+    if ($Edition -in @('Upstream','Fork','Vrcam')) {
         $dependencies = @((Get-Content -LiteralPath (Join-Path $repo 'wabbajack\switcher-dependencies-019.json') -Raw | ConvertFrom-Json).mods | Sort-Object priority)
         foreach ($mod in $dependencies) { if (-not $probes.ContainsKey($mod.id)) { throw "Unknown dependency probe: $($mod.id)" } }
         if ($Action -in @('Install','Prepare','PatchOccluders')) {
             $gameVersion = (Get-Item -LiteralPath (Join-Path $root 'bin\x64\Cyberpunk2077.exe')).VersionInfo.ProductVersion
-            if ($gameVersion -notmatch '^2\.5(?:\.0)?$') { throw "Both 0.1.9 editions require game 2.5; detected '$gameVersion'. Nothing changed." }
+            if ($gameVersion -notmatch '^2\.5(?:\.0)?$') { throw "All switcher editions require game 2.5; detected '$gameVersion'. Nothing changed." }
         }
     }
     if ($Action -eq 'Nexus') {

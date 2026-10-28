@@ -8,3 +8,7 @@ Read docs/PSVR2-019-RC.md for setup and optional advanced haptics.
 Close the game and mod managers before installing. Keep backup journals.
 
 Option 8: optional More Occluders game-2.5 patch, installed copy or manual Scripted v0.3 ZIP. Recognized scripts only; backup and confirmation required.
+
+Game-2.5 VRCAM comparison: option9 previews and option10 installs the separate
+0.1.8-psvr2-cp25-vrcam-rc1 checkpoint. Option4 returns to this 0.1.9 PSVR2 build.
+See docs/VRCAM-CP25-COMPARISON.md. This is not the old game-2.31 release.

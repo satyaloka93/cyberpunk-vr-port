@@ -53,11 +53,17 @@ $selection = [ordered]@{schemaVersion=1; fork=[ordered]@{
     sha256=$forkHash
 }}
 New-Item -ItemType Directory -Path (Join-Path $repo 'wabbajack') -Force | Out-Null
+# Preserve separately pinned comparison releases when regenerating the current fork package.
+$oldSelectionPath = Join-Path $repo 'wabbajack\release-selection.json'
+if (Test-Path $oldSelectionPath) {
+    $oldSelection = Get-Content $oldSelectionPath -Raw | ConvertFrom-Json
+    if ($oldSelection.PSObject.Properties.Name -contains 'vrcam') { $selection.vrcam = $oldSelection.vrcam }
+}
 $selection | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $repo 'wabbajack\release-selection.json') -Encoding UTF8
-foreach ($rel in @('Install-PSVR2-Fork.bat','Switch-CyberpunkVRPort.bat',
+foreach ($rel in @('Install-PSVR2-Fork.bat','Install-VRCAM-CP25.bat','Switch-CyberpunkVRPort.bat',
     'scripts\Switch-CyberpunkVRPort.ps1','scripts\CyberpunkVR-Switcher.Core.ps1','scripts\MoreOccluders.Compatibility.ps1',
     'scripts\Test-CyberpunkVRSwitcher.ps1','scripts\README-SWITCHER.txt',
-    'docs\PSVR2-019-RC.md',
+    'docs\PSVR2-019-RC.md','docs\VRCAM-CP25-COMPARISON.md',
     'wabbajack\switcher-dependencies-019.json','wabbajack\release-selection.json')) {
     Copy-VerifiedFile (Get-SafePath $repo $rel) (Get-SafePath $switcher $rel)
 }

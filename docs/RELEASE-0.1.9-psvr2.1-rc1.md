@@ -61,3 +61,7 @@ During a normal port install, `-PatchMoreOccluders` opts in for an installed
 copy, or `-MoreOccludersArchive` supplies a downloaded one. The patch then joins
 that installation's ordinary backup/rollback/restore transaction.
 Normal installation never requires this mod or patches it without opting in.
+
+Game-2.5 VRCAM comparison: option9 previews and option10 installs the separate
+0.1.8-psvr2-cp25-vrcam-rc1 checkpoint. Option4 returns to this 0.1.9 PSVR2 build.
+See docs/VRCAM-CP25-COMPARISON.md. This is not the old game-2.31 release.
