@@ -213,7 +213,8 @@ Repository: <https://github.com/dariulone/cyberpunk-vr-port>
 - Input Loader
 
 More Occluders is not required or installed by our switcher. Its scripted variant
-has reported game-2.5 compilation failures; omit it until compatibility is verified.
+has reported game-2.5 compilation failures. Switcher option 8 optionally applies
+our recognized-script compatibility patch; see [setup](docs/PSVR2-019-RC.md).
 
 HUDitor is not required for the native VR HUD and is not bundled.
 

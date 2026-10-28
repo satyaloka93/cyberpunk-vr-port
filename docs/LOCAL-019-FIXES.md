@@ -161,3 +161,7 @@ compatibility problem. The external mod is no longer a required dependency or
 installed by the switcher for either edition. Existing copies are warned about
 and preserved. Test-OptionalOccluders.ps1 verifies staging without it, no prompt,
 ignored legacy archive argument, preservation and removal from required links.
+
+Option 8 now offers a hash-guarded compatibility patch matching the locally tested
+script. Verified exact output, preview, backup, idempotence, unknown refusal, ZIP
+input and partial-write rollback. No full third-party source redistributed.

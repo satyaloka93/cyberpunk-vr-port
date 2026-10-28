@@ -6,3 +6,5 @@ Install-PSVR2-Fork.bat installs the fork directly after confirmation.
 Dependencies download automatically where public; follow Nexus links where needed.
 Read docs/PSVR2-019-RC.md for setup and optional advanced haptics.
 Close the game and mod managers before installing. Keep backup journals.
+
+Option 8: optional More Occluders game-2.5 patch, installed copy or manual Scripted v0.3 ZIP. Recognized scripts only; backup and confirmation required.

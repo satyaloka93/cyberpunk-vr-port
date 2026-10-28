@@ -1,13 +1,14 @@
 #requires -Version 5.1
 [CmdletBinding()]
 param(
-    [ValidateSet('Menu','Status','Nexus','Prepare','Install','Restore')][string]$Action = 'Menu',
+    [ValidateSet('Menu','Status','Nexus','Prepare','Install','Restore','PatchOccluders')][string]$Action = 'Menu',
     [string]$GameRoot,
     [string]$CacheRoot,
     [string]$BackupRoot = (Join-Path $env:LOCALAPPDATA 'CyberpunkVRPort\switcher-backups'),
     [string]$DownloadsDir = (Join-Path $env:USERPROFILE 'Downloads'),
     [string]$RestoreFrom,
     [string]$MoreOccludersArchive,
+    [switch]$PatchMoreOccluders,
     [ValidateSet('Upstream','Fork')][string]$Edition = 'Upstream',
     [string]$ForkArchive,
     [string]$ForkSha256,
@@ -20,6 +21,7 @@ param(
 $ErrorActionPreference = 'Stop'
 if ($KeepReShade -and $DisableDxgiProxy) { throw 'KeepReShade and DisableDxgiProxy are mutually exclusive.' }
 . (Join-Path $PSScriptRoot 'CyberpunkVR-Switcher.Core.ps1')
+. (Join-Path $PSScriptRoot 'MoreOccluders.Compatibility.ps1')
 $repo = Split-Path -Parent $PSScriptRoot
 if (-not $CacheRoot) { $CacheRoot = Join-Path $env:LOCALAPPDATA 'CyberpunkVRPort\switcher-cache' }
 $CacheRoot = [IO.Path]::GetFullPath($CacheRoot)
@@ -194,13 +196,10 @@ function New-ReleaseStage([string]$Root) {
             $missing += "$($mod.name): $($mod.manualUrl)"
         }
     }
-    # Optional external optimization, not required by the port. Game 2.5 script
-    # compatibility is unverified; do not solicit or install it.
-    if ($MoreOccludersArchive) {
-        Write-Warning 'MoreOccludersArchive is deprecated and ignored. More Occluders is not installed by this switcher.'
-    }
-    if (Test-Path -LiteralPath (Get-SafePath $Root 'r6\scripts\MoreOccluders.reds')) {
-        Write-Warning 'Existing MoreOccluders.reds preserved. Script compilation failures are reported on game 2.5; disable this external mod if affected. It is not required by the VR port.'
+    if ($PatchMoreOccluders -or $MoreOccludersArchive) {
+        Stage-MoreOccluders250 $Root $stage $MoreOccludersArchive
+    } elseif (Test-Path -LiteralPath (Get-SafePath $Root 'r6\scripts\MoreOccluders.reds')) {
+        Write-Warning 'Existing MoreOccluders.reds preserved. If it fails compilation, use switcher option 8 for the optional game-2.5 patch or disable this external mod.'
     }
     if ($missing.Count) {
         Write-Host "`nNexus sign-in/manual downloads required. Nothing in the game has been changed." -ForegroundColor Yellow
@@ -299,15 +298,15 @@ try {
     $settingsFile = Join-Path $env:LOCALAPPDATA 'CD Projekt Red\Cyberpunk 2077\UserSettings.json'
     if ($Action -eq 'Menu') {
         Write-Host "CyberpunkVR Port switcher -- official upstream 0.1.9 or PSVR2 fork 0.1.9-psvr2.1-rc1`nGame: $root"
-        Write-Host "1  Preview / download and stage upstream 0.1.9`n2  Install upstream 0.1.9`n3  Preview / stage PSVR2 fork`n4  Install PSVR2 fork`n5  Restore previous port`n6  Installed dependency status`n7  Open required Nexus download pages`nQ  Quit"
+        Write-Host "1  Preview / download and stage upstream 0.1.9`n2  Install upstream 0.1.9`n3  Preview / stage PSVR2 fork`n4  Install PSVR2 fork`n5  Restore previous port`n6  Installed dependency status`n7  Open required Nexus download pages`n8  Patch / install optional More Occluders for game 2.5`nQ  Quit"
         $choice = Read-Host 'Choose'
-        $Action = switch ($choice) { '1' { 'Prepare' }; '2' { 'Install' }; '3' { $Edition='Fork'; 'Prepare' }; '4' { $Edition='Fork'; 'Install' }; '5' { 'Restore' }; '6' { 'Status' }; '7' { 'Nexus' }; default { return } }
+        $Action = switch ($choice) { '1' { 'Prepare' }; '2' { 'Install' }; '3' { $Edition='Fork'; 'Prepare' }; '4' { $Edition='Fork'; 'Install' }; '5' { 'Restore' }; '6' { 'Status' }; '7' { 'Nexus' }; '8' { 'PatchOccluders' }; default { return } }
         if ($Edition -eq 'Fork' -and -not $ForkArchive) { $ForkArchive = (Read-Host 'Optional path to local fork ZIP (Enter downloads pinned release)').Trim('"') }
     }
     if ($Edition -in @('Upstream','Fork')) {
         $dependencies = @((Get-Content -LiteralPath (Join-Path $repo 'wabbajack\switcher-dependencies-019.json') -Raw | ConvertFrom-Json).mods | Sort-Object priority)
         foreach ($mod in $dependencies) { if (-not $probes.ContainsKey($mod.id)) { throw "Unknown dependency probe: $($mod.id)" } }
-        if ($Action -in @('Install','Prepare')) {
+        if ($Action -in @('Install','Prepare','PatchOccluders')) {
             $gameVersion = (Get-Item -LiteralPath (Join-Path $root 'bin\x64\Cyberpunk2077.exe')).VersionInfo.ProductVersion
             if ($gameVersion -notmatch '^2\.5(?:\.0)?$') { throw "Both 0.1.9 editions require game 2.5; detected '$gameVersion'. Nothing changed." }
         }
@@ -342,6 +341,7 @@ try {
         try { $locked = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $locked = $true }
         if (-not $locked) { throw 'Another switcher is active for this game.' }
         if ($Action -eq 'Restore') { Restore-Previous $root; return }
+        if ($Action -eq 'PatchOccluders') { Install-OptionalOccluders250 $root; return }
         # Completed installs may be upgraded: each transaction snapshots CURRENT files
         # into a new directory. Older baselines remain immutable and restorable.
         # An interrupted transaction still requires recovery before any new install.

@@ -33,11 +33,31 @@ claim. Loading panels remain imperfect. No new native framegen compatibility cla
 The tested DLL is packaged unchanged. MSVC build, input/routing/playback/listener
 and driving regression checks passed; user accepted controls/haptics/driving in game.
 
-## Installer correction — 2026-10-28
 
-More Occluders is **not required**. The updated switcher no longer requests,
-installs or blocks on it for either upstream or PSVR2. Existing copies are
-preserved with a compatibility warning. If the scripted variant fails compilation,
-disable it through your mod manager or move `r6/scripts/MoreOccluders.reds` outside
-the game. The reported game-2.5 script/type errors do not establish CET as the cause
-or establish that every variant is broken. The game/DLL ZIP is unchanged.
+## Optional More Occluders compatibility patch
+
+More Occluders remains optional. Run **Switch-CyberpunkVRPort.bat**, then choose
+**8 — Patch / install optional More Occluders for game 2.5** with the game closed.
+An installed copy is used automatically. If absent, option 8 prints the author's
+[Nexus download page](https://www.nexusmods.com/cyberpunk2077/mods/33136?tab=files)
+and accepts your manually downloaded **Scripted v0.3 ZIP**. No third-party script
+is bundled or downloaded automatically.
+
+Only the recognized original or our known patched script is accepted (BOM/line
+endings normalized for identification). Unknown versions or custom edits are
+refused without modifying the game. The patch keeps ordinary-mesh optimization
+and skips the incompatible instanced-mesh branch. This matches the maintainer's
+working October 26 game-2.5 migration; remaining performance benefit is unmeasured.
+
+Review the prompt and type SWITCH. Existing files are backed up under
+`%LOCALAPPDATA%/CyberpunkVRPort/switcher-backups/optional-occluders-*`.
+To undo this standalone patch, close the game and copy `MoreOccluders.reds.original`
+back to `r6/scripts/MoreOccluders.reds`; for a newly installed copy, remove that
+script. This separate repair does not replace the previous-port restore history.
+
+For scripted use: `-Action PatchOccluders`, optionally with
+`-MoreOccludersArchive "C:\path\download.zip"`; `-WhatIf` previews only.
+During a normal port install, `-PatchMoreOccluders` opts in for an installed
+copy, or `-MoreOccludersArchive` supplies a downloaded one. The patch then joins
+that installation's ordinary backup/rollback/restore transaction.
+Normal installation never requires this mod or patches it without opting in.

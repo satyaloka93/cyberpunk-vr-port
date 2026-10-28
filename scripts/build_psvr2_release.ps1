@@ -55,7 +55,7 @@ $selection = [ordered]@{schemaVersion=1; fork=[ordered]@{
 New-Item -ItemType Directory -Path (Join-Path $repo 'wabbajack') -Force | Out-Null
 $selection | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $repo 'wabbajack\release-selection.json') -Encoding UTF8
 foreach ($rel in @('Install-PSVR2-Fork.bat','Switch-CyberpunkVRPort.bat',
-    'scripts\Switch-CyberpunkVRPort.ps1','scripts\CyberpunkVR-Switcher.Core.ps1',
+    'scripts\Switch-CyberpunkVRPort.ps1','scripts\CyberpunkVR-Switcher.Core.ps1','scripts\MoreOccluders.Compatibility.ps1',
     'scripts\Test-CyberpunkVRSwitcher.ps1','scripts\README-SWITCHER.txt',
     'docs\PSVR2-019-RC.md',
     'wabbajack\switcher-dependencies-019.json','wabbajack\release-selection.json')) {

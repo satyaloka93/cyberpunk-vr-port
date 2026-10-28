@@ -9,7 +9,7 @@ Invoke-Expression $fn.Extent.Text
 $base=Join-Path $env:TEMP ('cpvr-optional-occluders-'+[guid]::NewGuid().ToString('N'))
 $root=Join-Path $base 'game';$CacheRoot=Join-Path $base 'cache'
 New-Item -ItemType Directory "$root\r6\scripts" -Force | Out-Null
-$dependencies=@();$interactiveMenu=$true;$MoreOccludersArchive=$null;$release=[pscustomobject]@{name='fixture'}
+$PatchMoreOccluders=$false;$dependencies=@();$interactiveMenu=$true;$MoreOccludersArchive=$null;$release=[pscustomobject]@{name='fixture'}
 function Read-Host { throw 'Unexpected interactive download prompt' }
 function Get-VerifiedArchive { param($Mod) return 'fixture-release' }
 function Expand-SafeModZip { param($Archive,$Destination)
@@ -24,9 +24,7 @@ foreach($Edition in @('Upstream','Fork')){
  if(Test-Path "$stage\r6\scripts\MoreOccluders.reds"){throw 'Occluders unexpectedly staged'}
 }
 Set-Content "$root\r6\scripts\MoreOccluders.reds" 'existing-user-mod'
-$MoreOccludersArchive='nonexistent-legacy-argument.zip'
 $stage=New-ReleaseStage $root
 if((Get-Content "$root\r6\scripts\MoreOccluders.reds") -ne 'existing-user-mod'){throw 'Existing mod modified'}
-if(Test-Path "$stage\r6\scripts\MoreOccluders.reds"){throw 'Deprecated argument installed mod'}
-if((Get-Content $path -Raw) -match '33136'){throw 'Required Nexus page still includes More Occluders'}
-Write-Host 'PASS: both editions stage without More Occluders or prompts; existing mod preserved; deprecated archive ignored; required Nexus link removed.'
+if(Test-Path "$stage\r6\scripts\MoreOccluders.reds"){throw 'Unrequested patch staged'}
+Write-Host 'PASS: both editions stage without More Occluders or prompts; existing mod preserved without patch opt-in.'
