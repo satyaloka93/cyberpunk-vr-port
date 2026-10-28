@@ -138,6 +138,14 @@ foreach ($name in @("df89e9d648ff7b36.dxil", "b059d1d55826b33f.dxil")) {
 # and block tearing around each eye's screen middle.
 Add-File (Need (Join-Path $RepoRoot "src\Shaders\screen_fx\52f74d75736ab8b0.dxil") "Sandevistan screen-effect twin") "red4ext\plugins\CyberpunkVR_Stereo\screen_fx\52f74d75736ab8b0.dxil"
 
+# Game-2.5 migration added further shader hashes beyond the original 0.1.8 list.
+# Enumerate the committed twins so comparison packages include those fixes.
+foreach ($mapping in @(@('asym_fog','asym'),@('asym_ssr','asym_ssr'))) {
+    foreach ($f in Get-ChildItem (Join-Path $RepoRoot "src\Shaders\$($mapping[0])") -Filter *.dxil -File) {
+        Add-File $f.FullName "red4ext\plugins\CyberpunkVR_Stereo\$($mapping[1])\$($f.Name)"
+    }
+}
+
 # Merged into the player's settings ONCE, preserving personal preferences, when first_launch=1
 # in vrport.ini. FirstLaunch clears it to 0 only after the merge succeeds. A timestamped backup
 # of the original file is kept. See INSTALL.txt.
