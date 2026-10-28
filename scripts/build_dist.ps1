@@ -13,11 +13,13 @@ param(
     [string]$Version = "0.1.9",
     # The game 2.5 build tree (RED4ext.SDK game-2.5); build\ is the old 2.31 tree and its DLL is stale.
     [string]$BuildDir = "build\patchday\sdk25-build",
+    [string]$SourceRevision = '',
     [switch]$Zip,
     [switch]$Force
 )
 
 $ErrorActionPreference = "Stop"
+if (-not $SourceRevision) { $SourceRevision = 'local-source (revision not supplied)' }
 $RepoRoot = (Resolve-Path "$PSScriptRoot\..").Path
 $DistRoot = [IO.Path]::GetFullPath((Join-Path $RepoRoot "dist"))
 $Out      = [IO.Path]::GetFullPath((Join-Path $DistRoot "CyberpunkVRPort-$Version"))
@@ -323,7 +325,7 @@ IF SOMETHING IS WRONG
     package added and then offers your own settings back. UNINSTALL.txt is the same thing
     written out by hand, including the two things neither of them can put back for you.
 
-Built from commit $(git -C $RepoRoot rev-parse --short HEAD 2>$null) on $(Get-Date -Format "yyyy-MM-dd").
+Built from commit $SourceRevision on $(Get-Date -Format "yyyy-MM-dd").
 "@
 Set-Content (Join-Path $Out "INSTALL.txt") $readme -Encoding utf8
 
@@ -429,7 +431,7 @@ $looseLines
     Each has its own uninstall; the lists above remove only what carries the
     CyberpunkVRPort name.
 
-Generated from commit $(git -C $RepoRoot rev-parse --short HEAD 2>$null) on $(Get-Date -Format "yyyy-MM-dd").
+Generated from commit $SourceRevision on $(Get-Date -Format "yyyy-MM-dd").
 "@
 Set-Content (Join-Path $Out "UNINSTALL.txt") $uninstall -Encoding utf8
 
