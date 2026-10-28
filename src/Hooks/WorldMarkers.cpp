@@ -37,6 +37,7 @@ extern "C" int CyberpunkVR_StereoSubmit;
 extern "C" void CvrWorldMarkerTextPublishDetour();
 extern "C" { uintptr_t CvrWorldMarkerTextPublishTarget{}; }   // the native publication the thunk jumps on to
 extern "C" int GetMenuMode();
+extern "C" int GetMenuRectMode();
 extern "C" float CyberpunkVR_HudRootWidth, CyberpunkVR_HudRootHeight;   // Natives/HudPanel.cpp
 extern int g_launcherWidth;
 extern int g_launcherHeight;
@@ -942,7 +943,9 @@ bool EngineEyeWindow(int eye,cvr::projection::ViewWindow& window) {
 // With the UI laid out for one eye (src/Stereo/EngineStereo.cpp) the canvas is one eye's under the engine's stereo
 // too: drawn into the eye's half it is an eye pixel per canvas pixel already, and only the centre moves.
 bool InkShift(int side,int eye,float width,float height,cvr::projection::ViewWindow& window,float& squeeze) {
-    if(!CyberpunkVR_AsymHudShift.load(std::memory_order_relaxed) || GetMenuMode() || g_launcherHeight<=0 || !(height>0))return false;
+    // Flat panels must not inherit the gameplay HUD's eye offset or squeeze.
+    if(!CyberpunkVR_AsymHudShift.load(std::memory_order_relaxed) || GetMenuMode() || GetMenuRectMode() ||
+       cvr::engine_stereo::OnePicture() || g_launcherHeight<=0 || !(height>0))return false;
     const float across=eye>=0 && !cvr::engine_stereo::UiOneEye() ? 2.0f : 1.0f;   // the eyes the canvas spans
     const float aspect=across*float(g_launcherWidth)/float(g_launcherHeight);
     if(std::fabs(width/height-aspect)>.01f*aspect)return false;
@@ -1147,11 +1150,11 @@ bool RewriteConstants(uint32_t size,const void* source,void* scratch,uint32_t* s
         if(shift) ShiftInkCamera(out,p,size,squeeze,window.shiftX,window.shiftY,content);
         inkCameras[slot].parallax=parallax ? out[2] : 0;inkCameras[slot].squeeze=squeeze;
         if(engineStereo) {
-            // Each eye's move, once per change: what the engine wrote, what the eye gets.
-            static float logged[2][4]{};
-            float* l=logged[slot];
-            if(l[0]!=out[0] || l[1]!=out[3] || l[2]!=out[7] || l[3]!=out[2]) {
-                l[0]=out[0];l[1]=out[3];l[2]=out[7];l[3]=out[2];
+            // Camera floats change continuously. One sample per eye is enough to
+            // identify this path; do not format/write a log line for every upload.
+            static std::atomic<bool> logged[2]{};
+            if(!logged[slot].load(std::memory_order_relaxed) &&
+               !logged[slot].exchange(true,std::memory_order_relaxed)) {
                 Log("[world-markers] eye %d canvas %.0fx%.0f: x %.6f %.4f y %.4f -> x %.6f %.4f y %.4f parallax %.5f "
                     "(squeeze %.4f window %.4f %.4f %.4f %.4f)\n",eye,p[188],p[189],p[0],p[3],p[7],out[0],out[3],out[7],out[2],
                     squeeze,window.shiftX,window.shiftY,window.halfX,window.halfY);

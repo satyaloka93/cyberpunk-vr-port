@@ -1,4 +1,7 @@
 #include "Utils/DebugGate.hpp"
+#include "Hooks/Psvr2Input.hpp"
+#include "Runtimes/Psvr2HapticChannel.hpp"
+#include "Runtimes/HapticRouting.hpp"
 #include "Core/LiveControls.hpp"
 #include "Render/CommandResources.hpp"
 #include "Render/GpuStageProfile.hpp"
@@ -1120,6 +1123,7 @@ DWORD OpenXRManager::FrameThreadMain() {
         // ping-pong the synth scratch slot + stride logs). The blendFactor itself
         // is computed from QPC capture timestamps, not this counter.
         ++displayFrameIndex;
+        if (cvr::haptics::HapticRoute().Toolkit()) cvr::psvr2::Haptics().Heartbeat();
         if (frameState.predictedDisplayPeriod > 0) {
             cvr::framegen::DisplayPeriod(frameState.predictedDisplayPeriod);
             m_predictedDisplayPeriodNs.store(frameState.predictedDisplayPeriod, std::memory_order_relaxed);
@@ -1208,7 +1212,8 @@ DWORD OpenXRManager::FrameThreadMain() {
         uint32_t viewCountOutput = 0;
         const bool monoEnabled = m_monoSubmitEnabled.load(std::memory_order_relaxed);
         // The loading screen and a frame rendered mono too (Stereo/EngineStereo.hpp OnePicture).
-        const bool menuRectActive = (GetMenuRectMode() != 0) || (GetMenuMode() != 0) || cvr::engine_stereo::OnePicture();
+        bool menuRectActive = (GetMenuRectMode() != 0) || (GetMenuMode() != 0) || cvr::engine_stereo::OnePicture();
+        float capturedPanelAspect = 1.0f;
         // Menu closed -> drop the latched panel anchors so the NEXT menu re-anchors in
         // front of wherever the player is looking at open time.
         if (!menuRectActive) {
@@ -1475,7 +1480,9 @@ DWORD OpenXRManager::FrameThreadMain() {
                 syncInfo.activeActionSets = &activeActionSet;
                 XrResult syncRes = xrSyncActions(m_session, &syncInfo);
                 // Vibration queued since the last frame, played where the actions are synced.
-                if (XR_SUCCEEDED(syncRes)) cvr::haptics::Tick();
+                if (XR_SUCCEEDED(syncRes) && m_sessionState == XR_SESSION_STATE_FOCUSED)
+                    cvr::haptics::Tick();
+                else cvr::haptics::Clear();
                 
                 if (doHandLog) {
                     Log("OpenXRManager[Hands]: syncRes=%d sessionState=%d\n", syncRes, (int)m_sessionState);
@@ -1493,6 +1500,7 @@ DWORD OpenXRManager::FrameThreadMain() {
                 // HOLD the LEFT stick click, pick the direction with the RIGHT stick.
                 bool leftStickClicked  = false;
                 bool dpadUsedThisFrame = false;
+                bool triangleShift = false;
 
                 std::lock_guard<std::mutex> handLock(m_handMutex);
                 // ONE INSTANT: the head position that goes with these controller poses, plus the
@@ -1756,6 +1764,12 @@ DWORD OpenXRManager::FrameThreadMain() {
                         // (sprint) is emitted DEFERRED, after the loop: only when the
                         // click is released without a D-Pad direction having been used.
                         leftStickClicked = sclick;
+                        triangleShift = IsRuntimePsvr2() && m_psvr2TriangleTouchAction != XR_NULL_HANDLE &&
+                            getBool(m_psvr2TriangleTouchAction);
+                        if (triangleShift) {
+                            static bool logged = false;
+                            if (!logged) { logged = true; Log("OpenXRManager[PSVR2]: Triangle-touch D-pad modifier active.\n"); }
+                        }
                     } else {
                         ctrl.rightTrigger = trig;
                         ctrl.rightGrip    = grip;
@@ -1769,7 +1783,9 @@ DWORD OpenXRManager::FrameThreadMain() {
                         // D-PAD CHORD: while the LEFT stick click is held, the RIGHT
                         // stick picks the D-Pad direction. The right axes are zeroed for
                         // the whole hold so snap-turn/camera cannot fire during selection.
-                        if (leftStickClicked) {
+                        if (triangleShift) {
+                            dpadUsedThisFrame = cvr::input::TriangleDpad(true, ctrl.rightThumbX, ctrl.rightThumbY, ctrl.buttons);
+                        } else if (leftStickClicked) {
                             float threshold = CyberpunkVR_DpadChordStick;
                             if (!(threshold > 0.05f) || threshold > 1.0f) threshold = 0.90f;
                             if (sy > threshold)  { ctrl.buttons |= XB_DPAD_UP;    dpadUsedThisFrame = true; }
@@ -1831,7 +1847,19 @@ DWORD OpenXRManager::FrameThreadMain() {
                 // as Touch controls. Menu/Start retains the existing escape path.
                 if(cvr::vrui::CapturesInput())ctrl={};
                 if (gameplayInputActive) {
-                    if(getGlobalBool(m_menuButtonAction))ctrl.buttons|=0x0010; // XINPUT_GAMEPAD_START
+                    const bool menuPressed = getGlobalBool(m_menuButtonAction);
+                    if (IsRuntimePsvr2()) {
+                        // L3+R3 belongs to upstream's overlay, not our menu fallback.
+                        const bool chord = triangleShift && uiTracking.hands[1].stickClick && !leftStickClicked;
+                        ctrl.psvr2SystemAvailable = syncRes == XR_SUCCESS && m_sessionState == XR_SESSION_STATE_FOCUSED;
+                        ctrl.psvr2SystemPressed = menuPressed || (chord && !cvr::vrui::CapturesInput());
+                        ctrl.psvr2DpadShift = triangleShift && !cvr::vrui::CapturesInput();
+                        if (chord) ctrl.buttons &= static_cast<uint16_t>(~0x0080u);
+                        if (menuPressed) {
+                            static bool logged = false;
+                            if (!logged) { logged = true; Log("OpenXRManager[PSVR2]: Create SystemButton active (tap=Start, hold=Back).\n"); }
+                        }
+                    } else if(menuPressed)ctrl.buttons|=0x0010; // Other headsets unchanged.
 
                     // Publish the snapshot for the XInput hook.
                     std::lock_guard<std::mutex> inLock(m_inputMutex);
@@ -1890,6 +1918,8 @@ DWORD OpenXRManager::FrameThreadMain() {
                         monoSource->AddRef();
                         presentSerial = m_monoCapturedFrame.serial;
                         monoCaptureMs = m_monoCapturedFrame.captureMs;
+                        menuRectActive = m_monoCapturedFrame.menuPanel;
+                        capturedPanelAspect = m_monoCapturedFrame.panelAspect;
                         for (int eye = 0; eye < 2; ++eye) {
                             if(!cvr::framegen::CaptureInputsEnabled())m_monoCapturedFrame.framegenInputs[eye].reset();
                             monoPoses[eye] = m_monoCapturedFrame.poses[eye];
@@ -2413,17 +2443,11 @@ DWORD OpenXRManager::FrameThreadMain() {
 
                                 float quadWidth = 2.0f * 1.5f * tanf(GetMenuFov() * 3.14159f / 180.0f * 0.5f);
                                 float quadHeight = quadWidth;
-                                // ENGINE STEREO: the image is the whole two-eyes-wide window squeezed into one
-                                // eye's (OpenXRCapture.cpp). Ink fits a menu's 16:9 design into that window by
-                                // its height, where one eye's window fitted it by the width: the menu keeps the
-                                // panel width it had there, and the panel takes the window's own aspect.
-                                if (cvr::engine_stereo::Enabled() && m_eyeSwapchains[0].height) {
-                                    const float windowW = 2.0f * static_cast<float>(m_eyeSwapchains[0].width);
-                                    const float windowH = static_cast<float>(m_eyeSwapchains[0].height);
-                                    const float menuW = (std::min)(windowW, windowH * 16.0f / 9.0f);
-                                    quadHeight = quadWidth * windowH / menuW;
-                                    quadWidth *= windowW / menuW;
-                                }
+                                // Fit the COMPLETE panel inside the requested angular size.
+                                // Expanding its width to restore a 16:9 design cropped wide
+                                // splash artwork. Preserve source aspect without zooming it.
+                                if (capturedPanelAspect > 1.0f) quadHeight /= capturedPanelAspect;
+                                else if (capturedPanelAspect > 0.0f) quadWidth *= capturedPanelAspect;
                                 layerQuad.size = {quadWidth, quadHeight};
                                 layers[0] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&layerQuad);
                             } else {
@@ -2555,7 +2579,8 @@ DWORD OpenXRManager::FrameThreadMain() {
                                     CVR_DIAGNOSTIC(CyberpunkVR_DebugSubmitAgeBuckets[bucket].fetch_add(1, std::memory_order_relaxed));
                                 }
                             }
-                            const XrResult endRes = xrEndFrame(m_session, &endInfo);
+                            XrResult endRes;
+                            endRes = xrEndFrame(m_session, &endInfo);
                             CVR_DIAGNOSTIC(
                                 CyberpunkVR_StereoDepthReportSeq.fetch_add(1,std::memory_order_acq_rel);
                                 std::snprintf(CyberpunkVR_StereoDepthReport,sizeof(CyberpunkVR_StereoDepthReport),

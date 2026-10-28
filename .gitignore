@@ -181,3 +181,14 @@ tools/vr_menu_tests/*
 !tools/vr_menu_assets/
 tools/vr_menu_assets/*
 !tools/vr_menu_assets/matte_sources.py
+
+# Local game-2.5 reload regressions
+!tools/game250_regression_tests/
+!tools/game250_regression_tests/*.py
+
+# PSVR2 input, haptic ownership and production playback regression fixtures.
+!tools/psvr2_input_tests/
+!tools/psvr2_input_tests/**
+
+# Maintained Windows installer and release tooling
+!scripts/*.ps1

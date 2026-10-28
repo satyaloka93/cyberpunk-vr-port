@@ -255,6 +255,7 @@ void RefreshPlayerCameraState() {
 
             g_isInVehicle=false;
             bool mountedCar=false;
+            bool onBike=false;
             uintptr_t mountedIdentity=0;
             if (playerHandle && g_mountedVehicleProp) {
                 auto mountedVehicle = g_mountedVehicleProp->GetValue<RED4ext::WeakHandle<RED4ext::IScriptable>>(playerHandle.instance);
@@ -264,8 +265,13 @@ void RefreshPlayerCameraState() {
                 if(mounted) {
                     static const auto* carClass=RED4ext::CRTTISystem::Get()->GetClass("vehicleCarBaseObject");
                     mountedCar=carClass && mounted->GetType()->IsA(carClass);
+                    const RED4ext::CName bikeClass("vehicleBikeBaseObject");
+                    for(auto* cls=mounted->GetType();cls;cls=cls->parent) {
+                        if(cls->name==bikeClass){onBike=true;break;}
+                    }
                 }
             }
+            g_isOnBike.store(onBike,std::memory_order_relaxed);
             cvr::anim::WheelSetMountedCar(mountedCar);
             s_mountedVehicleIdentity.store(mountedIdentity,std::memory_order_release);
 
@@ -982,8 +988,12 @@ extern "C" void __fastcall OnLocateCameraCallback(float* rbxPtr, float xmm0_val)
         // consistent with) sees one number and they cannot drift apart.
         float vehOff[3] = { 0.0f, 0.0f, 0.0f };
         if (allowGameCameraTranslation && g_isInVehicle) {
-            const auto active=cvr::camera::ActiveVehicleCameraOffset(
+            const auto selected=cvr::camera::SelectVehicleCameraOffset(
                 {g_liveControls.xrVehHeadOffsetX,g_liveControls.xrVehHeadOffsetY,g_liveControls.xrVehHeadOffsetZ},
+                {g_liveControls.xrBikeHeadOffsetX,g_liveControls.xrBikeHeadOffsetY,g_liveControls.xrBikeHeadOffsetZ},
+                g_isOnBike.load(std::memory_order_relaxed));
+            const auto active=cvr::camera::ActiveVehicleCameraOffset(
+                selected,
                 cvr::anim::IsPassengerWindowCombat(g_vehicleState.load(std::memory_order_relaxed)));
             vehOff[0]=active.x;vehOff[1]=active.y;vehOff[2]=active.z;
         }

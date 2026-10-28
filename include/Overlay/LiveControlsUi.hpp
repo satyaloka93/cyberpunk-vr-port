@@ -10,6 +10,7 @@
 #include "Render/MonoCascades.hpp"
 
 struct LiveControlsUiState {
+    bool xrWeaponLaserDot = false;
     float xrHeadOffsetX;
     float xrHeadOffsetY;
     float xrHeadOffsetZ;
@@ -109,7 +110,10 @@ struct LiveControlsUiState {
     float xrPhysicalCrouchDepth;
     int xrAsymProjection = 1; // 1 = each eye renders its own off-centre lens window (CyberpunkVR_AsymProjection)
     int xrHaptics = 1;        // controller vibration (Runtimes/Haptics.cpp)
+    int xrPsvr2HapticBackend = 2; // 0 OpenXR, 1 prefer Toolkit, 2 auto; startup detection
     float xrHapticScale = 1.0f;
+    float xrOpenXrHapticGain = 1.25f;
+    float xrOpenXrVehicleHapticGain = 1.0f;
     // Cutscene VRIK suspend (PR #40). The minimum GameplayTier at which the plugin fully suspends
     // the body+arm solve on foot: -1/0 = never, 1..4 = Tier2..Tier5.
     // Default 3 (Tier4_FPPCinematic). F10 -> VRIK tab.
@@ -118,8 +122,11 @@ struct LiveControlsUiState {
     // default. The on-foot trio is a standing calibration; seated, the vehicle camera is already in
     // place, so that calibration carries the view off the seat. F10 -> Tracking / Camera.
     float xrVehHeadOffsetX;
+    float xrBikeHeadOffsetX;
     float xrVehHeadOffsetY;
+    float xrBikeHeadOffsetY;
     float xrVehHeadOffsetZ;
+    float xrBikeHeadOffsetZ;
     // ---- DRIVING: hands on the wheel ----------------------------------------------------------
     // 1 (default) = while driving, bringing a hand to where the driving animation holds the wheel and
     // squeezing that grip hands the arm back to the animation (hand on the wheel, native finger curl);

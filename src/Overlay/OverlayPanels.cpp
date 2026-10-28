@@ -19,6 +19,8 @@
 #include "Overlay/ImGuiOverlay.hpp"
 #include "Overlay/LiveControlsUi.hpp"
 #include "Runtimes/OpenXRManager.hpp"
+#include "Runtimes/HapticRouting.hpp"
+#include "Runtimes/Haptics.hpp"
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
@@ -42,6 +44,7 @@ extern volatile int g_verboseLog; // per-frame log spam toggle (default off)
 extern void Log(const char* fmt, ...);
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 extern volatile float g_lastLocateQuat[4];
+extern "C" int32_t CyberpunkVR_OverlaySkipEmpty;
 extern "C" int   CyberpunkVR_StereoModuleEnable;   // vr_core.cpp: did we install at all
 extern "C" int   CyberpunkVR_StereoModuleLoaded;
 extern "C" int32_t CyberpunkVR_StereoLog;
@@ -614,11 +617,11 @@ static bool DrawDrivingControls(LiveControlsUiState& state) {
             if (UI::IsItemHovered()) {
                 UI::SetTooltip(
                     "While DRIVING, bring a hand to where the driving animation holds the\n"
-                    "wheel (or the handlebars) and squeeze that grip: the arm is handed back\n"
+                    "wheel (or handlebars) and click that grip: the arm is handed back\n"
                     "to the game's own animation -- hand on the wheel, fingers wrapped around\n"
-                    "it -- instead of following the controller. Release the grip and it goes\n"
-                    "back to your hand.\n\n"
-                    "Each hand is independent: hold the wheel with one and keep the other on\n"
+                    "it -- instead of following the controller. Click again to release it,\n"
+                    "even if your hand has moved away.\n\n"
+                    "Each hand is independent: latch one on the wheel and keep the other on\n"
                     "a gun. While a hand is at the wheel that grip does nothing else (no\n"
                     "holster equip, no magazine grab).");
             }
@@ -750,12 +753,15 @@ static bool DrawDrivingControls(LiveControlsUiState& state) {
         changed |= widgets::SliderFloat("Car Head X right", &state.xrVehHeadOffsetX, -0.50f, 0.50f, "%.3f m");
         changed |= widgets::SliderFloat("Car Head Y forward", &state.xrVehHeadOffsetY, -0.50f, 0.50f, "%.3f m");
         changed |= widgets::SliderFloat("Car Head Z up", &state.xrVehHeadOffsetZ, -0.50f, 0.50f, "%.3f m");
+        changed |= widgets::SliderFloat("Bike Head X right", &state.xrBikeHeadOffsetX, -0.50f, 0.50f, "%.3f m");
+        changed |= widgets::SliderFloat("Bike Head Y forward", &state.xrBikeHeadOffsetY, -0.50f, 0.50f, "%.3f m");
+        changed |= widgets::SliderFloat("Bike Head Z up", &state.xrBikeHeadOffsetZ, -0.50f, 0.50f, "%.3f m");
         UI::EndDisabled();
-        {   // Live, so a slider that is doing nothing says so instead of being blamed.
-            UI::TextDisabled(passengerCombat ? "   (window combat: use GENERAL > Head offsets)"
-                               : g_isInVehicle ? "   (in a vehicle: these are live)"
-                                              : "   (on foot: these are ignored)");
-        }
+        const bool onBike=g_isOnBike.load(std::memory_order_relaxed);
+        UI::TextDisabled(passengerCombat ? "   (window combat: use GENERAL > Head offsets)"
+                           : !g_isInVehicle ? "   (on foot: all seated offsets are ignored)"
+                           : onBike ? "   (motorcycle: Bike offsets are live)"
+                                    : "   (car/non-bike: Car offsets are live)");
     return changed;
 }
 
@@ -1044,7 +1050,7 @@ bool DrawLiveControls(LiveControlsUiState& state,int section,bool* foveatedEditi
                                       "the weapon arm. Either way the shot leaves the real muzzle, for guns and\n"
                                       "projectiles alike, and free-look while aiming is preserved.");
                 }
-                UI::Checkbox("Weapon Aim laser dot (where the bullet hits)", &g_drawBarrelCross);
+                changed |= UI::Checkbox("Weapon Aim laser dot (where the bullet hits)", &state.xrWeaponLaserDot);
                 if (UI::IsItemHovered()) {
                     UI::SetTooltip("Red dot projected from the actual weapon muzzle direction through the\n"
                                       "game camera -- marks exactly where the bullet will fly.");
@@ -1052,14 +1058,39 @@ bool DrawLiveControls(LiveControlsUiState& state,int section,bool* foveatedEditi
             }
             UI::Separator();
 
+            if (OpenXRManager::Get().IsRuntimePsvr2()) {
+                changed |= widgets::Combo("PSVR2 haptics output (restart)", &state.xrPsvr2HapticBackend,
+                    "OpenXR (standard vibration)\0Prefer Toolkit (OpenXR fallback)\0Auto (detect bridge at startup)\0");
+                UI::TextWrapped("Restart the game after changing output. OpenXR: stop the Toolkit bridge. "
+                    "Toolkit: start the bridge before the game; provides advanced triggers and optional audio haptics.");
+                UI::Text("Active output: %s", cvr::haptics::HapticRoute().Toolkit() ? "Toolkit bridge" : "OpenXR");
+                if (cvr::haptics::HapticRoute().Pending(true))
+                    UI::TextUnformatted("Saved output will take effect after restarting the game.");
+                if (!cvr::haptics::HapticRoute().BridgeDetected() && state.xrPsvr2HapticBackend != 0)
+                    UI::TextWrapped("No compatible bridge listener detected at startup: using OpenXR. Start bridge BEFORE launching game for advanced haptics.");
+                if (cvr::haptics::HapticRoute().Toolkit())
+                    UI::TextWrapped("Vibration controls below affect port events only. Bridge trigger/audio settings remain in Mods > DualSense settings.");
+                else
+                    UI::TextWrapped("OpenXR output requires working SteamVR haptic bindings. Toolkit-only trigger effects are not available in this mode.");
+            }
             changed |= CheckboxInt("Controller vibration", &state.xrHaptics);
             if (UI::IsItemHovered()) {
-                UI::SetTooltip("Haptics: every round by weapon class (handgun, rifle, shotgun, sniper),\n"
+                UI::SetTooltip("Haptics: weapon-strength recoil and physical melee swings,\n"
                                   "melee block and parry, bullet block and deflect, reaching a belt element,\n"
-                                  "pulling a grenade pin. Two-handed grip: both hands; one hand: one.");
+                                  "pulling a grenade pin, and audio-derived driving rumble.\n"
+                                  "Two-handed gun grip: weaker support-hand pulse, as in our earlier fork.");
             }
             UI::BeginDisabled(state.xrHaptics == 0);
             changed |= widgets::SliderFloat("Vibration strength", &state.xrHapticScale, 0.0f, 2.0f, "%.2fx");
+            if (!cvr::haptics::HapticRoute().Toolkit()) {
+                changed |= widgets::SliderFloat("OpenXR gun/swing/vehicle gain", &state.xrOpenXrHapticGain, 0.0f, 2.0f, "%.2fx");
+                changed |= widgets::SliderFloat("OpenXR vehicle audio rumble", &state.xrOpenXrVehicleHapticGain, 0.0f, 2.0f, "%.2fx");
+                if (UI::IsItemHovered()) UI::SetTooltip("Earlier fork's 28-320 Hz road/engine envelope, only while driving.\n"
+                    "Default output audio (including music/other apps) can contribute. Zero disables vehicle rumble only.");
+            }
+            if (UI::Button("Test left vibration")) cvr::haptics::Play(cvr::haptics::kBeltTouch, cvr::haptics::kLeft);
+            UI::SameLine();
+            if (UI::Button("Test right vibration")) cvr::haptics::Play(cvr::haptics::kBeltTouch, cvr::haptics::kRight);
             UI::EndDisabled();
             UI::Separator();
 
@@ -1152,6 +1183,17 @@ bool DrawLiveControls(LiveControlsUiState& state,int section,bool* foveatedEditi
 
         if (section>=0 ? section==4 : UI::BeginTabItem("STEREO")) {
             if(UI::CollapsingHeader("PERFORMANCE",ImGuiTreeNodeFlags_DefaultOpen)) {
+                bool stableEmptyPacing = CyberpunkVR_OverlaySkipEmpty == 0;
+                if (UI::Checkbox("Stable pacing with no overlay graphics", &stableEmptyPacing)) {
+                    CyberpunkVR_OverlaySkipEmpty = stableEmptyPacing ? 0 : 1;
+                    Log("[pacing] stable empty-overlay pacing=%d (skipEmpty=%d)\n",
+                        stableEmptyPacing, CyberpunkVR_OverlaySkipEmpty);
+                }
+                if (UI::IsItemHovered()) UI::SetTooltip(
+                    "Keep the previous-overlay fence pacing even when no overlay is drawn.\n"
+                    "May improve headset delivery when mounting or holstering. Adds a small\n"
+                    "empty command submission. Uncheck for upstream behavior; resets ON at launch.");
+
                 int reflex=state.nvidiaReflex+1;
                 if(widgets::Combo("NVIDIA Reflex",&reflex,"Game setting\0Off (higher FPS)\0On (lower latency)\0On + Boost\0")) {
                     state.nvidiaReflex=reflex-1;changed=true;
