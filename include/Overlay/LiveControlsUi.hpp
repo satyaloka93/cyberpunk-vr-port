@@ -114,6 +114,8 @@ struct LiveControlsUiState {
     float xrHapticScale = 1.0f;
     float xrOpenXrHapticGain = 1.25f;
     float xrOpenXrVehicleHapticGain = 1.0f;
+    int xrVehicleAudioChannels = 0;
+    bool xrVehicleAudioRequireGrip = false;
     // Cutscene VRIK suspend (PR #40). The minimum GameplayTier at which the plugin fully suspends
     // the body+arm solve on foot: -1/0 = never, 1..4 = Tier2..Tier5.
     // Default 3 (Tier4_FPPCinematic). F10 -> VRIK tab.

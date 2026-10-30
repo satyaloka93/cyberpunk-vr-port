@@ -1,3 +1,4 @@
+#include "Natives/HudPanelLifetime.hpp"
 // CyberpunkVRPort as a RED4ext plugin -- the replacement for the dxgi.dll proxy.
 //
 // WHY THIS EXISTS
@@ -148,6 +149,7 @@ RED4EXT_C_EXPORT bool RED4EXT_CALL Main(RED4ext::v1::PluginHandle handle, RED4ex
     }
     case RED4ext::v1::EMainReason::Unload:
         if (g_disabled) break;
+        cvr::hud::ShutdownUpkeep();
         cvr::vendor_route::Reset(nullptr);
         CyberpunkVR_CloseOwnedExecution();
         // RED4ext unloads the plugin BEFORE the process finishes tearing down the graphics runtime,

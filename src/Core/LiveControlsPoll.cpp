@@ -564,6 +564,8 @@ void PollLiveControls() {
     float xrHapticScale = CyberpunkVR_HapticScale;
     float xrOpenXrHapticGain = cvr::haptics::LegacyGain();
     float xrOpenXrVehicleHapticGain = cvr::haptics::VehicleGain();
+    int xrVehicleAudioChannels = cvr::haptics::VehicleAudioChannels();
+    int xrVehicleAudioRequireGrip = cvr::haptics::VehicleAudioRequireGrip();
     float xrPistolBack = CyberpunkVR_PistolBackMul;
     float xrClimbFrac = CyberpunkVR_RecoilClimbFrac;
     float xrClimbMax = CyberpunkVR_RecoilClimbMaxDeg;
@@ -1304,6 +1306,8 @@ void PollLiveControls() {
         if (sscanf_s(line, "xr_openxr_haptic_gain = %f", &value) == 1) {
             xrOpenXrHapticGain = value; continue;
         }
+        if (sscanf_s(line, "xr_vehicle_audio_channels = %d", &xrVehicleAudioChannels) == 1) continue;
+        if (sscanf_s(line, "xr_vehicle_audio_require_grip = %d", &xrVehicleAudioRequireGrip) == 1) continue;
         if (sscanf_s(line, "xr_openxr_vehicle_haptic_gain = %f", &value) == 1) {
             xrOpenXrVehicleHapticGain = value; continue;
         }
@@ -1855,6 +1859,8 @@ void PollLiveControls() {
     cvr::haptics::HapticRoute().Request(xrPsvr2HapticBackend);
     cvr::haptics::SetLegacyGain(xrOpenXrHapticGain);
     cvr::haptics::SetVehicleGain(xrOpenXrVehicleHapticGain);
+    cvr::haptics::SetVehicleAudioChannels(xrVehicleAudioChannels);
+    cvr::haptics::SetVehicleAudioRequireGrip(xrVehicleAudioRequireGrip != 0);
     CyberpunkVR_HapticScale    = (xrHapticScale < 0.0f) ? 0.0f : ((xrHapticScale > 2.0f) ? 2.0f : xrHapticScale);
     CyberpunkVR_PistolBackMul  = (xrPistolBack < 0.0f) ? 0.0f : ((xrPistolBack > 4.0f) ? 4.0f : xrPistolBack);
     CyberpunkVR_RecoilClimbFrac   = (xrClimbFrac < 0.0f) ? 0.0f : ((xrClimbFrac > 2.0f) ? 2.0f : xrClimbFrac);
@@ -1992,6 +1998,8 @@ LiveControlsUiState MakeLiveControlsUiState() {
     state.xrPsvr2HapticBackend = cvr::haptics::HapticRoute().Requested();
     state.xrOpenXrHapticGain = cvr::haptics::LegacyGain();
     state.xrOpenXrVehicleHapticGain = cvr::haptics::VehicleGain();
+    state.xrVehicleAudioChannels = cvr::haptics::VehicleAudioChannels();
+    state.xrVehicleAudioRequireGrip = cvr::haptics::VehicleAudioRequireGrip();
     state.xrHapticScale = CyberpunkVR_HapticScale;
     state.xrBreaststrokeSwim = g_liveControls.xrBreaststrokeSwim;
     state.xrLadderGripClimb = g_liveControls.xrLadderGripClimb;
@@ -2274,6 +2282,8 @@ void PersistLiveControlsUiState(const LiveControlsUiState& state) {
     fprintf(file, "xr_haptic_scale=%.3f\n", CyberpunkVR_HapticScale);
     fprintf(file, "xr_openxr_haptic_gain=%.3f\n", cvr::haptics::LegacyGain());
     fprintf(file, "xr_openxr_vehicle_haptic_gain=%.3f\n", cvr::haptics::VehicleGain());
+    fprintf(file, "xr_vehicle_audio_channels=%d\n", cvr::haptics::VehicleAudioChannels());
+    fprintf(file, "xr_vehicle_audio_require_grip=%d\n", cvr::haptics::VehicleAudioRequireGrip());
     // A pistol's throw: the smallest of the four, because its energy goes into the flip. Its RISE has no
     // multiplier -- the reference angle is the pistol's. Clamped to [0, 4].
     fprintf(file, "xr_recoil_pistol_back=%.3f\n", CyberpunkVR_PistolBackMul);
@@ -2457,6 +2467,8 @@ extern "C" void SetLiveControlsUiState(const LiveControlsUiState* state, int per
     cvr::haptics::HapticRoute().Request(state->xrPsvr2HapticBackend);
     cvr::haptics::SetLegacyGain(state->xrOpenXrHapticGain);
     cvr::haptics::SetVehicleGain(state->xrOpenXrVehicleHapticGain);
+    cvr::haptics::SetVehicleAudioChannels(state->xrVehicleAudioChannels);
+    cvr::haptics::SetVehicleAudioRequireGrip(state->xrVehicleAudioRequireGrip);
     CyberpunkVR_HapticScale = std::isfinite(state->xrHapticScale) ? std::clamp(state->xrHapticScale, 0.0f, 2.0f) : 1.0f;
     g_liveControls.xrBreaststrokeSwim = state->xrBreaststrokeSwim != 0 ? 1 : 0;
     g_liveControls.xrLadderGripClimb = state->xrLadderGripClimb != 0 ? 1 : 0;

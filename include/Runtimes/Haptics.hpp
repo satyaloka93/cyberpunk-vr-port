@@ -43,6 +43,10 @@ void SetLegacyGain(float gain);
 float LegacyGain();
 void SetVehicleGain(float gain);
 float VehicleGain();
+void SetVehicleAudioChannels(int mode);
+int VehicleAudioChannels();
+void SetVehicleAudioRequireGrip(bool enabled);
+bool VehicleAudioRequireGrip();
 void Clear();
 
 // A scripted event on the hands in handMask.

@@ -767,6 +767,8 @@ bool OpenXRManager::Init() {
             makeAction(m_menuButtonAction, XR_ACTION_TYPE_BOOLEAN_INPUT,
                 IsRuntimePsvr2() ? "systembutton" : "menu",
                 IsRuntimePsvr2() ? "SystemButton (Sense Create)" : "Menu Button", false);
+            makeAction(m_thumbrestTouchAction, XR_ACTION_TYPE_BOOLEAN_INPUT,
+                "thumbrest_touch", "D-pad Shift Thumbrest Touch", true);
             if (IsRuntimePsvr2()) {
                 makeAction(m_psvr2TriangleTouchAction, XR_ACTION_TYPE_BOOLEAN_INPUT,
                     "secondary_button_touch", "Triangle Touch D-pad Shift", true);
@@ -799,6 +801,15 @@ bool OpenXRManager::Init() {
                 if (m_psvr2TriangleTouchAction != XR_NULL_HANDLE &&
                     XR_SUCCEEDED(xrStringToPath(m_instance, "/user/hand/left/input/y/touch", &triangle))) {
                     v.push_back({m_psvr2TriangleTouchAction, triangle});
+                }
+            }
+            // Match the earlier fork's Oculus Touch thumb-rest action. Sense
+            // keeps Triangle touch instead; do not request unsupported Sense inputs.
+            if (!IsRuntimePsvr2() && inputActionsEnabled && m_thumbrestTouchAction != XR_NULL_HANDLE &&
+                strcmp(profileStr, "/interaction_profiles/oculus/touch_controller") == 0) {
+                for(const char* path : {"/user/hand/left/input/thumbrest/touch", "/user/hand/right/input/thumbrest/touch"}) {
+                    XrPath rest=XR_NULL_PATH;
+                    if(XR_SUCCEEDED(xrStringToPath(m_instance,path,&rest)))v.push_back({m_thumbrestTouchAction,rest});
                 }
             }
             XrInteractionProfileSuggestedBinding sb{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
@@ -1171,7 +1182,7 @@ void OpenXRManager::PollEvents() {
                 std::lock_guard<std::mutex> lock(m_inputMutex);
                 m_controllerState.psvr2SystemAvailable = false;
                 m_controllerState.psvr2SystemPressed = false;
-                m_controllerState.psvr2DpadShift = false;
+                m_controllerState.touchDpadShift = false;
             }
             Log("OpenXRManager: Session state -> %d\n", static_cast<int>(m_sessionState));
 
@@ -2371,6 +2382,7 @@ void OpenXRManager::Shutdown() {
     m_secondaryButtonAction = XR_NULL_HANDLE;
     m_menuButtonAction = XR_NULL_HANDLE;
     m_psvr2TriangleTouchAction = XR_NULL_HANDLE;
+    m_thumbrestTouchAction = XR_NULL_HANDLE;
     m_steamFrameActions = {};
 
     m_views.clear();

@@ -16,6 +16,7 @@
 // shot's tail. Vehicle audio cannot interrupt a pulse or an interaction envelope.
 
 #include "Runtimes/Haptics.hpp"
+#include "Anim/WheelGrab.hpp"
 #include "Runtimes/HapticRouting.hpp"
 #include "Runtimes/Psvr2HapticChannel.hpp"
 #include "Runtimes/LegacyHapticPolicy.hpp"
@@ -137,6 +138,12 @@ void Queue(int row, int handMask, float mul) {
 
 void SetLegacyGain(float gain) { g_legacyGain.store(SafeGain(gain, 1.25f)); }
 float LegacyGain() { return g_legacyGain.load(); }
+static std::atomic<int> vehicleChannels{0};
+static std::atomic<bool> vehicleRequireGrip{false};
+void SetVehicleAudioChannels(int mode) { vehicleChannels.store(std::clamp(mode,0,3)); }
+int VehicleAudioChannels() { return vehicleChannels.load(); }
+void SetVehicleAudioRequireGrip(bool value) { vehicleRequireGrip.store(value); }
+bool VehicleAudioRequireGrip() { return vehicleRequireGrip.load(); }
 void SetVehicleGain(float gain) { g_vehicleGain.store(SafeGain(gain)); }
 float VehicleGain() { return g_vehicleGain.load(); }
 
@@ -237,7 +244,13 @@ void Tick() {
             }
             if (now >= e.done && !HapticRoute().Toolkit() && VehicleGain() > 0 &&
                 VehicleFresh(g_isDriving.load(std::memory_order_relaxed), nowMs, g_vehicleMs)) {
-                const float amplitude = std::min(1.0f, g_vehicle[h] * gain);
+                const bool held = (h == 0 ? cvr::anim::g_wheelBlendLeft.load() : cvr::anim::g_wheelBlendRight.load()) > .01f;
+                float audio = g_vehicle[h];
+                const int channels = VehicleAudioChannels();
+                if (channels == 1) audio = std::max(g_vehicle[0], g_vehicle[1]);
+                else if (channels == 2) audio = g_vehicle[0];
+                else if (channels == 3) audio = g_vehicle[1];
+                const float amplitude = VehicleAudioRequireGrip() && !held ? 0.0f : std::min(1.0f, audio * gain);
                 if (amplitude > .01f) due[h] = {amplitude, .045f};
             }
         }

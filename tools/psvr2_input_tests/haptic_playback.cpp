@@ -15,6 +15,10 @@ extern int CyberpunkVR_Haptics;
 extern float CyberpunkVR_HapticScale;
 }
 std::atomic<bool> g_isDriving{false};
+namespace cvr::anim {
+std::atomic<float> g_wheelBlendRight{0};
+std::atomic<float> g_wheelBlendLeft{0};
+}
 struct Output { int hand; float amp; float seconds; };
 std::vector<Output> output;
 int OpenXRManager::ApplyHaptic(int hand, float amp, float sec) { output.push_back({hand,amp,sec}); return 0; }

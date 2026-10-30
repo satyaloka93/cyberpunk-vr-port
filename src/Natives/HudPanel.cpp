@@ -30,6 +30,8 @@
 #include <RED4ext/Scripting/Functions.hpp>
 #include <RED4ext/Scripting/Utils.hpp>
 #include <shared_mutex>
+#include <mutex>
+#include "Natives/HudPanelLifetime.hpp"
 #include <unordered_map>
 #include <algorithm>
 #include <cmath>
@@ -219,22 +221,27 @@ bool HasVisibleContent(ink::Widget* widget, unsigned depth = 0) {
 // VRHudPanelSubtitle. What it did every frame for each of them happens here, in the same order relative
 // to the slot walk below: about 40 script calls a frame through CET for six roots, 0.15 ms, measured.
 enum : uint32_t { RootScanner = 1, RootWindowOrigin = 2, RootInteraction = 4, RootGazeDot = 8 };
+// The game owns these widgets/userdata. Keeping them alive until DLL static
+// destruction calls ink destructors after the game service singleton is gone.
+// Lock weak references only for the duration of a game-thread HUD update.
 struct UpkeepRoot {
-    Handle<ink::Widget> root, window;
-    Handle<ink::HudEntryInfo> info;
+    WeakHandle<ink::Widget> root, window;
+    WeakHandle<ink::HudEntryInfo> info;
     float padding = 0;
     uint32_t flags = 0;
     int8_t wasActive = -1;   // unknown after every scan, as the script's fresh tables were
 };
 struct UpkeepSubtitle {
-    Handle<ink::Widget> root, window, panel;
-    Handle<ink::HudEntryInfo> info;
+    WeakHandle<ink::Widget> root, window, panel;
+    WeakHandle<ink::HudEntryInfo> info;
     float x = 0, y = 0, width = 0, height = 0;   // the authored crop the root had when first seen
     int8_t wasActive = -1;
 };
 std::vector<UpkeepRoot> upkeepRoots, pendingRoots;
 std::vector<UpkeepSubtitle> upkeepSubtitles, pendingSubtitles;
 bool pendingScan = false;
+std::recursive_mutex upkeepMutex;
+std::atomic<bool> upkeepStopped{false};
 
 void Invalidate(ink::Widget* widget) { reinterpret_cast<InvalidateFn>(base+0x2805fc)(widget); }   // FlagForVisualInvalidation
 
@@ -247,10 +254,10 @@ void Invalidate(ink::Widget* widget) { reinterpret_cast<InvalidateFn>(base+0x280
 // thread at the frame submit (sub_1403D6D84), where the previous frame's render has finished and the next
 // one has not started; they reach the HUD a frame later, which a repaint every frame does not show. Without
 // a frame submit since the last update (menus, loading), the update runs them itself.
-std::vector<Handle<ink::Widget>> repaints;
+std::vector<WeakHandle<ink::Widget>> repaints;
 DWORD repaintThread = 0;
 void FlushRepaints(size_t stat) {
-    for (auto& widget : repaints) if (widget) Invalidate(widget.GetPtr());
+    for (const auto& weak : repaints) if (auto widget = weak.Lock()) Invalidate(widget.GetPtr());
     if (!repaints.empty()) CyberpunkVR_HudRepaintStats[stat].fetch_add(repaints.size(), std::memory_order_relaxed);
     repaints.clear();
 }
@@ -261,6 +268,8 @@ void Repaint(const Handle<ink::Widget>& widget) {
     CyberpunkVR_HudRepaintStats[0].fetch_add(1, std::memory_order_relaxed);
 }
 void FlushRepaintsAtSubmit() {
+    std::lock_guard lock(upkeepMutex);
+    if(upkeepStopped.load(std::memory_order_relaxed))return;
     if (!repaintThread || GetCurrentThreadId() != repaintThread) return;
     FlushRepaints(1);
 }
@@ -307,7 +316,7 @@ void CommitScan() {
     // A subtitle root seen in the previous scan keeps its first authored crop, as the script's did.
     for (auto& next : pendingSubtitles)
         for (const auto& old : upkeepSubtitles)
-            if (old.root.GetPtr() == next.root.GetPtr()) { next.x = old.x; next.y = old.y; next.width = old.width; next.height = old.height; break; }
+            if (const auto previous = old.root.Lock(); previous && previous.GetPtr() == next.root.Lock().GetPtr()) { next.x = old.x; next.y = old.y; next.width = old.width; next.height = old.height; break; }
     upkeepRoots.swap(pendingRoots); pendingRoots.clear();
     upkeepSubtitles.swap(pendingSubtitles); pendingSubtitles.clear();
 }
@@ -329,7 +338,9 @@ bool UpkeepRoots(ink::HUDLayer* hud) {
     CyberpunkVR_HudRootsStats[0].fetch_add(1, std::memory_order_relaxed);
     bool lootVisible = false;
     for (auto& r : upkeepRoots) {
-        auto* root = r.root.GetPtr(); auto* window = r.window.GetPtr(); auto* info = r.info.GetPtr();
+        const auto heldRoot=r.root.Lock(), heldWindow=r.window.Lock();
+        const auto heldInfo=r.info.Lock();
+        auto* root=heldRoot.GetPtr();auto* window=heldWindow.GetPtr();auto* info=heldInfo.GetPtr();
         if (!root || !window) continue;
         if(r.flags & RootGazeDot) {
             const float y=g_menuModeValue==0 ? cvr::gaze::CanvasOffset(cvr::gaze::Read(),CyberpunkVR_HudRootHeight,HudDesignScale()) : 0.f;
@@ -349,7 +360,7 @@ bool UpkeepRoots(ink::HUDLayer* hud) {
         CyberpunkVR_HudRootsStats[1].fetch_add(1, std::memory_order_relaxed);
         // Hidden panels need no crop work or redraw; the last visible image is cleared once on hide.
         const bool active = Active(root);
-        if (!active && r.wasActive != 0) { Repaint(r.root); Repaint(r.window); }
+        if (!active && r.wasActive != 0) { Repaint(heldRoot); Repaint(heldWindow); }
         r.wasActive = active ? 1 : 0;
         if (!active) continue;
         CyberpunkVR_HudRootsStats[2].fetch_add(1, std::memory_order_relaxed);
@@ -366,7 +377,7 @@ bool UpkeepRoots(ink::HUDLayer* hud) {
         float x = -padding, y = -padding, width = size.X + padding * 2, height = size.Y + padding * 2;
         if (r.flags & RootWindowOrigin) {
             // Centered roots with anchorPoint (0,0): the crop starts at the root's offset within its window.
-            const Vector2 origin = ChildPosition(window, r.root);
+            const Vector2 origin = ChildPosition(window, heldRoot);
             if (Within(origin.X) && Within(origin.Y)) { x = origin.X - padding; y = origin.Y - padding; }
             else { x = info->offset.X; y = info->offset.Y; }
         }
@@ -387,7 +398,7 @@ bool UpkeepRoots(ink::HUDLayer* hud) {
             bool placed = false;
             if (panel) {
                 const Vector2 a = ChildPosition(root, border), b = ChildPosition(border.GetPtr(), panel);
-                const Vector2 s = ChildSize(border.GetPtr(), panel), origin = ChildPosition(window, r.root);
+                const Vector2 s = ChildSize(border.GetPtr(), panel), origin = ChildPosition(window, heldRoot);
                 const float px = origin.X + a.X + b.X, py = origin.Y + a.Y + b.Y;
                 if (s.X > 0 && s.Y > 0 && s.X < 16384 && s.Y < 16384 && Within(px) && Within(py)) {
                     const float cx = std::floor(px + s.X * 0.5f), cy = std::floor(py + s.Y * 0.5f);
@@ -413,11 +424,11 @@ bool UpkeepRoots(ink::HUDLayer* hud) {
             break;
         }
         if (bounds.X != width || bounds.Y != height) {
-            info->size = {width, height}; Repaint(r.root);
+            info->size = {width, height}; Repaint(heldRoot);
             CyberpunkVR_HudRootsStats[3].fetch_add(1, std::memory_order_relaxed);
         }
         if ((padding > 0 || (r.flags & (RootScanner | RootWindowOrigin))) && (info->offset.X != x || info->offset.Y != y)) {
-            info->offset = {x, y}; Repaint(r.root);
+            info->offset = {x, y}; Repaint(heldRoot);
             CyberpunkVR_HudRootsStats[4].fetch_add(1, std::memory_order_relaxed);
         }
         if (window->size.X != size.X || window->size.Y != size.Y) {
@@ -426,18 +437,20 @@ bool UpkeepRoots(ink::HUDLayer* hud) {
         }
         // Fullscreen controllers cache their draw data; without a repaint every frame quest-icon animation
         // periodically leaves an empty offscreen image though the window stays visible.
-        Repaint(r.root); Repaint(r.window);
+        Repaint(heldRoot); Repaint(heldWindow);
     }
     for (auto& sub : upkeepSubtitles) {
-        auto* root = sub.root.GetPtr(); auto* window = sub.window.GetPtr(); auto* info = sub.info.GetPtr();
-        if (!root || !window || !info || !sub.panel) continue;
+        const auto heldRoot=sub.root.Lock(), heldWindow=sub.window.Lock(), heldPanel=sub.panel.Lock();
+        const auto heldInfo=sub.info.Lock();
+        auto* root=heldRoot.GetPtr();auto* window=heldWindow.GetPtr();auto* info=heldInfo.GetPtr();
+        if (!root || !window || !info || !heldPanel) continue;
         const bool active = Active(root);
-        if (!active && sub.wasActive != 0) { Repaint(sub.root); Repaint(sub.window); }
+        if (!active && sub.wasActive != 0) { Repaint(heldRoot); Repaint(heldWindow); }
         sub.wasActive = active ? 1 : 0;
         if (!active) continue;
         // The game puts mainPanel above the 100px root (Y=-255); the authored crop starts at Y=0 and would
         // clip the whole line once the subtitles are a window of their own.
-        const Vector2 p = ChildPosition(root, sub.panel), s = ChildSize(root, sub.panel);
+        const Vector2 p = ChildPosition(root, heldPanel), s = ChildSize(root, heldPanel);
         if (!(s.X > 0 && s.Y > 0 && s.X < 16384 && s.Y < 16384 && Within(p.X) && Within(p.Y))) continue;
         const float x = std::min(sub.x, std::floor(p.X - 32)), y = std::min(sub.y, std::floor(p.Y - 32));
         const float width = std::max(sub.width, std::ceil(p.X + s.X + 32 - x));
@@ -446,7 +459,7 @@ bool UpkeepRoots(ink::HUDLayer* hud) {
             info->offset = {x, y}; info->size = {width, height};
             CyberpunkVR_HudRootsStats[7].fetch_add(1, std::memory_order_relaxed);
         }
-        Repaint(sub.root); Repaint(sub.window);
+        Repaint(heldRoot); Repaint(heldWindow);
     }
     return lootVisible;
 }
@@ -570,7 +583,8 @@ void VRHudPanelUpdate(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, int32_
     bool lootVisible=false;
     GetParameter(frame, &root); GetParameter(frame, &lootVisible); ++frame->code;
     if (out) *out = 0;
-    if (!Verified() || !hooksReady.load(std::memory_order_acquire)) return;
+    std::lock_guard lock(upkeepMutex);
+    if (upkeepStopped.load(std::memory_order_relaxed) || !Verified() || !hooksReady.load(std::memory_order_acquire)) return;
     repaintThread = GetCurrentThreadId();
     FlushRepaints(2);   // still queued: no frame submit since the last update
     // Before anything below can return: the script's upkeep ran whatever the HUD panel's state.
@@ -689,12 +703,14 @@ void VRHudPanelUpdate(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, int32_
 // so the script keeps doing it.
 void VRHudPanelRootsNative(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, bool* out, int64_t) {
     ++frame->code;
-    if (out) *out = Verified() && hooksReady.load(std::memory_order_acquire) && CyberpunkVR_HudRootsNative.load(std::memory_order_relaxed);
+    if (out) *out = !upkeepStopped.load(std::memory_order_acquire) && Verified() && hooksReady.load(std::memory_order_acquire) && CyberpunkVR_HudRootsNative.load(std::memory_order_relaxed);
 }
 
 // A new scan: the roots that follow replace the current ones at the next VRHudPanelUpdate.
 void VRHudPanelRootsBegin(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, void*, int64_t) {
     ++frame->code;
+    std::lock_guard lock(upkeepMutex);
+    if(upkeepStopped.load(std::memory_order_relaxed))return;
     pendingRoots.clear(); pendingSubtitles.clear(); pendingScan = true;
 }
 
@@ -722,6 +738,8 @@ void VRHudPanelRoot(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, bool* ou
     RED4ext::GetParameter(frame, &flags); RED4ext::GetParameter(frame, &padding);
     ++frame->code;
     if (out) *out = false;
+    std::lock_guard lock(upkeepMutex);
+    if(upkeepStopped.load(std::memory_order_relaxed))return;
     auto info = EntryInfo(data);
     if (!root || !window || (!info && !(flags & RootGazeDot))) { RejectedOnce("a root", bool(root), bool(window), bool(data), bool(info)); return; }
     UpkeepRoot r; r.root = root; r.window = window; r.info = std::move(info); r.flags = static_cast<uint32_t>(flags); r.padding = padding;
@@ -736,6 +754,8 @@ void VRHudPanelSubtitle(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, bool
     RED4ext::GetParameter(frame, &panel);
     ++frame->code;
     if (out) *out = false;
+    std::lock_guard lock(upkeepMutex);
+    if(upkeepStopped.load(std::memory_order_relaxed))return;
     auto info = EntryInfo(data);
     if (!root || !window || !info || !panel) { RejectedOnce("a subtitle root", bool(root), bool(window), bool(data), bool(info)); return; }
     UpkeepSubtitle sub; sub.root = root; sub.window = window; sub.panel = panel;
@@ -743,4 +763,19 @@ void VRHudPanelSubtitle(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, bool
     sub.info = std::move(info);
     pendingSubtitles.push_back(std::move(sub));
     if (out) *out = true;
+}
+
+namespace cvr::hud {
+void ShutdownUpkeep() {
+    std::lock_guard lock(upkeepMutex);
+    upkeepStopped.store(true,std::memory_order_release);
+    const auto roots=upkeepRoots.size()+pendingRoots.size();
+    const auto subtitles=upkeepSubtitles.size()+pendingSubtitles.size();
+    const auto queued=repaints.size();
+    // Weak controls are released while RED4ext/game allocators are still alive.
+    // No retained widget destructor can run later in CRT/DLL detach.
+    repaints.clear();upkeepRoots.clear();pendingRoots.clear();
+    upkeepSubtitles.clear();pendingSubtitles.clear();pendingScan=false;repaintThread=0;
+    Log("[hud-panel] upkeep shutdown: weak roots=%zu subtitles=%zu queued=%zu; caches cleared\n",roots,subtitles,queued);
+}
 }

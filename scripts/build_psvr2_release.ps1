@@ -2,9 +2,9 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^\d+\.\d+\.\d+-[A-Za-z0-9][A-Za-z0-9.-]*$')]
-    [string]$Version = '0.1.9-psvr2.1-rc1',
+    [string]$Version = '0.1.9-psvr2.1-rc2',
     [string]$BuildDir = '..\fixes-019-msvc',
-    [string]$ExpectedDllSha256 = '471d1e72e37d870d96b9fecdfc7381f05303ff3ece233e504514cf5830d500e1'
+    [string]$ExpectedDllSha256 = '88ca2721a6add1b62a9e9d5b9737dfe3d1b2aca110401c5e1a6c4a024596f490'
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -37,10 +37,10 @@ if ((Get-FileHash -LiteralPath (Join-Path $out $dllRel)).Hash -ine $ExpectedDllS
     Set-Content -LiteralPath (Join-Path $out 'bin\x64\vrport.ini') -Encoding ASCII
 $guide = Join-Path $repo 'docs\PSVR2-019-RC.md'
 Copy-VerifiedFile $guide (Join-Path $out 'INSTALL.txt')
-Copy-VerifiedFile (Join-Path $repo 'docs\RELEASE-0.1.9-psvr2.1-rc1.md') (Join-Path $out 'CHANGELOG.txt')
+Copy-VerifiedFile (Join-Path $repo "docs\RELEASE-$Version.md") (Join-Path $out 'CHANGELOG.txt')
 Copy-VerifiedFile (Join-Path $repo 'LICENSE') (Join-Path $out 'LICENSE')
 $forbidden = @(Get-ChildItem -LiteralPath $out -Recurse -File | Where-Object {
-    $_.Name -match '^(dxgi|version|nvngx.*)\.dll$' -or $_.Extension -in @('.log','.pdb','.dmp') -or
+    $_.Name -match '^(dxgi|version|nvngx.*)\.dll$' -or $_.Extension -in @('.log','.pdb','.dmp','.enable') -or
     $_.FullName -match '\\(HUDitor|CheekyFoveatedDLSS|CyberpunkVR_Hands|CyberpunkVRPort_QuickBoot)\\'
 })
 if ($forbidden.Count) { throw "Unwanted release files: $($forbidden.FullName -join ', ')" }

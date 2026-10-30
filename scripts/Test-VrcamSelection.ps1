@@ -8,7 +8,7 @@ Invoke-Expression $fn.Extent.Text
 $Edition='Vrcam';$ForkArchive=$null;Set-EditionRelease
 if($release.fileName -ne 'CyberpunkVRPort-0.1.8-psvr2-cp25-vrcam-rc1.zip'){throw 'Wrong VRCAM payload selected'}
 $metadata=Get-Content "$repo\wabbajack\release-selection.json" -Raw|ConvertFrom-Json
-if($metadata.fork.fileName -ne 'CyberpunkVRPort-0.1.9-psvr2.1-rc1.zip'){throw 'Current fork selection overwritten'}
+if($metadata.fork.fileName -ne 'CyberpunkVRPort-0.1.9-psvr2.1-rc2.zip'){throw 'Current fork selection overwritten'}
 if($release.sha256 -eq $metadata.fork.sha256){throw 'Comparison and current fork hashes equal'}
 $Edition='Fork';Set-EditionRelease
 if($release.fileName -ne $metadata.fork.fileName){throw 'Return-to-current selection broken'}

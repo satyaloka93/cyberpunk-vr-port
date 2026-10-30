@@ -1,3 +1,5 @@
+RC2 fork target: 0.1.9-psvr2.1-rc2. Replace older extracted switcher copies with this ZIP.
+
 CyberpunkVR Port — game 2.5 / upstream 0.1.9 or PSVR2 0.1.9 RC1
 
 Extract this whole folder outside the game. Run Switch-CyberpunkVRPort.bat.

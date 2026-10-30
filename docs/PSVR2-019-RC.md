@@ -2,8 +2,8 @@
 
 # PSVR2 on CyberpunkVR Port 0.1.9 — release-candidate setup
 
-Release: **0.1.9-psvr2.1-rc1**. Download the installer ZIP from
-[this fork release](https://github.com/satyaloka93/cyberpunk-vr-port/releases/tag/0.1.9-psvr2.1-rc1).
+Release: **0.1.9-psvr2.1-rc2**. Download the installer ZIP from
+[this fork release](https://github.com/satyaloka93/cyberpunk-vr-port/releases/tag/0.1.9-psvr2.1-rc2).
 Official upstream and our PSVR2 fork are different selections. The switcher
 bundled with this release automatically downloads the checksum-pinned 0.1.9
 PSVR2 candidate, not the older 0.1.7 fork.
@@ -180,3 +180,24 @@ Normal installation never requires this mod or patches it without opting in.
 Game-2.5 VRCAM comparison: option9 previews and option10 installs the separate
 0.1.8-psvr2-cp25-vrcam-rc1 checkpoint. Option4 returns to this 0.1.9 PSVR2 build.
 See docs/VRCAM-CP25-COMPARISON.md. This is not the old game-2.31 release.
+
+
+## RC2: F10 haptics and Quest controls
+
+On PSVR2, F10 retains OpenXR / Prefer Toolkit / Auto selection (restart required).
+Quest uses OpenXR automatically, so this PSVR2-only selector is hidden. With
+OpenXR output, F10 exposes driving-audio enable, gain, channels, and optional
+wheel/handlebar grip gating. Toolkit output exposes audio enable/strength when
+the PSVR2 Haptics companion from the bridge setup is installed. These settings
+avoid reliance on the in-game DualSense settings menu. Toolkit channel/grip
+controls are not supported by that bridge version.
+
+Quest/Touch: touch the left thumb rest and move the right stick for D-pad;
+release to resume turning. This uses Oculus Touch profile thumb-rest input and
+is not guaranteed on other controller profiles. Hold L3 + right stick remains
+a fallback; PSVR2 uses Triangle touch. Existing Quest menu behavior is preserved.
+
+RC2 removes the temporary performance-capture menu and descriptor/memory audit.
+See the included CHANGELOG for the measured DLSS memory saving and its limits.
+Download the new switcher ZIP to select RC2; older extracted copies stay pinned
+to their original release.

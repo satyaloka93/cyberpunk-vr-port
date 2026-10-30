@@ -345,7 +345,7 @@ DWORD WINAPI HookedXInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState) {
         memset(pState, 0, sizeof(*pState));
         r = ERROR_SUCCESS;
     }
-    if (vr.psvr2DpadShift) {
+    if (vr.touchDpadShift) {
         // A physical/Steam XInput contribution must not reintroduce look after
         // the XR action snapshot suppressed it. Also cancel an in-flight snap.
         pState->Gamepad.sThumbRX = pState->Gamepad.sThumbRY = 0;
