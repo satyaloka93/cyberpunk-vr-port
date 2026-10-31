@@ -192,3 +192,7 @@ tools/vr_menu_assets/*
 
 # Maintained Windows installer and release tooling
 !scripts/*.ps1
+
+/build-local/
+/build-tests/
+!tools/ofxr_bridge_tests/
