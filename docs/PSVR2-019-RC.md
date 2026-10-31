@@ -2,8 +2,8 @@
 
 # PSVR2 on CyberpunkVR Port 0.1.9 — release-candidate setup
 
-Release: **0.1.9-psvr2.1-rc2**. Download the installer ZIP from
-[this fork release](https://github.com/satyaloka93/cyberpunk-vr-port/releases/tag/0.1.9-psvr2.1-rc2).
+Release: **0.1.9-psvr2.1-rc3**. Download the installer ZIP from
+[this fork release](https://github.com/satyaloka93/cyberpunk-vr-port/releases/tag/0.1.9-psvr2.1-rc3).
 Official upstream and our PSVR2 fork are different selections. The switcher
 bundled with this release automatically downloads the checksum-pinned 0.1.9
 PSVR2 candidate, not the older 0.1.7 fork.
@@ -132,9 +132,14 @@ The installer does not change HAGS or your registry.
 Earlier 0.1.8 testing improved after enabling HAGS and restarting. That was not
 a controlled HAGS-only benchmark; no universal FPS benefit is promised for 0.1.9.
 
-Begin without NR or framegen, then enable one extra at a time. Keep built-in
-framegen OFF when using external OFXR; do not stack both generators. External
-OFXR felt better in the maintainer's tests, not a universal performance claim.
+RC3 includes built-in V557 framegen. No external OFXR installation or tray is
+required. In F10 > FRAMEGEN, select **OFXR V557 (NVIDIA)**, use **Slow / 50%**,
+and enable generation. The switcher selects that profile but leaves generation
+OFF initially. The flight recorder is available in the same menu.
+Disarm external OFXR before launching to use the built-in route; do not stack
+generators. Current SteamVR testing recovered roughly the external V557 average,
+with occasional dips remaining. This is not a locked-90-FPS guarantee.
+See [built-in framegen details](OFXR-V557-INTEGRATION.md).
 Cheeky compatibility fixes belong to its separate build, not this port installer.
 
 ## Candidate scope and known limitations
@@ -145,7 +150,7 @@ revolver/weapon selection and stereo aiming-dot corrections. No old FOV override
 has been transplanted into this renderer. Some splash cropping remains.
 
 The tested DLL is packaged unchanged, SHA256:
-471d1e72e37d870d96b9fecdfc7381f05303ff3ece233e504514cf5830d500e1
+c950c44783be657e361e5a37a380ae9169171379cd2c9d5cc3923ac41a9e5919
 The release tag records the patched source. This remains a release candidate.
 
 

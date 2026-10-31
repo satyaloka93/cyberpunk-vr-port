@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
   "fork": {
-    "name": "CyberpunkVRPort PSVR2 fork 0.1.9-psvr2.1-rc2",
-    "fileName": "CyberpunkVRPort-0.1.9-psvr2.1-rc2.zip",
-    "url": "https://github.com/satyaloka93/cyberpunk-vr-port/releases/download/0.1.9-psvr2.1-rc2/CyberpunkVRPort-0.1.9-psvr2.1-rc2.zip",
-    "sha256": "5dd40817eeb46ca34e0aff771b3b08af6a0fb26c4bfb7df3397705044e8dbd89"
+    "name": "CyberpunkVRPort PSVR2 fork 0.1.9-psvr2.1-rc3",
+    "fileName": "CyberpunkVRPort-0.1.9-psvr2.1-rc3.zip",
+    "url": "https://github.com/satyaloka93/cyberpunk-vr-port/releases/download/0.1.9-psvr2.1-rc3/CyberpunkVRPort-0.1.9-psvr2.1-rc3.zip",
+    "sha256": "891ebdb630077959b5eb2aa38932718ad53bc68723bc0cb5c12944eeadeee0db"
   },
   "vrcam": {
     "name": "CyberpunkVRPort game-2.5 VRCAM 0.1.8 comparison",

@@ -206,6 +206,11 @@ function Set-MigratedSettings([string]$Root, [string]$Stage) {
         'xr_movement_control','xr_physical_body_rotation','xr_immersive_holsters','xr_disable_mouse_y',
         'xr_haptics','xr_haptic_scale','xr_psvr2_haptic_backend','xr_weapon_laser_dot','xr_wheel_grab','xr_openxr_haptic_gain','xr_openxr_vehicle_haptic_gain','xr_two_hand_radius','xr_3dof_movement')
     $lines = @('# Migrated personal preferences; selected release supplies rendering defaults.', 'first_launch=0','show_launcher=1','xr_framegen=0')
+    # Only the built-in V557 edition gets this profile. Official upstream and
+    # the VRCAM comparison keep their own defaults. Generation remains off.
+    if (Test-Path -LiteralPath (Get-SafePath $Stage 'red4ext\plugins\CyberpunkVR_Stereo\ofxr-v557\ofxr-v557.json') -PathType Leaf) {
+        $lines += @('xr_framegen_backend=1','xr_framegen_quality=2','xr_framegen_flow_scale=50','xr_framegen_logging=1')
+    }
     if (Test-Path -LiteralPath $ini) {
         foreach ($line in Get-Content -LiteralPath $ini) {
             if ($line -match '^\s*([a-zA-Z0-9_]+)\s*=') {

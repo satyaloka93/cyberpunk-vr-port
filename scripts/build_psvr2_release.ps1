@@ -2,9 +2,9 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^\d+\.\d+\.\d+-[A-Za-z0-9][A-Za-z0-9.-]*$')]
-    [string]$Version = '0.1.9-psvr2.1-rc2',
-    [string]$BuildDir = '..\fixes-019-msvc',
-    [string]$ExpectedDllSha256 = '88ca2721a6add1b62a9e9d5b9737dfe3d1b2aca110401c5e1a6c4a024596f490'
+    [string]$Version = '0.1.9-psvr2.1-rc3',
+    [string]$BuildDir = 'build-local',
+    [string]$ExpectedDllSha256 = 'c950c44783be657e361e5a37a380ae9169171379cd2c9d5cc3923ac41a9e5919'
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -33,7 +33,7 @@ if ((Get-FileHash -LiteralPath (Join-Path $out $dllRel)).Hash -ine $ExpectedDllS
 
 # Safe defaults for manual extraction too; switcher replaces this with its
 # personal-preference whitelist. Never distribute the maintainer's runtime INI.
-@('first_launch=0','show_launcher=1','xr_framegen=0','xr_psvr2_haptic_backend=2','xr_engine_stereo=1') |
+@('first_launch=0','show_launcher=1','xr_framegen=0','xr_framegen_backend=1','xr_framegen_quality=2','xr_framegen_flow_scale=50','xr_framegen_logging=1','xr_psvr2_haptic_backend=2','xr_engine_stereo=1') |
     Set-Content -LiteralPath (Join-Path $out 'bin\x64\vrport.ini') -Encoding ASCII
 $guide = Join-Path $repo 'docs\PSVR2-019-RC.md'
 Copy-VerifiedFile $guide (Join-Path $out 'INSTALL.txt')
@@ -63,7 +63,7 @@ $selection | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $repo
 foreach ($rel in @('Install-PSVR2-Fork.bat','Install-VRCAM-CP25.bat','Switch-CyberpunkVRPort.bat',
     'scripts\Switch-CyberpunkVRPort.ps1','scripts\CyberpunkVR-Switcher.Core.ps1','scripts\MoreOccluders.Compatibility.ps1',
     'scripts\Test-CyberpunkVRSwitcher.ps1','scripts\README-SWITCHER.txt',
-    'docs\PSVR2-019-RC.md','docs\VRCAM-CP25-COMPARISON.md',
+    'docs\PSVR2-019-RC.md','docs\OFXR-V557-INTEGRATION.md','docs\VRCAM-CP25-COMPARISON.md',
     'wabbajack\switcher-dependencies-019.json','wabbajack\release-selection.json')) {
     Copy-VerifiedFile (Get-SafePath $repo $rel) (Get-SafePath $switcher $rel)
 }

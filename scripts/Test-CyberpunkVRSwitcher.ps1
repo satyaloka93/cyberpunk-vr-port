@@ -77,7 +77,9 @@ try {
     $mod = 'r6\scripts\UnrelatedMod\keep.reds'
     Put (Join-Path $game $port) 'old port'
     Put (Join-Path $game $old) 'old script'
-    $retired = @('red4ext\plugins\CyberpunkVR_Hands\CyberpunkVR_Hands.dll',
+    $retired = @('red4ext\plugins\CyberpunkVR_Stereo\ofxr-v557\CyberpunkVR_OFXR.dll',
+        'red4ext\plugins\CyberpunkVR_Stereo\ofxr-v557\ofxr-v557.json',
+        'red4ext\plugins\CyberpunkVR_Hands\CyberpunkVR_Hands.dll',
         'red4ext\plugins\CyberpunkVR_Stereo\renamed-backup.dll',
         'red4ext\plugins\CyberpunkVR_Stereo\view_dir\retired.dxil',
         'bin\x64\plugins\cyber_engine_tweaks\mods\CyberpunkVRPort_QuickBoot\init.lua',
@@ -201,6 +203,18 @@ try {
                 Invoke-FixtureCli -Action Install -GameRoot $fixture -CacheRoot $cache -BackupRoot $backups -Yes
             }
             Assert ($LASTEXITCODE -eq 0) 'CLI installs selected real ZIP into fixture'
+            $privateManifest = Join-Path $fixture 'red4ext\plugins\CyberpunkVR_Stereo\ofxr-v557\ofxr-v557.json'
+            if ($ForkIntegration -and (Test-Path -LiteralPath $privateManifest)) {
+                foreach ($name in @('CyberpunkVR_OFXR.dll','openxr_loader.dll','ofxr-v557.json','ofxr_bridge.ini')) {
+                    Assert (Test-Path -LiteralPath (Join-Path (Split-Path $privateManifest) $name)) "Built-in framegen payload installed: $name"
+                }
+                $installedIni = Get-Content -LiteralPath (Join-Path $fixture 'bin\x64\vrport.ini') -Raw
+                Assert ($installedIni -match '(?m)^xr_framegen=0\r?$' -and $installedIni -match 'xr_framegen_backend=1' -and
+                    $installedIni -match 'xr_framegen_quality=2' -and $installedIni -match 'xr_framegen_flow_scale=50' -and
+                    $installedIni -match 'xr_framegen_logging=1') 'Built-in V557 profile selected with generation off'
+            } else {
+                Assert (-not (Test-Path -LiteralPath $privateManifest)) 'Official or legacy edition has no private V557 layer'
+            }
             Assert ((Get-Content -LiteralPath (Join-Path $fixture 'bin\x64\dxgi.dll') -Raw) -eq 'original') 'CLI -Yes preserves dxgi without explicit disable'
             Assert ((Get-Content -LiteralPath $settings -Raw) -eq '{"keep":"my-settings"}') 'Game UserSettings preserved byte-for-byte'
             Assert (-not (Test-Path -LiteralPath (Join-Path $fixture $old)) -and -not (Test-Path -LiteralPath (Join-Path $fixture 'r6\scripts\HUDitor\test.reds'))) 'Retired script and HUDitor disabled'
@@ -221,6 +235,7 @@ try {
             Put (Join-Path $fixture 'r6\scripts\CyberpunkVRPort_Test\generated.reds') 'generated during upstream use'
             Invoke-FixtureCli -Action Restore -GameRoot $fixture -CacheRoot $cache -BackupRoot $backups -Yes
             Assert ($LASTEXITCODE -eq 0) 'CLI restore succeeds'
+            Assert (-not (Test-Path -LiteralPath $privateManifest)) 'Restore removes private V557 files absent from original installation'
             Assert ((Get-Content -LiteralPath (Join-Path $fixture $port) -Raw) -eq 'original' -and (Test-Path -LiteralPath (Join-Path $fixture $old)) -and (Test-Path -LiteralPath (Join-Path $fixture 'bin\x64\dxgi.dll'))) 'Restore reinstates old plugin/scripts and ReShade'
             Assert (-not (Test-Path -LiteralPath (Join-Path $fixture 'r6\scripts\CyberpunkVRPort_Test\generated.reds'))) 'Restore removes upstream-generated owned files'
             Assert ((Get-Content -LiteralPath (Join-Path $fixture $mod) -Raw) -eq 'original') 'Unrelated mod survives round trip'
