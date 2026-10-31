@@ -21,6 +21,13 @@ $backup=@(Get-ChildItem $BackupRoot -Filter '*.original' -File -Recurse)
 if($backup.Count -ne 1 -or (Get-FileHash $backup[0].FullName).Hash -ne $originalHash){throw 'Backup is not exact'}
 Install-OptionalOccluders250 $game
 if(@(Get-ChildItem $BackupRoot -Filter receipt.json -File -Recurse).Count -ne 1){throw 'Idempotent patch created a second backup'}
+$patchedHash=(Get-FileHash $target).Hash
+# Menu with a script installed: Enter keeps it; no download prompt is required.
+$interactiveMenu=$true
+function Read-Host {param($Prompt) if($Prompt -notlike 'MoreOccluders.reds is installed*'){throw "Unexpected prompt: $Prompt"}; return ''}
+Install-OptionalOccluders250 $game
+if((Get-FileHash $target).Hash -ne $patchedHash){throw 'Keeping the installed script changed it'}
+Remove-Item function:Read-Host;$interactiveMenu=$false
 [IO.File]::WriteAllText($target,$expected+' // unknown edit')
 $unknownHash=(Get-FileHash $target).Hash;$failed=$false
 try {Install-OptionalOccluders250 $game}catch{$failed=$true}

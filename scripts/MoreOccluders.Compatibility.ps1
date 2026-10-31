@@ -7,22 +7,28 @@ function Get-OccludersTextHash([string]$Text) {
 function Convert-MoreOccluders250([string]$Source, [string]$Destination) {
     $text=[IO.File]::ReadAllText($Source).Replace("`r`n","`n").TrimEnd([char[]]"`r`n")
     $hash=Get-OccludersTextHash $text
-    $original='eb7033f7e619da35a301fb353d895733fc9890f4a836131d72ce072092cd6f6a'
-    $fixed='d2a9e04f1e5252cd5e041a5818a877e45e7a2b8a139c0d39c091fe1d744a45de'
-    if ($hash -eq $original) {
+    # Normalized original -> patched hashes per Nexus release (mod 33136). Scripted
+    # v0.3 (file 157829, uploaded 2026-08-26 16:53 UTC) is the current download; the
+    # archived v0.2 script is kept for installs that already have it.
+    $known=[ordered]@{
+        '66acfa364760da34d2f8c1d79637f336e095eb8144a75698d42706120f2406fd'='23217256f20604c31b4e69bc09696c4bc3e91541a3c1f596df6d3447100aa53f' # Scripted v0.3
+        'eb7033f7e619da35a301fb353d895733fc9890f4a836131d72ce072092cd6f6a'='d2a9e04f1e5252cd5e041a5818a877e45e7a2b8a139c0d39c091fe1d744a45de' # v0.2
+    }
+    $original=$known.Contains($hash)
+    if ($original) {
         $start=$text.IndexOf("`t`t`telse`n")
         $end=$text.IndexOf("`t`t`tindex += 1;",$start)
         if($start -lt 0 -or $end -le $start){throw 'Recognized script has unexpected patch boundaries.'}
         $replacement="`t`t`t// 2.50 instanced meshes are cooked nodes; their mesh/occluder`n"+
             "`t`t`t// properties are no longer exposed. Preserve native cooked data.`n`n"
         $text=$text.Substring(0,$start)+$replacement+$text.Substring($end)
-        if((Get-OccludersTextHash $text) -ne $fixed){throw 'Patched script did not match the tested game-2.5 result.'}
-    } elseif ($hash -ne $fixed) {
-        throw "Unrecognized MoreOccluders.reds ($hash). Nothing patched. Use the supported Scripted v0.3 download or disable the incompatible mod; custom/newer scripts need review."
+        if((Get-OccludersTextHash $text) -ne $known[$hash]){throw 'Patched script did not match the tested game-2.5 result.'}
+    } elseif (@($known.Values) -notcontains $hash) {
+        throw "Unrecognized MoreOccluders.reds ($hash). Nothing patched. Supported: More Occluders (Scripted) v0.3 from Nexus (or the older v0.2 script). Other or edited scripts need review; the ArchiveXL variant has no script and needs no patch."
     }
     New-Item -ItemType Directory (Split-Path $Destination) -Force|Out-Null
     [IO.File]::WriteAllText($Destination,$text,(New-Object Text.UTF8Encoding($false)))
-    return ($hash -eq $original)
+    return $original
 }
 function Stage-MoreOccluders250([string]$Root,[string]$Stage,[string]$Archive) {
     $rel='r6\scripts\MoreOccluders.reds'
@@ -44,6 +50,9 @@ function Install-OptionalOccluders250([string]$Root) {
         Write-Host 'Optional download: https://www.nexusmods.com/cyberpunk2077/mods/33136?tab=files (Scripted v0.3). Sign in and download manually.'
         $MoreOccludersArchive=(Read-Host 'Downloaded ZIP path (Enter cancels)').Trim('"')
         if(-not $MoreOccludersArchive){return}
+    } elseif($interactiveMenu -and -not $MoreOccludersArchive) {
+        # An installed script (e.g. the older v0.2) would otherwise always be reused.
+        $MoreOccludersArchive=(Read-Host 'MoreOccluders.reds is installed. Path to a newer Scripted ZIP to use instead (Enter keeps the installed script)').Trim('"')
     }
     $stage=Join-Path $CacheRoot ('patch-occluders-'+[guid]::NewGuid().ToString('N'))
     Stage-MoreOccluders250 $Root $stage $MoreOccludersArchive
