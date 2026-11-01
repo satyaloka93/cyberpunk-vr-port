@@ -2,8 +2,8 @@
 
 # PSVR2 on CyberpunkVR Port 0.1.9 — release-candidate setup
 
-Release: **0.1.9-psvr2.1-rc3**. Download the installer ZIP from
-[this fork release](https://github.com/satyaloka93/cyberpunk-vr-port/releases/tag/0.1.9-psvr2.1-rc3).
+Release: **0.1.9-psvr2.1-rc4**. Download the installer ZIP from
+[this fork release](https://github.com/satyaloka93/cyberpunk-vr-port/releases/tag/0.1.9-psvr2.1-rc4).
 Official upstream and our PSVR2 fork are different selections. The switcher
 bundled with this release automatically downloads the checksum-pinned 0.1.9
 PSVR2 candidate, not the older 0.1.7 fork.
@@ -16,7 +16,7 @@ PSVR2 candidate, not the older 0.1.7 fork.
    For upstream/fork choices or restore, run `Switch-CyberpunkVRPort.bat`.
 2. Select **Preview / stage PSVR2 fork** and review the selected archive name.
    Leave the optional local ZIP path empty to download this release automatically.
-   **Install upstream 0.1.9** installs the official build, not our PSVR2 changes.
+   **Install upstream 0.2.0** installs the official build, not our PSVR2 changes.
 3. Keep installed dependencies where compatible. Missing GitHub dependencies
    download automatically with checksums; Nexus dependencies require your own
    signed-in manual download. Follow the displayed links. HUDitor is not a
@@ -132,10 +132,12 @@ The installer does not change HAGS or your registry.
 Earlier 0.1.8 testing improved after enabling HAGS and restarting. That was not
 a controlled HAGS-only benchmark; no universal FPS benefit is promised for 0.1.9.
 
-RC3 includes built-in V557 framegen. No external OFXR installation or tray is
+RC4 includes built-in V557 framegen. No external OFXR installation or tray is
 required. In F10 > FRAMEGEN, select **OFXR V557 (NVIDIA)**, use **Slow / 50%**,
 and enable generation. The switcher selects that profile but leaves generation
-OFF initially. The flight recorder is available in the same menu.
+OFF initially. RC4 supports live switching between private V557 and native
+generators after draining the previous generator; a switch can briefly hitch.
+The experimental stereo RR camera changes are not included. The flight recorder is available in the same menu.
 Disarm external OFXR before launching to use the built-in route; do not stack
 generators. Current SteamVR testing recovered roughly the external V557 average,
 with occasional dips remaining. This is not a locked-90-FPS guarantee.
@@ -204,5 +206,5 @@ a fallback; PSVR2 uses Triangle touch. Existing Quest menu behavior is preserved
 
 RC2 removes the temporary performance-capture menu and descriptor/memory audit.
 See the included CHANGELOG for the measured DLSS memory saving and its limits.
-Download the new switcher ZIP to select RC2; older extracted copies stay pinned
+Download the new switcher ZIP to select RC4; older extracted copies stay pinned
 to their original release.
