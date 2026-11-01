@@ -60,11 +60,11 @@ if (Test-Path $oldSelectionPath) {
     if ($oldSelection.PSObject.Properties.Name -contains 'vrcam') { $selection.vrcam = $oldSelection.vrcam }
 }
 $selection | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $repo 'wabbajack\release-selection.json') -Encoding UTF8
-foreach ($rel in @('Install-PSVR2-Fork.bat','Install-VRCAM-CP25.bat','Switch-CyberpunkVRPort.bat',
+foreach ($rel in @('Install-Upstream-020.bat','Install-PSVR2-Fork.bat','Install-VRCAM-CP25.bat','Switch-CyberpunkVRPort.bat',
     'scripts\Switch-CyberpunkVRPort.ps1','scripts\CyberpunkVR-Switcher.Core.ps1','scripts\MoreOccluders.Compatibility.ps1',
     'scripts\Test-CyberpunkVRSwitcher.ps1','scripts\README-SWITCHER.txt',
-    'docs\PSVR2-019-RC.md','docs\OFXR-V557-INTEGRATION.md','docs\VRCAM-CP25-COMPARISON.md',
-    'wabbajack\switcher-dependencies-019.json','wabbajack\release-selection.json')) {
+    'docs\PSVR2-019-RC.md','docs\OFXR-V557-INTEGRATION.md','docs\UPSTREAM-020-INSTALL.md','docs\VRCAM-CP25-COMPARISON.md',
+    'wabbajack\switcher-dependencies-019.json','wabbajack\switcher-dependencies-020.json','wabbajack\release-selection.json')) {
     Copy-VerifiedFile (Get-SafePath $repo $rel) (Get-SafePath $switcher $rel)
 }
 Copy-VerifiedFile (Join-Path $repo 'scripts\README-SWITCHER.txt') (Join-Path $switcher 'START-HERE.txt')

@@ -110,7 +110,7 @@ function Get-PortFiles([string]$Root, [bool]$DisableLegacyHud = $true, [bool]$Di
         }
     }
     foreach ($rel in @('r6\tweaks\vrport','r6\tweaks\vrcigarette','bin\x64\vrport.ini','bin\x64\vrport-launcher.ini',
-        'bin\x64\openvr_api.dll','engine\config\platform\pc\vrcam_cpu_tweaks.ini','INSTALL.txt','UNINSTALL.txt','UNINSTALL.bat','CHANGELOG.txt')) {
+        'bin\x64\openvr_api.dll','red4ext\plugins\cyberpunkvrport','engine\config\platform\pc\vrcam_cpu_tweaks.ini','INSTALL.txt','UNINSTALL.txt','UNINSTALL.bat','CHANGELOG.txt')) {
         Get-RelativeFiles $Root $rel
     }
     foreach ($spec in @(@('bin\x64','CyberpunkVR_*Grip*.ini'), @('archive\pc\mod','cyberpunkvrport*'),
@@ -199,12 +199,16 @@ function Invoke-PortTransaction([string]$Root, [string]$Stage, [string[]]$Remove
 }
 
 function Set-MigratedSettings([string]$Root, [string]$Stage) {
-    $ini = Get-SafePath $Root 'bin\x64\vrport.ini'
+    $modern = 'red4ext\plugins\cyberpunkvrport'
+    $newLayout = Test-Path -LiteralPath (Get-SafePath $Stage "$modern\cyberpunkvrport.dll")
+    $oldModern = Test-Path -LiteralPath (Get-SafePath $Root "$modern\cyberpunkvrport.dll")
+    $iniRel = if ($oldModern) { "$modern\config\vrport.ini" } else { 'bin\x64\vrport.ini' }
+    $ini = Get-SafePath $Root $iniRel
     # Personal fit/input preferences, not experimental render/FG/diagnostic settings.
     $keys = @('xr_head_offset_x','xr_head_offset_y','xr_head_offset_z','xr_world_scale','xr_ipd_scale','xr_runtime','xr_force_fov',
         'xr_hmd_smooth','xr_hand_lerp_speed','xr_snap_turn','xr_snap_turn_angle_deg','xr_movement_source',
         'xr_movement_control','xr_physical_body_rotation','xr_immersive_holsters','xr_disable_mouse_y',
-        'xr_haptics','xr_haptic_scale','xr_psvr2_haptic_backend','xr_weapon_laser_dot','xr_wheel_grab','xr_openxr_haptic_gain','xr_openxr_vehicle_haptic_gain','xr_two_hand_radius','xr_3dof_movement')
+        'xr_haptics','xr_haptic_scale','xr_psvr2_haptic_backend','xr_weapon_laser_dot','xr_wheel_grab','xr_openxr_haptic_gain','xr_openxr_vehicle_haptic_gain','xr_two_hand_radius','xr_3dof_movement','xr_vehicle_audio_channels','xr_vehicle_audio_require_grip','xr_left_handed')
     $lines = @('# Migrated personal preferences; selected release supplies rendering defaults.', 'first_launch=0','show_launcher=1','xr_framegen=0')
     # Only the built-in V557 edition gets this profile. Official upstream and
     # the VRCAM comparison keep their own defaults. Generation remains off.
@@ -218,17 +222,50 @@ function Set-MigratedSettings([string]$Root, [string]$Stage) {
             }
         }
     }
-    $dest = Get-SafePath $Stage 'bin\x64\vrport.ini'
+    $destRel = if ($newLayout) { "$modern\config\vrport.ini" } else { 'bin\x64\vrport.ini' }
+    $dest = Get-SafePath $Stage $destRel
     New-Item -ItemType Directory -Path (Split-Path -Parent $dest) -Force | Out-Null
     $lines | Set-Content -LiteralPath $dest -Encoding ASCII
-    foreach ($rel in @('bin\x64\vrport-launcher.ini','red4ext\plugins\CyberpunkVR_Stereo\vrik_calibration.ini',
-        'bin\x64\plugins\cyber_engine_tweaks\mods\CyberpunkVRPort_VRIK\vrik_settings.ini')) {
-        $source = Get-SafePath $Root $rel
-        if (Test-Path -LiteralPath $source -PathType Leaf) { Copy-VerifiedFile $source (Get-SafePath $Stage $rel) }
+    $pairs = @(
+        @('bin\x64\vrport-launcher.ini', "$modern\config\vrport-launcher.ini"),
+        @('red4ext\plugins\CyberpunkVR_Stereo\vrik_calibration.ini', "$modern\config\vrik_calibration.ini")
+    )
+    foreach ($pair in $pairs) {
+        $sourceRel = if ($oldModern) { $pair[1] } else { $pair[0] }
+        $targetRel = if ($newLayout) { $pair[1] } else { $pair[0] }
+        $source = Get-SafePath $Root $sourceRel
+        if (Test-Path -LiteralPath $source -PathType Leaf) { Copy-VerifiedFile $source (Get-SafePath $Stage $targetRel) }
     }
-    foreach ($file in Get-ChildItem -LiteralPath (Get-SafePath $Root 'bin\x64') -Filter 'CyberpunkVR_*Grip*.ini' -File) {
-        $rel = 'bin\x64\' + $file.Name
-        # Only keep hand poses still shipped by the selected release.
-        if (Test-Path -LiteralPath (Get-SafePath $Stage $rel)) { Copy-VerifiedFile $file.FullName (Get-SafePath $Stage $rel) }
+    $fromGrips = if ($oldModern) { "$modern\grips" } else { 'bin\x64' }
+    $toGrips = if ($newLayout) { "$modern\grips" } else { 'bin\x64' }
+    $grips = Get-SafePath $Root $fromGrips
+    if (Test-Path -LiteralPath $grips) {
+        foreach ($file in Get-ChildItem -LiteralPath $grips -Filter 'CyberpunkVR_*Grip*.ini' -File) {
+            $target = Get-SafePath $Stage ("$toGrips\" + $file.Name)
+            if (Test-Path -LiteralPath $target) { Copy-VerifiedFile $file.FullName $target }
+        }
+    }
+    $cet = 'bin\x64\plugins\cyber_engine_tweaks\mods'
+    $fromLua = if ($oldModern) { "$modern\lua" } else { $cet }
+    $toLua = if ($newLayout) { "$modern\lua" } else { $cet }
+    $luaRoot = Get-SafePath $Root $fromLua
+    if (Test-Path -LiteralPath $luaRoot) {
+        foreach ($mod in Get-ChildItem -LiteralPath $luaRoot -Directory -Filter 'CyberpunkVRPort_*') {
+            $targetMod = Get-SafePath $Stage ("$toLua\" + $mod.Name)
+            if (-not (Test-Path -LiteralPath $targetMod) -and $mod.Name -ne 'CyberpunkVRPort_VRIK') { continue }
+            foreach ($file in Get-ChildItem -LiteralPath $mod.FullName -File -Recurse) {
+                # Preserve user data only; never restore old executable Lua or vrcam/render tuning.
+                if ($file.Extension -notin @('.ini','.json') -or $file.Name -eq 'vrcam.json') { continue }
+                $relative = $file.FullName.Substring($mod.FullName.Length + 1)
+                Copy-VerifiedFile $file.FullName (Get-SafePath $targetMod $relative)
+            }
+        }
+    }
+    if ($newLayout) {
+        $bindings = Get-SafePath $Root "$modern\config\lua_bindings.json"
+        if ($oldModern -and (Test-Path -LiteralPath $bindings)) {
+            Copy-VerifiedFile $bindings (Get-SafePath $Stage "$modern\config\lua_bindings.json")
+        }
+        # On first 0.2.0 start, its host seeds port hotkeys from the preserved CET bindings.json.
     }
 }

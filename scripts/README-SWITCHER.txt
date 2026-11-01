@@ -1,11 +1,13 @@
 RC3 fork target: 0.1.9-psvr2.1-rc3. Replace older extracted switcher copies with this ZIP.
 
-CyberpunkVR Port — game 2.5 / upstream 0.1.9 or PSVR2 0.1.9 RC3
+CyberpunkVR Port — game 2.5 / upstream 0.2.0 or PSVR2 0.1.9 RC3
 
 Extract this whole folder outside the game. Run Switch-CyberpunkVRPort.bat.
 Option 2: official upstream. Option 4: PSVR2 fork. Option 5: restore previous port.
 Install-PSVR2-Fork.bat installs the fork directly after confirmation.
-Dependencies download automatically where public; follow Nexus links where needed.
+Upstream 0.2.0: only RED4ext 1.31.0 is required and downloaded automatically; no Nexus downloads.
+Fork/VRCAM: keep their older dependency manifests and Nexus links.
+Existing shared frameworks and unrelated mods are preserved. Read docs/UPSTREAM-020-INSTALL.md.
 Read docs/PSVR2-019-RC.md for setup and optional advanced haptics.
 Close the game and mod managers before installing. Keep backup journals.
 

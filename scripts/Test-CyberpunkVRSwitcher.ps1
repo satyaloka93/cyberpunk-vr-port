@@ -190,7 +190,7 @@ try {
             'red4ext\plugins\TweakXL\TweakXL.dll','red4ext\plugins\Codeware\Codeware.dll')) {
             Copy-VerifiedFile (Join-Path $DependencyGameRoot $rel) (Join-Path $fixture $rel)
         }
-        if ($Integration) { Copy-VerifiedFile $ReleaseZip (Join-Path $cache 'CyberpunkVRPort-0.1.9.zip') }
+        if ($Integration) { Copy-VerifiedFile $ReleaseZip (Join-Path $cache 'CyberpunkVRPort-0.2.0.zip') }
         $originalLocal = $env:LOCALAPPDATA
         try {
             $env:LOCALAPPDATA = Join-Path $base 'localappdata'
@@ -239,6 +239,7 @@ try {
             Assert ((Get-Content -LiteralPath (Join-Path $fixture $port) -Raw) -eq 'original' -and (Test-Path -LiteralPath (Join-Path $fixture $old)) -and (Test-Path -LiteralPath (Join-Path $fixture 'bin\x64\dxgi.dll'))) 'Restore reinstates old plugin/scripts and ReShade'
             Assert (-not (Test-Path -LiteralPath (Join-Path $fixture 'r6\scripts\CyberpunkVRPort_Test\generated.reds'))) 'Restore removes upstream-generated owned files'
             Assert ((Get-Content -LiteralPath (Join-Path $fixture $mod) -Raw) -eq 'original') 'Unrelated mod survives round trip'
+            if ($ForkIntegration) { # Only legacy fork editions require Nexus mods.
             # Missing Nexus dependency must fail without removing the active port.
             Remove-Item -LiteralPath (Join-Path $fixture 'bin\x64\plugins\cyber_engine_tweaks\mods\VisualHolster\init.lua')
             if ($ForkIntegration) {
@@ -248,10 +249,11 @@ try {
             }
             Assert ($LASTEXITCODE -ne 0 -and (Get-Content -LiteralPath (Join-Path $fixture $port) -Raw) -eq 'original') 'Missing Nexus file blocks changes and preserves active port'
             Put (Join-Path $fixture 'bin\x64\plugins\cyber_engine_tweaks\mods\VisualHolster\init.lua') 'original'
+            }
             if ($ForkIntegration) {
                 Invoke-FixtureCli -Action Install -Edition Fork -ForkArchive $ReleaseZip -ForkSha256 ('0' * 64) -GameRoot $fixture -CacheRoot $cache -BackupRoot $backups -Yes
             } else {
-                Put (Join-Path $cache 'CyberpunkVRPort-0.1.9.zip') 'corrupted download'
+                Put (Join-Path $cache 'CyberpunkVRPort-0.2.0.zip') 'corrupted download'
                 Invoke-FixtureCli -Action Install -GameRoot $fixture -CacheRoot $cache -BackupRoot $backups -Yes
             }
             Assert ($LASTEXITCODE -ne 0 -and (Get-Content -LiteralPath (Join-Path $fixture $port) -Raw) -eq 'original') 'Bad release checksum blocks changes and preserves active port'

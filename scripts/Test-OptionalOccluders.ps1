@@ -18,7 +18,7 @@ function Expand-SafeModZip { param($Archive,$Destination)
  Set-Content "$Destination\red4ext\plugins\CyberpunkVR_Stereo\CyberpunkVR_Stereo.dll" 'fixture'
 }
 function Set-MigratedSettings { param($Root,$Stage) }
-foreach($Edition in @('Upstream','Fork')){
+foreach($Edition in @('Fork','Vrcam')){
  $stage=New-ReleaseStage $root
  if(-not (Test-Path "$stage\red4ext\plugins\CyberpunkVR_Stereo\CyberpunkVR_Stereo.dll")){throw 'Stage failed without occluders'}
  if(Test-Path "$stage\r6\scripts\MoreOccluders.reds"){throw 'Occluders unexpectedly staged'}
