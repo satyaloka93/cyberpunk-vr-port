@@ -3,8 +3,10 @@
 The FRAMEGEN menu's former **NVIDIA OFA + FidelityFX** choice now selects
 **OFXR V557 (NVIDIA)**. This is the patched Djules V557 capture/synthesis/presenter
 path, loaded directly by the plugin. It is not merely a replacement optical-flow
-shader. Other native generators remain available, but switching to/from V557
-requires OpenXR runtime recreation or a game restart; they cannot run together.
+shader. Other native generators remain available. RC4 switches between private V557
+and native generators after a completed XR frame, draining the old backend
+before enabling the new one. They cannot generate concurrently. Switching can
+hitch while GPU work drains or SDK contexts initialize.
 
 The package contains `ofxr-v557/CyberpunkVR_OFXR.dll` and its private OpenXR loader
 beside `CyberpunkVR_Stereo.dll`. A private explicit API-layer manifest lets the OpenXR loader build the chain. There is no tray, registry
@@ -43,12 +45,13 @@ V557 still handles their presentation/pose composition. The mod retains F10/F11.
 Target: Cyberpunk VR Port 0.1.9.
 Backend base: Djules `f64d4b0` (0.2.14.2 / V557), with the existing local
 `f096694` panel/performance patch and `6746076` optional queue patch. The private
-backend adds only `OFXR_IsFlightRecordingV1`, a read-only active-recorder receipt;
-its rendering and scheduling code is unchanged from that patched V557 source.
+backend adds an active-recorder receipt and completed-frame handoff support,
+including retirement of inactive synthesis pools and history. See
+[handoff details](framegen-live-handoff.md) for validation and limitations.
 
 CMake fetches the complete backend from
-[satyaloka93/OFXR-Bridge](https://github.com/satyaloka93/OFXR-Bridge/tree/e750741e8ea3d46dde5c57de57523df2c1ea88bf),
-pinned to `e750741e8ea3d46dde5c57de57523df2c1ea88bf`. For offline builds, set
+[satyaloka93/OFXR-Bridge](https://github.com/satyaloka93/OFXR-Bridge/tree/4150114eb918f8fdc8f087323561c1170560f904),
+pinned to `4150114eb918f8fdc8f087323561c1170560f904`. For offline builds, set
 `CVR_OFXR_SOURCE` to a checkout of that revision. Supply the backend SDK paths
 (`XRFG_OPENXR_SDK_ROOT`, `XRFG_NVIDIA_OPTICAL_FLOW_SDK_ROOT`,
 `XRFG_FIDELITYFX_SDK_ROOT`, `XRFG_DLSS_SDK_INCLUDE_DIR`,

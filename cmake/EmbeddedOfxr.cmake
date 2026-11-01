@@ -6,7 +6,7 @@ set(CVR_OFXR_SOURCE "" CACHE PATH "Patched Djules V557 source tree")
 if(NOT CVR_OFXR_SOURCE)
     FetchContent_Declare(cvr_ofxr
         GIT_REPOSITORY https://github.com/satyaloka93/OFXR-Bridge.git
-        GIT_TAG e750741e8ea3d46dde5c57de57523df2c1ea88bf
+        GIT_TAG 4150114eb918f8fdc8f087323561c1170560f904
         GIT_SUBMODULES "")
     FetchContent_GetProperties(cvr_ofxr)
     if(NOT cvr_ofxr_POPULATED)
@@ -19,8 +19,8 @@ if(NOT EXISTS "${CVR_OFXR_SOURCE}/include/xrfg/provider_api.hpp")
 endif()
 file(READ "${CVR_OFXR_SOURCE}/CMakeLists.txt" ofxr_cmake)
 file(READ "${CVR_OFXR_SOURCE}/src/layer/provider_api.cpp" ofxr_provider)
-if(NOT ofxr_cmake MATCHES "VERSION 0\\.557\\.0" OR NOT ofxr_provider MATCHES "OFXR_IsFlightRecordingV1")
-    message(FATAL_ERROR "The private backend requires patched V557 with the active-recorder receipt")
+if(NOT ofxr_cmake MATCHES "VERSION 0\\.557\\.0" OR NOT ofxr_provider MATCHES "OFXR_IsFlightRecordingV1" OR NOT ofxr_provider MATCHES "OFXR_SupportsNativeHandoffV1")
+    message(FATAL_ERROR "The private backend requires patched V557 with active-recorder and native-handoff support; set CVR_OFXR_SOURCE to the matching source")
 endif()
 set(XRFG_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(XRFG_BUILD_STANDALONE OFF CACHE BOOL "" FORCE)

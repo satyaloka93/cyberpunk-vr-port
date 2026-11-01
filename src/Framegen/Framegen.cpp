@@ -122,7 +122,7 @@ void SetSettings(Settings value) {
 }
 RuntimeStatus GetRuntimeStatus() {
     if(GetSettings().backend==Backend::Nvidia)return cvr::ofxr::Status();
-    if(!cvr::ofxr::NativeAllowed()) {RuntimeStatus r{};std::snprintf(r.text,sizeof(r.text),"Restart the OpenXR runtime to switch from V557 to this generator.");return r;}
+    if(!cvr::ofxr::NativeAllowed())return cvr::ofxr::Status();
     std::lock_guard lock(mutex);RuntimeStatus result{};result.active=stats.active;
     std::memcpy(result.text,stats.status,sizeof(result.text));return result;
 }

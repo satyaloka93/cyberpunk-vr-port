@@ -25,10 +25,16 @@ PFN_xrGetInstanceProcAddr loaderGipa{},layerGipa{};
 std::atomic<XrInstance> instance{XR_NULL_HANDLE};
 std::atomic<unsigned> generation{1};
 std::atomic<bool> attached{},external{};
+std::atomic<bool> nativeAllowed{},transitionPending{};
+framegen::Settings desiredSettings{};
+bool haveDesired{},controlQueued{};
 std::mutex controlMutex;
 using Request=int (*)(const OFXR_ControlSettingsV1*) noexcept;
 using Snapshot=int (*)(OFXR_ControlSnapshotV1*) noexcept;
 Request request{}; Snapshot snapshot{};
+using Trim=int (*)(std::uint64_t) noexcept;
+Trim trimInactive{};
+std::atomic<bool> trimFailed{};
 using SetLogging=int (*)(int) noexcept;
 using GetLogging=int (*)() noexcept;
 SetLogging setLogging{};GetLogging getLogging{},isRecording{};
@@ -99,17 +105,57 @@ bool ExternalAvailable() {
     return false;
 }
 }
-bool NativeAllowed() {return !attached.load();}
+bool NativeAllowed() {return !external.load() && (!attached.load() || nativeAllowed.load());}
+// Called only after a successful xrEndFrame, never from the UI or a GPU callback.
+// Apply a new request after closing the old frame. Native generation stays gated
+// until a later completed frame confirms the layer drained and applied bypass.
+void FrameBoundary(XrSession session) {
+    if(!attached.load() || !transitionPending.load())return;
+    std::lock_guard lock(controlMutex);
+    if(controlQueued) {
+        controlQueued=false;
+        const bool ok=ConfigureLocked(desiredSettings);
+        Log("[framegen-switch] requested backend=%d enabled=%d accepted=%d\n",int(desiredSettings.backend),int(desiredSettings.enabled),int(ok));
+        if(!ok)return;
+        return;
+    }
+    OFXR_ControlSnapshotV1 state{};
+    if(!snapshot || !snapshot(&state) || !state.sessions || state.pending || state.errors || controlFailed.load())return;
+    const bool wantV557=desiredSettings.enabled && desiredSettings.backend==framegen::Backend::Nvidia;
+    if(bool(state.desired.enabled)!=wantV557)return;
+    if(wantV557 ? state.ready!=state.sessions : (state.ready || state.bypass!=state.sessions))return;
+    if(!wantV557) {
+        const int trimmed=trimInactive?trimInactive(reinterpret_cast<std::uint64_t>(session)):-1;
+        if(trimmed<=0) {
+            if(trimmed<0 && !trimFailed.exchange(true))Log("[framegen-switch] GPU resource retirement failed; native generator remains blocked\n");
+            return;
+        }
+        trimFailed.store(false);
+        Log("[framegen-switch] inactive V557 synthesis/history pools released\n");
+    }
+    nativeAllowed.store(!wantV557 && desiredSettings.backend!=framegen::Backend::Nvidia);
+    transitionPending.store(false);
+    Log("[framegen-switch] completed backend=%d native_allowed=%d revision=%llu\n",int(desiredSettings.backend),int(nativeAllowed.load()),static_cast<unsigned long long>(state.revision));
+}
 int RecordingStatus() {std::lock_guard lock(controlMutex);return attached.load() && isRecording?isRecording():-1;}
 void Configure(const framegen::Settings& settings) {
     std::lock_guard lock(controlMutex);
-    if(request && !ConfigureLocked(settings))Log("[ofxr-v557] failed to apply private backend settings\n");
+    const bool changed=!haveDesired || settings.backend!=desiredSettings.backend || settings.enabled!=desiredSettings.enabled ||
+        settings.quality!=desiredSettings.quality || settings.flowScale!=desiredSettings.flowScale || settings.ofxrLogging!=desiredSettings.ofxrLogging;
+    if(!changed)return;
+    desiredSettings=settings;haveDesired=true;trimFailed.store(false);
+    if(attached.load()) {
+        nativeAllowed.store(false);
+        controlQueued=true;transitionPending.store(true);
+    }
 }
 framegen::RuntimeStatus Status() {
     framegen::RuntimeStatus out{};
-    if(controlFailed.load())std::snprintf(out.text,sizeof(out.text),"V557 settings/logging write failed. Check backend folder permissions and cyberpunkvrport.log.");
+    if(trimFailed.load())std::snprintf(out.text,sizeof(out.text),"V557 GPU resource retirement failed; new generator is blocked. Check the VR log.");
+    else if(controlFailed.load())std::snprintf(out.text,sizeof(out.text),"V557 settings/logging write failed. Check backend folder permissions and cyberpunkvrport.log.");
     else if(external.load())std::snprintf(out.text,sizeof(out.text),"External OFXR is loaded. Disarm its tray and restart the game to use built-in V557.");
-    else if(!attached.load())std::snprintf(out.text,sizeof(out.text),"V557 backend not attached; restart the OpenXR runtime after installation.");
+    else if(!attached.load())std::snprintf(out.text,sizeof(out.text),"V557 backend unavailable; check installation and the VR log.");
+    else if(transitionPending.load())std::snprintf(out.text,sizeof(out.text),"Switching frame generator at the next completed VR frame...");
     else {
         OFXR_ControlSnapshotV1 value{};
         std::lock_guard lock(controlMutex);
@@ -143,7 +189,7 @@ XrResult Create(const XrInstanceCreateInfo* info,XrInstance* out) {
     if(instance.load()!=XR_NULL_HANDLE)return XR_ERROR_LIMIT_REACHED;
     *out=XR_NULL_HANDLE;
     external.store(ExternalAvailable());
-    if(external.load() || framegen::GetSettings().backend!=framegen::Backend::Nvidia) {
+    if(external.load()) {
         const auto result=create(info,out);
         if(XR_SUCCEEDED(result)) {instance.store(*out);generation.fetch_add(1,std::memory_order_release);}
         Log("[ofxr-v557] %s; private backend bypassed\n",external.load()?"external OFXR available":"native generator selected");
@@ -152,12 +198,20 @@ XrResult Create(const XrInstanceCreateInfo* info,XrInstance* out) {
     std::lock_guard lock(controlMutex);
     const auto path=Directory()/L"CyberpunkVR_OFXR.dll";
     if(!backend)backend=LoadLibraryExW(path.c_str(),nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    const auto handoff=backend?reinterpret_cast<int(*)() noexcept>(GetProcAddress(backend,"OFXR_SupportsNativeHandoffV1")):nullptr;
+    trimInactive=backend?reinterpret_cast<Trim>(GetProcAddress(backend,"OFXR_TrimInactiveSessionV1")):nullptr;
+    if(!handoff || !handoff() || !trimInactive) {
+        Log("[framegen-switch] backend lacks native handoff support; install the matching private DLL\n");
+        return XR_ERROR_INITIALIZATION_FAILED;
+    }
     request=backend?reinterpret_cast<Request>(GetProcAddress(backend,"OFXR_RequestControlV1")):nullptr;
     snapshot=backend?reinterpret_cast<Snapshot>(GetProcAddress(backend,"OFXR_GetControlSnapshotV1")):nullptr;
     setLogging=backend?reinterpret_cast<SetLogging>(GetProcAddress(backend,"OFXR_SetLoggingSettingV1")):nullptr;
     getLogging=backend?reinterpret_cast<GetLogging>(GetProcAddress(backend,"OFXR_GetLoggingSettingV1")):nullptr;
     isRecording=backend?reinterpret_cast<GetLogging>(GetProcAddress(backend,"OFXR_IsFlightRecordingV1")):nullptr;
-    if(!backend || !ConfigureLocked(framegen::GetSettings()))return XR_ERROR_INITIALIZATION_FAILED;
+    desiredSettings=framegen::GetSettings();haveDesired=true;controlQueued=false;
+    nativeAllowed.store(false);transitionPending.store(true);
+    if(!backend || !ConfigureLocked(desiredSettings))return XR_ERROR_INITIALIZATION_FAILED;
     std::vector<const char*> names;
     for(uint32_t i=0;i<info->enabledApiLayerCount;++i)names.push_back(info->enabledApiLayerNames[i]);
     names.push_back(layerName);
@@ -185,12 +239,15 @@ XrResult GetProc(XrInstance inst,const char* name,PFN_xrVoidFunction* out) {
     if(!name || !out)return XR_ERROR_VALIDATION_FAILURE;
     *out=nullptr;
     if(!Loader())return XR_ERROR_INITIALIZATION_FAILED;
+    if(inst!=XR_NULL_HANDLE && !std::strcmp(name,"xrEndFrame")) {
+        *out=reinterpret_cast<PFN_xrVoidFunction>(&::xrEndFrame);return XR_SUCCESS;
+    }
     return (attached.load() && inst!=XR_NULL_HANDLE?layerGipa:loaderGipa)(inst,name,out);
 }
 XrResult Destroy(XrInstance inst) {
     PFN_xrVoidFunction fn{};auto result=GetProc(inst,"xrDestroyInstance",&fn);
     if(XR_SUCCEEDED(result)&&fn)result=reinterpret_cast<PFN_xrDestroyInstance>(fn)(inst);
-    if(XR_SUCCEEDED(result)){attached.store(false);instance.store(XR_NULL_HANDLE);generation.fetch_add(1,std::memory_order_release);}
+    if(XR_SUCCEEDED(result)){nativeAllowed.store(false);transitionPending.store(false);attached.store(false);instance.store(XR_NULL_HANDLE);generation.fetch_add(1,std::memory_order_release);}
     return result;
 }
 }

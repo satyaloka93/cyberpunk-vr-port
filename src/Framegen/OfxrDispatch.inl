@@ -130,7 +130,9 @@ extern "C" XRAPI_ATTR XrResult XRAPI_CALL xrEndFrame(
     const XrFrameEndInfo*                       frameEndInfo) {
     thread_local cvr::ofxr::DispatchCache<PFN_xrEndFrame> cache;
     auto fn = cvr::ofxr::Resolve("xrEndFrame",cache);
-    return fn ? fn(session, frameEndInfo) : XR_ERROR_FUNCTION_UNSUPPORTED;
+    const auto result=fn ? fn(session, frameEndInfo) : XR_ERROR_FUNCTION_UNSUPPORTED;
+    if(XR_SUCCEEDED(result))cvr::ofxr::FrameBoundary(session);
+    return result;
 }
 
 extern "C" XRAPI_ATTR XrResult XRAPI_CALL xrEndSession(

@@ -960,10 +960,10 @@ bool DrawLiveControls(LiveControlsUiState& state,int section,bool* foveatedEditi
             if(UI::IsItemHovered())UI::SetTooltip("Enable the selected generator. OFXR V557 owns its XR schedule; native generators use the mod's cadence.");
             int backend=int(fg.backend);
             if(widgets::Combo("Frame generator",&backend,"FidelityFX\0OFXR V557 (NVIDIA)\0NVIDIA DLSS Frame Generation\0")) {fg.backend=cvr::framegen::Backend(backend);changed=true;}
-            if(UI::IsItemHovered())UI::SetTooltip("Switching to or from OFXR V557 requires restarting the OpenXR runtime (or game). Enable, quality and logging apply live within V557.");
+            if(UI::IsItemHovered())UI::SetTooltip("Generators switch live at a completed VR frame. A brief pause may occur while GPU work drains and the new backend initializes. External OFXR must be disarmed before launching the game.");
             using cvr::framegen::Backend;
             const Backend active=cvr::framegen::ActiveBackend();
-            if(fg.backend==Backend::DlssG && fg.enabled && active!=Backend::DlssG)
+            if(fg.backend==Backend::DlssG && fg.enabled && cvr::ofxr::NativeAllowed() && active!=Backend::DlssG)
                 UI::TextWrapped("DLSS Frame Generation is not available here (%s); FidelityFX is used.",cvr::framegen::dlssg::Reason());
             if(fg.backend==Backend::Nvidia)
                 changed|=widgets::Combo("NVIDIA quality",&fg.quality,"Fast (performance)\0Medium (balanced)\0Slow (best)\0");

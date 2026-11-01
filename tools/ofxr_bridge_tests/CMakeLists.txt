@@ -15,7 +15,7 @@ target_include_directories(ofxr_observer PRIVATE "${XRFG_OPENXR_SDK_ROOT}/includ
 add_executable(ofxr_bridge_tests main.cpp "${PORT_ROOT}/src/Framegen/Framegen.cpp" "${PORT_ROOT}/src/Framegen/OfxrBridge.cpp")
 target_compile_definitions(ofxr_bridge_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX XR_USE_PLATFORM_WIN32 XR_USE_GRAPHICS_API_D3D12)
 target_include_directories(ofxr_bridge_tests PRIVATE "${PORT_ROOT}/include" "${CVR_OFXR_SOURCE}/include" "${XRFG_OPENXR_SDK_ROOT}/include")
-target_link_libraries(ofxr_bridge_tests PRIVATE psapi)
+target_link_libraries(ofxr_bridge_tests PRIVATE psapi d3d12 dxgi)
 add_dependencies(ofxr_bridge_tests ofxr_test_loader ofxr_observer)
 add_custom_command(TARGET ofxr_bridge_tests POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:ofxr_bridge_tests>/ofxr-v557"
@@ -26,3 +26,5 @@ add_custom_command(TARGET ofxr_bridge_tests POST_BUILD
 enable_testing()
 add_test(NAME private_v557_dispatch_logging COMMAND ofxr_bridge_tests)
 add_test(NAME private_v557_external_guard COMMAND ofxr_bridge_tests external)
+
+set_tests_properties(private_v557_dispatch_logging private_v557_external_guard PROPERTIES TIMEOUT 45)

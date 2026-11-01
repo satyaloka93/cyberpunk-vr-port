@@ -285,7 +285,7 @@ struct Generator::Impl {
     };
     std::array<Work,3> work;
     std::unique_ptr<Eye> eyes[2];
-    Settings settings;unsigned cursor{};bool failed{};
+    Settings settings;unsigned cursor{};bool failed{},generatedLogged{};
     struct Signature {uint64_t width{};uint32_t height{},renderWidth{},renderHeight{},motionWidth{},motionHeight{};bool inverted{},infinite{},jittered{};} signatures[2];
     bool Idle() const {
         if(fence && fence->GetCompletedValue()<value)return false;
@@ -580,7 +580,7 @@ Generator::~Generator() {
 }
 bool Generator::Idle() const {return !impl || impl->Idle();}
 void Generator::Poll() {if(impl)impl->Poll();}
-bool Generator::Reset() {if(!Idle())return false;impl.reset();return true;}
+bool Generator::Reset() {if(!Idle())return false;if(impl)Log("[framegen-native] resources retired backend=%d\n",int(impl->settings.backend));impl.reset();return true;}
 uint64_t Generator::Bytes() const {uint64_t result=0;if(impl)for(const auto& eye:impl->eyes)if(eye)result+=eye->Bytes();return result;}
 ID3D12Resource* Generator::Output(unsigned eye) const {return impl && eye<2 && impl->eyes[eye] ? impl->eyes[eye]->output.resource.Get() : nullptr;}
 void Generator::ConsumerFence(ID3D12Fence* fence,uint64_t value) {if(impl) {impl->consumerFence=fence;impl->consumerValue=value;}}
@@ -601,9 +601,14 @@ bool Generator::Generate(ID3D12Device* device,ID3D12CommandQueue* queue,ID3D12Re
     if(!impl) {
         impl=std::make_unique<Impl>();
         if(!impl->Create(device,queue,colors,inputs,effective)) {impl->failed=true;Status("Framegen backend initialization failed");return false;}
+        Log("[framegen-native] initialized requested=%d active=%d\n",int(settings.backend),int(effective.backend));
         reset=true;
     }
     const auto result=impl->Generate(colors,inputs,frameMs,reset,frameId);
+    if(result && !reset && !impl->generatedLogged) {
+        impl->generatedLogged=true;
+        Log("[framegen-native] first generated pair backend=%d frame=%llu\n",int(effective.backend),static_cast<unsigned long long>(frameId));
+    }
     if(result && interpolated)*interpolated=!reset;
     if(MetricsEnabled())SetVram(Bytes()+InputVram());return result;
 }
