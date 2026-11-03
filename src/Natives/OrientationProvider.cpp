@@ -100,6 +100,10 @@ extern "C" __declspec(dllexport) unsigned long long CyberpunkVR_DebugProvEntFunc
 
 // The hand-recoil spring (src/Anim/Recoil.cpp).
 extern "C" void RecoilOnShot();
+extern "C" void RecoilOnShotLeft();
+extern void Log(const char*, ...);
+static volatile float g_leftLaunchQuat[4]={0,0,0,1};
+static std::atomic<uintptr_t> g_dualWeaponEntity[2]{};
 volatile int      g_provOverrideCls  = -1;
 volatile int      g_provOverrideSlot = -1; // (cls,slot) whose stub overwrites the out-quat
 volatile uint64_t g_provOverrides = 0;
@@ -352,6 +356,31 @@ static bool PosProvIsPlayersAttack(uintptr_t aProvider) {
     return mine;
 }
 
+// Only called after the existing player-owner guard. Compare the already-validated
+// attack participant pointers with the equipped weapons; never dereference those handles.
+static bool ProviderUsesLeftWeapon(uintptr_t provider, size_t sourceOffset) {
+    if (!g_pSharedHands || g_pSharedHands[vrshared::kDualWieldActive] < .5f ||
+        g_pSharedHands[vrshared::kLeftMuzzleValid] < .5f) return false;
+    const bool l=g_pSharedHands[vrshared::kLeftTriggerAnalog]>.2f;
+    const bool r=g_pSharedHands[vrshared::kRightTriggerAnalog]>.2f;
+    if(l!=r)return l;
+    bool left=false, right=false;
+    __try {
+        const auto source=*reinterpret_cast<const uintptr_t*>(provider+sourceOffset);
+        if (!ProvPlausiblePtr(source)) return l && !r;
+        const auto attack=*reinterpret_cast<const uintptr_t*>(source+0x10);
+        if (!ProvPlausiblePtr(attack)) return l && !r;
+        const auto lw=g_dualWeaponEntity[0].load(std::memory_order_relaxed);
+        const auto rw=g_dualWeaponEntity[1].load(std::memory_order_relaxed);
+        for (int offset:kProvAttackHandleOffsets) {
+            const auto entity=*reinterpret_cast<const uintptr_t*>(attack+offset);
+            left |= lw && entity==lw;
+            right |= rw && entity==rw;
+        }
+    } __except(EXCEPTION_EXECUTE_HANDLER) { return l && !r; }
+    return left!=right ? left : l && !r;
+}
+
 static uintptr_t __fastcall PosProvStub33(uintptr_t rcx, uintptr_t rdx, uintptr_t r8, uintptr_t r9) {
     using Fn = uintptr_t(__fastcall*)(uintptr_t, uintptr_t, uintptr_t, uintptr_t);
     const Fn orig = reinterpret_cast<Fn>(g_posProvOrig);
@@ -362,12 +391,14 @@ static uintptr_t __fastcall PosProvStub33(uintptr_t rcx, uintptr_t rdx, uintptr_
         g_pSharedHands[vrshared::kWeaponFlag] <= 0.5f || g_pSharedHands[27] <= 0.5f ||
         !PosProvIsPlayersAttack(rcx)) return ret;
 
+    const bool left=ProviderUsesLeftWeapon(rcx,0x88);
     float p[3] = {g_provMuzzlePos[0], g_provMuzzlePos[1], g_provMuzzlePos[2]};
+    if (left) for(int i=0;i<3;++i)p[i]=g_pSharedHands[vrshared::kLeftMuzzlePos+i];
     const float l2 = p[0]*p[0] + p[1]*p[1] + p[2]*p[2];
     if (!std::isfinite(l2) || l2 <= 1.0f) return ret;
     const float forward[3] = {g_pSharedHands[24], g_pSharedHands[25], g_pSharedHands[26]};
     float lift[3];
-    if (cvr::sight::SightLineOffset(forward, lift)) {
+    if (!left && cvr::sight::SightLineOffset(forward, lift)) {
         p[0] += lift[0]; p[1] += lift[1]; p[2] += lift[2];
     }
 
@@ -390,6 +421,8 @@ static uintptr_t __fastcall ProvStub(uintptr_t rcx, uintptr_t rdx, uintptr_t r8,
     using Fn = uintptr_t(__fastcall*)(uintptr_t,uintptr_t,uintptr_t,uintptr_t);
     Fn orig = reinterpret_cast<Fn>(g_provOrig[C][S]);
     uintptr_t ret = orig ? orig(rcx, rdx, r8, r9) : 0;
+    const bool playerLaunch=S==30 && ProvIsPlayersAttack(C,rcx);
+    const bool leftLaunch=playerLaunch && C==2 && ProviderUsesLeftWeapon(rcx,0x78);
     uintptr_t outp = rdx ? rdx : ret;   // out-quat: rdx buffer (or returned rax)
     // DO NOT TOUCH THE OUT-BUFFER ON A SLOT THAT DOES NOT NEED IT.
     //
@@ -460,12 +493,17 @@ static uintptr_t __fastcall ProvStub(uintptr_t rcx, uintptr_t rdx, uintptr_t r8,
                     //
                     // And it only fires for the player's own attack, which ProvIsPlayersAttack settles
                     // from the attack's participant handles.
-                    if (S == 30 && ProvIsPlayersAttack(C, rcx)) {
+                    if (playerLaunch) {
                         const LONG recoilSeq = static_cast<LONG>(g_provMuzzleSeq);
-                        const LONG recoilSeen = g_provRecoilSeqSeen;
+                        static volatile LONG leftRecoilSeqSeen=-1;
+                        volatile LONG* recoilLatch=leftLaunch ? &leftRecoilSeqSeen : &g_provRecoilSeqSeen;
+                        const LONG recoilSeen = *recoilLatch;
                         if (recoilSeen != recoilSeq &&
-                            InterlockedCompareExchange(&g_provRecoilSeqSeen, recoilSeq, recoilSeen) == recoilSeen) {
-                            RecoilOnShot();
+                            InterlockedCompareExchange(recoilLatch, recoilSeq, recoilSeen) == recoilSeen) {
+                            if(leftLaunch) RecoilOnShotLeft(); else RecoilOnShot();
+                            static std::atomic<unsigned> logged{0};
+                            if(logged.fetch_add(1,std::memory_order_relaxed)<24)
+                                Log("[dual-shot] projectile side=%s class=%d\n",leftLaunch ? "left" : "right",C);
                         }
                     }
                     g_provOrigQ[0]=q[0]; g_provOrigQ[1]=q[1]; g_provOrigQ[2]=q[2]; g_provOrigQ[3]=q[3];
@@ -500,7 +538,7 @@ static uintptr_t __fastcall ProvStub(uintptr_t rcx, uintptr_t rdx, uintptr_t r8,
                 bool sharedOn = (g_pSharedHands &&
                                  g_pSharedHands[vrshared::kWeaponFlag] > 0.5f &&
                                  g_pSharedHands[27] > 0.5f && S == 30 &&
-                                 ProvIsPlayersAttack(C, rcx));
+                                 playerLaunch);
                 bool nativeOn = (g_provOverrideCls == C && g_provOverrideSlot == S);
                 if ((sharedOn || nativeOn) && g_pSharedHands) {
                     // shared (VR-overlay) path defaults to mode 6 = muzzle + preserved spread.
@@ -512,16 +550,21 @@ static uintptr_t __fastcall ProvStub(uintptr_t rcx, uintptr_t rdx, uintptr_t r8,
                         //   qNew  = delta (X) q               -- per pellet
                         // 1 pellet (pistol) -> qNew = muzzle exactly. N pellets -> pattern around muzzle.
                         float mq[4]={g_provMuzzleQ[0],g_provMuzzleQ[1],g_provMuzzleQ[2],g_provMuzzleQ[3]};
+                        if(leftLaunch)for(int i=0;i<4;++i)mq[i]=g_leftLaunchQuat[i];
+                        static thread_local float leftDelta[4]={0,0,0,1};
+                        static thread_local uint32_t leftDeltaSeq=~0u;
+                        volatile float* delta=leftLaunch ? leftDelta : g_provDeltaQ;
+                        auto& deltaSeq=leftLaunch ? leftDeltaSeq : g_provDeltaSeq;
                         if (mq[0]*mq[0]+mq[1]*mq[1]+mq[2]*mq[2]+mq[3]*mq[3] > 0.5f) {
-                            if (g_provDeltaSeq != g_provMuzzleSeq) {   // recompute once per frame (first pellet)
+                            if (deltaSeq != g_provMuzzleSeq) {   // recompute once per frame (first pellet)
                                 float cqx=-q[0],cqy=-q[1],cqz=-q[2],cqw=q[3];           // conj(q)
-                                g_provDeltaQ[0]=mq[3]*cqx+mq[0]*cqw+mq[1]*cqz-mq[2]*cqy; // mq (X) conj(q)
-                                g_provDeltaQ[1]=mq[3]*cqy-mq[0]*cqz+mq[1]*cqw+mq[2]*cqx;
-                                g_provDeltaQ[2]=mq[3]*cqz+mq[0]*cqy-mq[1]*cqx+mq[2]*cqw;
-                                g_provDeltaQ[3]=mq[3]*cqw-mq[0]*cqx-mq[1]*cqy-mq[2]*cqz;
-                                g_provDeltaSeq = g_provMuzzleSeq;
+                                delta[0]=mq[3]*cqx+mq[0]*cqw+mq[1]*cqz-mq[2]*cqy; // mq (X) conj(q)
+                                delta[1]=mq[3]*cqy-mq[0]*cqz+mq[1]*cqw+mq[2]*cqx;
+                                delta[2]=mq[3]*cqz+mq[0]*cqy-mq[1]*cqx+mq[2]*cqw;
+                                delta[3]=mq[3]*cqw-mq[0]*cqx-mq[1]*cqy-mq[2]*cqz;
+                                deltaSeq = g_provMuzzleSeq;
                             }
-                            float dx=g_provDeltaQ[0],dy=g_provDeltaQ[1],dz=g_provDeltaQ[2],dw=g_provDeltaQ[3];
+                            float dx=delta[0],dy=delta[1],dz=delta[2],dw=delta[3];
                             float ax=q[0],ay=q[1],az=q[2],aw=q[3];                       // delta (X) q
                             q[0]=dw*ax+dx*aw+dy*az-dz*ay;
                             q[1]=dw*ay-dx*az+dy*aw+dz*ax;
@@ -534,6 +577,7 @@ static uintptr_t __fastcall ProvStub(uintptr_t rcx, uintptr_t rdx, uintptr_t r8,
                         // weapon:GetMuzzleSlotWorldTransform). Pure game-world, NO controller-space math.
                         // g_provMuzzleFwdAxis selects which muzzle local axis = barrel (default +Y).
                         float mq[4]={g_provMuzzleQ[0],g_provMuzzleQ[1],g_provMuzzleQ[2],g_provMuzzleQ[3]};
+                        if(leftLaunch)for(int i=0;i<4;++i)mq[i]=g_leftLaunchQuat[i];
                         if (mq[0]*mq[0]+mq[1]*mq[1]+mq[2]*mq[2]+mq[3]*mq[3] > 0.5f) {
                             if (g_provFwdAxis == 1) {            // muzzle orientation used directly
                                 q[0]=mq[0]; q[1]=mq[1]; q[2]=mq[2]; q[3]=mq[3];
@@ -1090,6 +1134,7 @@ void SetVRLeftMuzzle(RED4ext::IScriptable*, RED4ext::CStackFrame* aFrame, void*,
     if (!g_pSharedHands) return;
     const bool valid = x*x + y*y + z*z >= 1.0f && (i*i + j*j + k*k + r*r) > 0.5f;
     if (valid) {
+        g_leftLaunchQuat[0]=i;g_leftLaunchQuat[1]=j;g_leftLaunchQuat[2]=k;g_leftLaunchQuat[3]=r;
         g_pSharedHands[vrshared::kLeftMuzzlePos + 0] = x;
         g_pSharedHands[vrshared::kLeftMuzzlePos + 1] = y;
         g_pSharedHands[vrshared::kLeftMuzzlePos + 2] = z;
@@ -1109,6 +1154,13 @@ void SetVRDualWieldRecords(RED4ext::IScriptable*, RED4ext::CStackFrame* aFrame, 
     aFrame->code++;
     CyberpunkVR_DualWieldRecords[0] = static_cast<uint32_t>(left);
     CyberpunkVR_DualWieldRecords[1] = static_cast<uint32_t>(right);
+}
+
+void SetVRDualWieldEntities(RED4ext::IScriptable*, RED4ext::CStackFrame* frame, void*, int64_t) {
+    RED4ext::Handle<RED4ext::IScriptable> left,right;
+    RED4ext::GetParameter(frame,&left);RED4ext::GetParameter(frame,&right);++frame->code;
+    g_dualWeaponEntity[0].store(reinterpret_cast<uintptr_t>(left.GetPtr()),std::memory_order_relaxed);
+    g_dualWeaponEntity[1].store(reinterpret_cast<uintptr_t>(right.GetPtr()),std::memory_order_relaxed);
 }
 
 // DIAGNOSTIC ONLY: the live camera GetZoom, published to shared[28] for telemetry.

@@ -330,6 +330,8 @@ static bool WaLeftGunFired(const void* aBlackboard, float* pos, float* fwd) {
     if (!g_pSharedHands) return false;
     if (g_pSharedHands[vrshared::kDualWieldActive] < 0.5f || g_pSharedHands[vrshared::kLeftMuzzleValid] < 0.5f)
         return false;
+    const bool leftTrigger = g_pSharedHands[vrshared::kLeftTriggerAnalog] > 0.2f;
+    const bool rightTrigger = g_pSharedHands[vrshared::kRightTriggerAnalog] > 0.2f;
     const uint8_t* bb = static_cast<const uint8_t*>(aBlackboard);
     const uint64_t* keys = *reinterpret_cast<const uint64_t* const*>(bb + 0x48);
     const uint32_t count = *reinterpret_cast<const uint32_t*>(bb + 0x54);
@@ -338,7 +340,7 @@ static bool WaLeftGunFired(const void* aBlackboard, float* pos, float* fwd) {
     // The entry holds a handle to the WeaponItem record (instance at +8); the record's TweakDBID is at +0x40
     // (gamedataTweakDBRecord), the hash in its low 32 bits. Called inside the evaluator hook's __try.
     uint32_t record = 0;
-    for (uint32_t i = 0; i < count; ++i) {
+    if (leftTrigger == rightTrigger) for (uint32_t i = 0; i < count; ++i) {
         if (keys[i] != kWaWeaponItemRecordCName) continue;
         const uint8_t* entry = vals + static_cast<size_t>(i) * 24;
         const uintptr_t instance = *reinterpret_cast<const uintptr_t*>(entry + 8);
@@ -347,13 +349,18 @@ static bool WaLeftGunFired(const void* aBlackboard, float* pos, float* fwd) {
         break;
     }
     const uint32_t leftRecord = CyberpunkVR_DualWieldRecords[0], rightRecord = CyberpunkVR_DualWieldRecords[1];
-    const bool leftTrigger = g_pSharedHands[vrshared::kLeftTriggerAnalog] > 0.2f;
-    const bool rightTrigger = g_pSharedHands[vrshared::kRightTriggerAnalog] > 0.2f;
     bool left = false;
     int path = 0;
-    if (record && leftRecord && rightRecord && leftRecord != rightRecord) {left = record == leftRecord; path = 1;}
-    else if (leftTrigger != rightTrigger) {left = leftTrigger; path = 2;}
+    // The VR shoot-state wrappers guarantee an exclusive trigger selects that hand.
+    // Some attack effects still carry the primary weapon's record even for the left shot.
+    if (leftTrigger != rightTrigger) {left = leftTrigger; path = 2;}
+    else if (record && leftRecord && rightRecord && leftRecord != rightRecord &&
+        (record == leftRecord || record == rightRecord)) {left = record == leftRecord; path = 1;}
     else if (leftTrigger) {left = (s_waDualAlternate.fetch_add(1, std::memory_order_relaxed) & 1u) != 0; path = 3;}
+    static std::atomic<unsigned> logged{0};
+    if (logged.fetch_add(1, std::memory_order_relaxed) < 24)
+        Log("[dual-shot] hitscan side=%s path=%d record=%08x left=%08x right=%08x triggers=%d/%d\n",
+            left ? "left" : "right", path, record, leftRecord, rightRecord, int(leftTrigger), int(rightTrigger));
     if (cvr::RuntimeDiagnosticsEnabled()) {
         CyberpunkVR_DebugDualShot[0] = left ? 1.0f : 0.0f; CyberpunkVR_DebugDualShot[1] = static_cast<float>(path);
         CyberpunkVR_DebugDualShot[2] = leftTrigger ? 1.0f : 0.0f; CyberpunkVR_DebugDualShot[3] = rightTrigger ? 1.0f : 0.0f;
