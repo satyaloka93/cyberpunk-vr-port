@@ -872,6 +872,8 @@ bool DrawLiveControls(LiveControlsUiState& state,int section,bool* foveatedEditi
             }
             changed|=CheckboxInt("Shared sun shadows",&state.monoCascades);
             if(UI::IsItemHovered())UI::SetTooltip("Render sun cascades once for both eyes. Shadow quality and distance remain controlled by the game.");
+            changed|=CheckboxInt("Parallel camera-scope rendering", &state.scopeGraphDag);
+            if(UI::IsItemHovered())UI::SetTooltip("Use dependency-based jobs for camera scopes. Holster and redraw the weapon after changing this. Does not change framegen or scope image quality.");
             changed|=SliderIntClamped("Scope lens stabilization",&state.scopeStabilize,0,100);
             if(UI::IsItemHovered())UI::SetTooltip("Magnifying scope lenses while the view moves: share of the stabilised image (percent). Higher: no blinking of lights and grates, softer. 0 = off. Standing still the lens is untouched.");
             if (UI::CollapsingHeader("VARIABLE RATE SHADING", ImGuiTreeNodeFlags_DefaultOpen)) {

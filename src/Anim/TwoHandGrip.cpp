@@ -40,6 +40,8 @@
 #include <string>
 
 // Published by the weapon module on each draw (src/Natives/OrientationProvider.cpp).
+extern "C" volatile uint64_t CyberpunkVR_DualWieldUntil;
+extern "C" volatile uint32_t CyberpunkVR_DualWieldRecords[2];
 extern void Log(const char* fmt, ...);   // the ungated project logger
 extern "C" __declspec(dllexport) extern char CyberpunkVR_WeaponName[64];
 
@@ -625,6 +627,16 @@ void TwoHandRight(const float* targetR, float* hm, const float* wristR, const fl
     // a squeeze held right through the carry is still unspent when the weapon comes back, and the hold
     // takes it again by itself instead of needing a new press.
     if (CyberpunkVR_CarryLeft) {
+        CyberpunkVR_TwoHandActive = 0;
+        CyberpunkVR_TwoHandBlend = 0.0f;
+        SteerReset();
+        return;
+    }
+    // A gun in each hand leaves no free support hand. Our reload module publishes
+    // both weapon records and a short live lease; no 0.2.x left-handed host needed.
+    if (g_hasWeaponEquipped && CyberpunkVR_DualWieldRecords[0] != 0 &&
+        CyberpunkVR_DualWieldRecords[1] != 0 &&
+        GetTickCount64() < CyberpunkVR_DualWieldUntil) {
         CyberpunkVR_TwoHandActive = 0;
         CyberpunkVR_TwoHandBlend = 0.0f;
         SteerReset();

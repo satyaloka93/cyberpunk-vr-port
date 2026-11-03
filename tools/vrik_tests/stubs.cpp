@@ -8,7 +8,7 @@
 #include <string>
 
 float* g_pSharedHands=nullptr;
-int16_t g_VRBoneParent[800]{};
+int16_t g_VRBoneParent[VRIK_MAX_BONES]{};
 volatile int g_VRBoneCount=0,g_VRFKCount=0;
 volatile int g_VRHipsIdx=2,g_VRNeckIdx=16,g_VRNeck1Idx=19,g_VRHeadBoneIdx=22;
 volatile int g_VRRightUpLegIdx=6,g_VRRightLegIdx=9,g_VRRightFootIdx=12;
@@ -85,3 +85,6 @@ int CyberpunkVR_VrikTransformsFromPlugin=1,CyberpunkVR_VrikNativeFramePair=1,Cyb
 uint64_t CyberpunkVR_DebugVrikNativePairUsed=0,CyberpunkVR_DebugVrikLuaPairFallback=0;
 int CyberpunkVR_VrikElbowPolicy=0;
 }
+
+// State owned by input and two-hand modules outside this solver harness.
+extern "C" { int CyberpunkVR_TwoHandActive=0; volatile uint64_t CyberpunkVR_DualWieldUntil=0; }

@@ -1133,6 +1133,22 @@ int ComputePoseWithBounds(uint8_t* buffer,uint32_t slots,bool guarded) {
         VRIK_ComputeFK(buffer,VRIK_FKCount());return 1;
     } __except(EXCEPTION_EXECUTE_HANDLER) {return -1;}
 }
+void LargeRig() {
+    // Exercise the production FK through the last supported bone, including the
+    // old 800-bone boundary; use a parent chain with a known accumulated offset.
+    Check(VRIK_MAX_BONES == 2048, "expected extended rig capacity");
+    std::vector<Bone> pose(VRIK_MAX_BONES);
+    for(int i=0;i<VRIK_MAX_BONES;++i) {
+        g_VRBoneParent[i]=static_cast<int16_t>(i-1);
+        pose[i].p[0]=1.0f; pose[i].q[3]=1.0f;
+    }
+    g_VRBoneCount=g_VRFKCount=VRIK_MAX_BONES;
+    Check(VRIK_PlayerPoseFits(VRIK_MAX_BONES,VRIK_MAX_BONES,VRIK_MAX_BONES), "large rig rejected");
+    Check(!VRIK_PlayerPoseFits(800,VRIK_MAX_BONES,VRIK_MAX_BONES), "short pose buffer accepted");
+    VRIK_ComputeFK(reinterpret_cast<uint8_t*>(pose.data()),VRIK_MAX_BONES);
+    Near(g_fkPos[800][0],801.0f,.001f,"FK stopped at old limit");
+    Near(g_fkPos[VRIK_MAX_BONES-1][0],2048.0f,.001f,"last bone not evaluated");
+}
 void PoseBufferRebind() {
     auto pose=Read<Bone>("player_local.bin");
     const uint32_t poseSlots=static_cast<uint32_t>(pose.size());
@@ -2012,6 +2028,7 @@ int main(int argc,char** argv) {
         else if(name=="ladder_baked_rung")LadderBakedRung();
         else if(name=="ladder_reach")LadderReach();
         else if(name=="ladder_rest")LadderRest();
+        else if(name=="large_rig")LargeRig();
         else if(name=="rig_policy")RigPolicy();
         else if(name=="rig_rebind")RigRebind();
         else if(name=="pose_buffer_rebind")PoseBufferRebind();

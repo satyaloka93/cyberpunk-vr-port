@@ -43,6 +43,7 @@ struct LiveControlsUiState {
     cvr::hidden_area::Settings hiddenArea{};
     int monoCascades=1;
     int monoMode=0;          // xr_mono_mode: one picture for both eyes (Stereo/EngineStereo.hpp)
+    int scopeGraphDag=1;     // dependency-based camera-scope jobs; redraw weapon after change
     int scopeStabilize=80;   // xr_scope_stabilize, percent history in a moving scope lens (0 = off)
     int nvidiaReflex = cvr::reflex::DefaultMode;
     cvr::vrui::Settings overlay{};

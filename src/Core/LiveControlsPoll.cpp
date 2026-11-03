@@ -128,6 +128,7 @@ static int g_appliedStageReplay = -1;
 extern "C" __declspec(dllexport) int CyberpunkVR_VrcamGbufferPartitionsSetting = 1;
 extern "C" void CyberpunkVR_VrcamGbufferPartitionsConfigure(int enable);
 static int g_appliedGbufferPartitions = -1;
+extern "C" volatile uint32_t CyberpunkVR_ScopeGraphDag;
 // xr_submit_chain: each render-graph submission point gets its own job-stage chain, so a graph's
 // Synchronize nodes no longer wait for the previous batch's ExecuteCommandLists (src/Stereo/SubmitChain.cpp,
 // docs/gpu-not-full-20261016.md). 0 off, 1 view jobs and Present wait for the chain, 2 only Present
@@ -446,6 +447,7 @@ void PollLiveControls() {
     uint32_t monoCascades=CyberpunkVR_MonoCascades.load(std::memory_order_relaxed);
     int monoMode=CyberpunkVR_MonoMode;
     int scopeStabilize=cvr::optics::source::GetStabilize();
+    int scopeGraphDag=CyberpunkVR_ScopeGraphDag ? 1 : 0;
     int nvidiaReflex=cvr::reflex::DefaultMode;
     auto overlay=cvr::vrui::GetSettings();
     float xrPitchSign = 1.0f;
@@ -718,6 +720,7 @@ void PollLiveControls() {
         if (cvr::hidden_area::ParseSetting(line,hiddenArea)) continue;
         if(sscanf_s(line,"xr_mono_cascades = %d",&intValue)==1){monoCascades=intValue!=0;continue;}
         if(sscanf_s(line,"xr_mono_mode = %d",&intValue)==1){monoMode=intValue!=0;continue;}
+        if(sscanf_s(line,"xr_scope_graph_dag = %d",&intValue)==1){scopeGraphDag=intValue!=0;continue;}
         if(sscanf_s(line,"xr_scope_stabilize = %d",&intValue)==1){scopeStabilize=intValue;continue;}
         if (tryParseIntKey(line,"xr_nvidia_reflex",&intValue)) {nvidiaReflex=cvr::reflex::NormalizeMode(intValue);continue;}
         if (cvr::vrui::ParseSetting(line,overlay)) continue;
@@ -1621,6 +1624,7 @@ void PollLiveControls() {
     CyberpunkVR_MonoCascades.store(monoCascades,std::memory_order_relaxed);
     cvr::engine_stereo::ApplyMonoMode(monoMode!=0);
     cvr::optics::source::SetStabilize(scopeStabilize);
+    CyberpunkVR_ScopeGraphDag=scopeGraphDag ? 1u : 0u;
     cvr::reflex::SetMode(nvidiaReflex);
     cvr::vrui::SetSettings(overlay);
     g_liveControls.xrHudPanel=xrHudPanel!=0;
@@ -1961,6 +1965,7 @@ LiveControlsUiState MakeLiveControlsUiState() {
     state.monoCascades=int(CyberpunkVR_MonoCascades.load(std::memory_order_relaxed));
     state.monoMode=CyberpunkVR_MonoMode!=0;
     state.scopeStabilize=cvr::optics::source::GetStabilize();
+    state.scopeGraphDag=CyberpunkVR_ScopeGraphDag ? 1 : 0;
     state.nvidiaReflex=cvr::reflex::GetMode();
     state.overlay=cvr::vrui::GetSettings();
     state.xr3DofMovement = g_liveControls.xr3DofMovement;
@@ -2062,6 +2067,7 @@ void PersistLiveControlsUiState(const LiveControlsUiState& state) {
     std::fprintf(file,"xr_mono_cascades=%d\n",state.monoCascades?1:0);
     std::fprintf(file,"xr_mono_mode=%d\n",state.monoMode?1:0);
     std::fprintf(file,"xr_scope_stabilize=%d\n",state.scopeStabilize);
+    std::fprintf(file,"xr_scope_graph_dag=%d\n",state.scopeGraphDag ? 1 : 0);
     fprintf(file,"xr_nvidia_reflex=%d\n",cvr::reflex::NormalizeMode(state.nvidiaReflex));
     cvr::vrui::WriteSettings(file,state.overlay);
     fprintf(file,"xr_hud_panel=%d\nxr_hud_follow_deg=%.3f\nxr_hud_fov=%.3f\nxr_hud_distance=%.3f\n",state.xrHudPanel,state.xrHudFollowDeg,state.xrHudFov,state.xrHudDistance);
@@ -2399,6 +2405,7 @@ extern "C" void SetLiveControlsUiState(const LiveControlsUiState* state, int per
     CyberpunkVR_MonoCascades.store(state->monoCascades?1:0,std::memory_order_relaxed);
     cvr::engine_stereo::ApplyMonoMode(state->monoMode!=0);
     cvr::optics::source::SetStabilize(state->scopeStabilize);
+    CyberpunkVR_ScopeGraphDag=state->scopeGraphDag ? 1u : 0u;
     cvr::reflex::SetMode(state->nvidiaReflex);
     cvr::vrui::SetSettings(state->overlay);
 
