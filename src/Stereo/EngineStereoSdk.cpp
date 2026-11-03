@@ -11,7 +11,7 @@
 // Startup remains mono until the last frontend controller closes. Creating a menu controller
 // can precede completion of the splash/initial loading screen; enabling SBS at creation
 // transformed those remaining screens while capture still treated them as full-window UI.
-// Once armed, stereo stays on for gameplay and subsequent menu transitions.
+// Once armed, stereo is available for gameplay; active loading panels temporarily keep it off.
 
 #include "Stereo/EngineStereo.hpp"
 #include "Stereo/DetourRegistry.hpp"
@@ -116,10 +116,24 @@ uint64_t FrameTick(Object*) {
     Count(1, 9);
     return 0;
 }
-// The gate: stereo from the main menu on.
+// The frontend closes before the save's loading artwork is dismissed. Render
+// that surface once, across the full window, instead of applying the native
+// 3D-monitor offsets and then cropping one displaced SBS half for the VR panel.
+// Keep the configuration and arming latch intact: normal SBS resumes when the
+// loading layer stops being active, including later save-load transitions.
 bool Available(Object*) {
     Count(1, 10);
-    return g_armed.load(std::memory_order_relaxed);
+    const bool armed=g_armed.load(std::memory_order_relaxed);
+    const bool loading=armed && LoadingShown();
+    const bool available=armed && !loading;
+    static std::atomic<int> previous{-1};
+    static std::atomic<unsigned> reports{0};
+    const int state=loading ? 2 : available ? 1 : 0;
+    if(previous.exchange(state,std::memory_order_relaxed)!=state &&
+       reports.fetch_add(1,std::memory_order_relaxed)<16)
+        Log("[engine-stereo-sdk] render gate: %s\n",
+            loading ? "mono loading panel" : available ? "SBS gameplay" : "mono frontend");
+    return available;
 }
 void* DeleteInterface(Object* self, unsigned flags) {
     Count(1, 12);
@@ -209,7 +223,7 @@ void NoteMainMenuClosed() {
     if (Enabled() && open == 1 && !g_armed.exchange(true, std::memory_order_relaxed)) {
         CyberpunkVR_EngineStereoArmed.store(1, std::memory_order_relaxed);
         WriteCvars(true);
-        Log("[engine-stereo-sdk] frontend closed: engine stereo enabled\n");
+        Log("[engine-stereo-sdk] frontend closed: stereo armed, loading stays mono\n");
     }
 }
 
