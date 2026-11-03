@@ -587,8 +587,13 @@ bool Evaluate(sl::Feature feature, const sl::FrameToken& frame, const sl::BaseSt
             eyeTags[i] = tags.tag[i];
             sl::Extent a{};
             if (!Area(tags.tag[i], &a)) continue;
-            const bool input = a.width == in.width && a.height == in.height;
-            const bool isOutput = !input && a.width == out.width && a.height == out.height;
+            // DLAA has identical input/output dimensions. The explicit output tag
+            // must still use a private right-eye target and the AFTER-evaluate
+            // copy-back; classifying it as input silently discards that eye.
+            const bool inputSized = a.width == in.width && a.height == in.height;
+            const bool isOutput = a.width == out.width && a.height == out.height &&
+                (tags.tag[i].type == sl::kBufferTypeScalingOutputColor || !inputSized);
+            const bool input = inputSized && !isOutput;
             if (input) eyeTags[i].extent = Half(a, eye);
             else if (isOutput) eyeTags[i].extent = Half(a, (mode & 2) ? 0 : eye);
             if (eye != 1 || (!input && !isOutput) || (isOutput && (mode & 18)) || (input && (mode & 32))) continue;
