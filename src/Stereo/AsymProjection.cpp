@@ -45,6 +45,7 @@
 #include <atomic>
 
 extern "C" int CyberpunkVR_MainIsRightEye;
+extern "C" float GetGameRenderVerticalFovDeg();
 extern void Log(const char* fmt, ...);
 #include <cmath>
 #include <cstdint>
@@ -187,6 +188,9 @@ void Restore(Side& s, float* in) {
 }
 
 void Apply(uint8_t* view, int side) {
+    // A MAIN prepare owns the eye-window cache. Never let an OFF toggle or a
+    // failed runtime query reuse the preceding asymmetric camera descriptors.
+    if (side == 0) cvr::engine_stereo::PublishEyes(nullptr, false);
     float* in = reinterpret_cast<float*>(view + kInputFov);
     Side& s = g_side[side];
     // The engine's own values: refreshed whenever the field no longer holds what we wrote.
@@ -231,6 +235,18 @@ void Apply(uint8_t* view, int side) {
             AsymEyeWindows content{};
             if (want && side == 0 && OpenXRManager::Get().GetAsymmetricEyeWindows(&content, false))
                 NoteAspect(view, w.eye[eye], content.eye[eye]);
+        }
+    } else if (CyberpunkVR_AsymProjection == 0 && side == 0 && cvr::engine_stereo::Enabled()) {
+        // SBS is a storage layout, not the aspect of either camera. Use the
+        // centered, panel-covering FOV from CameraFov and one eye's dimensions.
+        const float vertical = GetGameRenderVerticalFovDeg();
+        if (g_launcherWidth > 1 && g_launcherHeight > 1 && std::fabs(fovScale) > 0.05f) {
+            aspect = float(g_launcherWidth) / float(g_launcherHeight);
+            fov = (vertical - fovAdd) / fovScale;
+            want = vertical > 1.0f && vertical < 175.0f && fov > 1.0f && fov < 175.0f &&
+                aspect > 0.05f && aspect < 20.0f;
+            const cvr::engine_stereo::EyeProjection eyes[2] = {{aspect, 0.0f, 0.0f}, {aspect, 0.0f, 0.0f}};
+            cvr::engine_stereo::PublishEyes(eyes, want);
         }
     } else if (CyberpunkVR_AsymProjection == 2) {
         const float* t = CyberpunkVR_AsymTest + side * 4;

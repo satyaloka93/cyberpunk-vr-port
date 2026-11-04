@@ -485,6 +485,10 @@ void OpenXRManager::OnPresent(IDXGISwapChain* swapChain) {
                 fovWidth = static_cast<float>(resourceDesc.Width);
                 fovHeight = static_cast<float>(resourceDesc.Height);
             }
+            // The symmetric/forced-FOV helper describes ONE eye, not the SBS
+            // container. Full width halves tan(V/2), squashing the submitted
+            // image vertically (112 H becomes 70.6 V instead of 109.5 V).
+            if (cvr::engine_stereo::Enabled()) fovWidth *= 0.5f;
 
             bool hasRenderHeadPose = false;
             XrPosef renderHeadPose{};

@@ -572,6 +572,22 @@ bool Evaluate(sl::Feature feature, const sl::FrameToken& frame, const sl::BaseSt
             if (r != sl::Result::eOk) Log("[engine-stereo-dlss] eye %d options refused (%d)\n", eye, int(r));
         }
         sl::Constants values = constants.values;
+        // A live projection switch invalidates each eye's reconstruction history.
+        // Compare the published camera geometry, not the UI flag (which may
+        // change before the render thread builds its next camera).
+        static EyeProjection previousProjection[2]{};
+        static bool previousValid[2]{};
+        EyeProjection projection{};
+        const bool validProjection = EyeWindow(eye, &projection);
+        const auto& previous = previousProjection[eye];
+        if (validProjection != previousValid[eye] || (validProjection &&
+            (std::fabs(projection.aspect - previous.aspect) > 1e-5f ||
+             std::fabs(projection.shiftX - previous.shiftX) > 1e-5f ||
+             std::fabs(projection.shiftY - previous.shiftY) > 1e-5f))) {
+            values.reset = sl::Boolean::eTrue;
+            previousProjection[eye] = projection;
+            previousValid[eye] = validProjection;
+        }
         values.mvecScale.x *= motionX;
         values.jitterOffset.x *= jitterX;
         values.jitterOffset.y *= jitterY;

@@ -98,7 +98,7 @@ inline XrFovf ApplyForcedProjectionFov(const XrFovf& sourceFov, const XrFovf* pa
             const float gameFovDeg = GetGameRenderFovDeg();
             if (gameFovDeg > 1.0f) {
                 const float wantHalfH = (gameFovDeg * 3.1415926535f / 180.0f) * 0.5f;
-                const float hCenter = (fov.angleRight + fov.angleLeft) * 0.5f;
+                const float hCenter = 0.0f; // The rendered symmetric camera is centered, even for slightly offset lenses.
 
                 // DESCRIBE WHAT WAS RENDERED, NOT WHAT THE PANEL IS.
                 //
