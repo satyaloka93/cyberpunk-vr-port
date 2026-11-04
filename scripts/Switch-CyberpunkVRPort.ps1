@@ -28,12 +28,12 @@ $CacheRoot = [IO.Path]::GetFullPath($CacheRoot)
 $BackupRoot = [IO.Path]::GetFullPath($BackupRoot)
 $interactiveMenu = $Action -eq 'Menu'
 $release = [pscustomobject]@{
-    name='CyberpunkVRPort upstream 0.2.0'; fileName='CyberpunkVRPort-0.2.0.zip'
-    url='https://github.com/dariulone/cyberpunk-vr-port/releases/download/0.2.0/CyberpunkVRPort-0.2.0.zip'
-    sha256='0afa1bab7d39c720babbc5ed7c8e338d8cfa2283f5f0b1566f751434977fd788'
+    name='CyberpunkVRPort upstream 0.2.1'; fileName='CyberpunkVRPort-0.2.1.zip'
+    url='https://github.com/dariulone/cyberpunk-vr-port/releases/download/0.2.1/CyberpunkVRPort-0.2.1.zip'
+    sha256='d6cd968880bc062304fa68c2924d2ad29a4933216dea5af45a9507125112b56b'
 }
 function Get-EditionDependencies {
-    $manifest = if ($Edition -eq 'Upstream') { 'switcher-dependencies-020.json' } else { 'switcher-dependencies-019.json' }
+    $manifest = if ($Edition -eq 'Upstream') { 'switcher-dependencies-021.json' } else { 'switcher-dependencies-019.json' }
     return @((Get-Content -LiteralPath (Join-Path $repo ("wabbajack\" + $manifest)) -Raw | ConvertFrom-Json).mods | Sort-Object priority)
 }
 function Set-EditionRelease {
@@ -82,7 +82,7 @@ function Show-PSVR2ToolkitGuidance {
     if ($detected) { Write-Host "`nPSVR2/Sense hardware detected." -ForegroundColor Green }
     if ($detected -or $Edition -in @('Fork','Vrcam')) {
         if ($Edition -eq 'Upstream') {
-            Write-Host 'Official 0.2.0 routes PSVR2 haptics to the optional Toolkit bridge; it does not include our newer Auto/OpenXR selector or F10 audio settings. Other headsets use OpenXR.' -ForegroundColor Yellow
+            Write-Host 'Official 0.2.1 routes PSVR2 haptics to the optional Toolkit bridge; it does not include our newer Auto/OpenXR selector or F10 audio settings. Other headsets use OpenXR.' -ForegroundColor Yellow
             Write-Host 'Toolkit setup: https://github.com/satyaloka93/PSVR2Toolkit/releases/tag/cyberpunk-dsx-bridge-v0.3.2'
             Write-Host 'The switcher does not start/stop a bridge or change Toolkit drivers or OpenXR layers.'
             return
@@ -247,7 +247,7 @@ function New-ReleaseStage([string]$Root) {
     if (-not (Test-Path -LiteralPath (Get-SafePath $stage $plugin))) { throw "Release payload is incomplete: $plugin" }
     if ($Edition -eq 'Upstream') {
         foreach ($required in @('archive\cyberpunkvrport.archive','redscript\scc_lib.dll')) {
-            if (-not (Test-Path -LiteralPath (Get-SafePath $stage ("red4ext\plugins\cyberpunkvrport\" + $required)))) { throw "0.2.0 bundled component missing: $required" }
+            if (-not (Test-Path -LiteralPath (Get-SafePath $stage ("red4ext\plugins\cyberpunkvrport\" + $required)))) { throw "0.2.1 bundled component missing: $required" }
         }
     }
     Set-MigratedSettings $Root $stage
@@ -263,7 +263,7 @@ function Show-Plan([string]$Root, [string]$Stage, [string[]]$Remove) {
     Write-Host "Backup parent: $BackupRoot"
     Write-Host 'Game files, saves, unrelated mods, DLSS replacements and game UserSettings.json are preserved.'
     Write-Host 'Personal fit/input preferences and calibration migrate; old render/FG/debug tuning does not.'
-    if ($Edition -eq 'Upstream') { Write-Host '0.2.0: RED4ext only. Shared frameworks retained; new config/log/Lua live under red4ext\plugins\cyberpunkvrport. Old port scripts, DLLs and vrcam_cpu_tweaks.ini are retired into backup.' }
+    if ($Edition -eq 'Upstream') { Write-Host '0.2.1: RED4ext only. Shared frameworks retained; new config/log/Lua live under red4ext\plugins\cyberpunkvrport. Old port scripts, DLLs and vrcam_cpu_tweaks.ini are retired into backup.' }
     Write-Host 'First-launch graphics overwrite is disabled; native FG starts OFF; launcher starts visible.'
     if ($DisableDxgiProxy) {
         Write-Host 'EXPLICIT REQUEST: back up and disable bin\x64\dxgi.dll. This may disable Cheeky, ReShade or another loader.' -ForegroundColor Yellow
@@ -329,10 +329,10 @@ try {
 
     $settingsFile = Join-Path $env:LOCALAPPDATA 'CD Projekt Red\Cyberpunk 2077\UserSettings.json'
     if ($Action -eq 'Menu') {
-        Write-Host "CyberpunkVR Port switcher -- official upstream 0.2.0 or PSVR2 0.1.9 / game-2.5 VRCAM 0.1.8`nGame: $root"
-        Write-Host "1  Preview / download and stage upstream 0.2.0`n2  Install upstream 0.2.0`n3  Preview / stage PSVR2 fork`n4  Install PSVR2 fork`n5  Restore previous port`n6  Installed dependency status`n7  Open required Nexus download pages`n8  Patch / install optional More Occluders for game 2.5`n9  Preview / stage game-2.5 VRCAM 0.1.8 comparison`n10 Install game-2.5 VRCAM 0.1.8 comparison`nQ  Quit"
+        Write-Host "CyberpunkVR Port switcher -- official upstream 0.2.1 or PSVR2 0.1.9 / game-2.5 VRCAM 0.1.8`nGame: $root"
+        Write-Host "1  Install official upstream 0.2.1`n2  Download/check upstream 0.2.1 (no install)`n3  Download/check PSVR2 RC5 (no install)`n4  Install PSVR2 RC5`n5  Restore previous port`n6  Installed dependency status`n7  Open required Nexus download pages`n8  Patch / install optional More Occluders for game 2.5`n9  Download/check game-2.5 VRCAM 0.1.8 comparison`n10 Install game-2.5 VRCAM 0.1.8 comparison`nQ  Quit"
         $choice = Read-Host 'Choose'
-        $Action = switch ($choice) { '1' { 'Prepare' }; '2' { 'Install' }; '3' { $Edition='Fork'; 'Prepare' }; '4' { $Edition='Fork'; 'Install' }; '5' { 'Restore' }; '6' { 'Status' }; '7' { 'Nexus' }; '8' { 'PatchOccluders' }; '9' { $Edition='Vrcam'; 'Prepare' }; '10' { $Edition='Vrcam'; 'Install' }; default { return } }
+        $Action = switch ($choice) { '1' { 'Install' }; '2' { 'Prepare' }; '3' { $Edition='Fork'; 'Prepare' }; '4' { $Edition='Fork'; 'Install' }; '5' { 'Restore' }; '6' { 'Status' }; '7' { 'Nexus' }; '8' { 'PatchOccluders' }; '9' { $Edition='Vrcam'; 'Prepare' }; '10' { $Edition='Vrcam'; 'Install' }; default { return } }
         if ($Edition -eq 'Fork' -and -not $ForkArchive) { $ForkArchive = (Read-Host 'Optional path to local fork ZIP (Enter downloads pinned release)').Trim('"') }
     }
     if ($Edition -in @('Upstream','Fork','Vrcam')) {

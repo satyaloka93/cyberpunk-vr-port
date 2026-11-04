@@ -190,7 +190,7 @@ try {
             'red4ext\plugins\TweakXL\TweakXL.dll','red4ext\plugins\Codeware\Codeware.dll')) {
             Copy-VerifiedFile (Join-Path $DependencyGameRoot $rel) (Join-Path $fixture $rel)
         }
-        if ($Integration) { Copy-VerifiedFile $ReleaseZip (Join-Path $cache 'CyberpunkVRPort-0.2.0.zip') }
+        if ($Integration) { Copy-VerifiedFile $ReleaseZip (Join-Path $cache 'CyberpunkVRPort-0.2.1.zip') }
         $originalLocal = $env:LOCALAPPDATA
         try {
             $env:LOCALAPPDATA = Join-Path $base 'localappdata'
@@ -253,7 +253,7 @@ try {
             if ($ForkIntegration) {
                 Invoke-FixtureCli -Action Install -Edition Fork -ForkArchive $ReleaseZip -ForkSha256 ('0' * 64) -GameRoot $fixture -CacheRoot $cache -BackupRoot $backups -Yes
             } else {
-                Put (Join-Path $cache 'CyberpunkVRPort-0.2.0.zip') 'corrupted download'
+                Put (Join-Path $cache 'CyberpunkVRPort-0.2.1.zip') 'corrupted download'
                 Invoke-FixtureCli -Action Install -GameRoot $fixture -CacheRoot $cache -BackupRoot $backups -Yes
             }
             Assert ($LASTEXITCODE -ne 0 -and (Get-Content -LiteralPath (Join-Path $fixture $port) -Raw) -eq 'original') 'Bad release checksum blocks changes and preserves active port'

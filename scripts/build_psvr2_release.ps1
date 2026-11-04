@@ -2,9 +2,9 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^\d+\.\d+\.\d+-[A-Za-z0-9][A-Za-z0-9.-]*$')]
-    [string]$Version = '0.1.9-psvr2.1-rc4',
+    [string]$Version = '0.1.9-psvr2.1-rc5',
     [string]$BuildDir = 'build-local',
-    [string]$ExpectedDllSha256 = '33d1aab0fa7e89cfda387b27027b5f411b5731af7f69d56063b52eb2f4239f83',
+    [string]$ExpectedDllSha256 = '676d9b6b71e7ec40f3918f6b99ef266abdff83a4e2bf9e5fd92c4b3da0a4ef50',
     [string]$ExpectedBackendSha256 = '7af8e14757e7921a301dfd618c1a3fc5a2ca427a444807e1180cb515a66e4cd4'
 )
 $ErrorActionPreference = 'Stop'
@@ -77,11 +77,11 @@ if (Test-Path $oldSelectionPath) {
     if ($oldSelection.PSObject.Properties.Name -contains 'vrcam') { $selection.vrcam = $oldSelection.vrcam }
 }
 $selection | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $repo 'wabbajack\release-selection.json') -Encoding UTF8
-foreach ($rel in @('Install-Upstream-020.bat','Install-PSVR2-Fork.bat','Install-VRCAM-CP25.bat','Switch-CyberpunkVRPort.bat',
+foreach ($rel in @('Install-Upstream-021.bat','Install-PSVR2-Fork.bat','Install-VRCAM-CP25.bat','Switch-CyberpunkVRPort.bat',
     'scripts\Switch-CyberpunkVRPort.ps1','scripts\CyberpunkVR-Switcher.Core.ps1','scripts\MoreOccluders.Compatibility.ps1',
     'scripts\Test-CyberpunkVRSwitcher.ps1','scripts\README-SWITCHER.txt',
-    'docs\PSVR2-019-RC.md','docs\OFXR-V557-INTEGRATION.md','docs\framegen-live-handoff.md','docs\UPSTREAM-020-INSTALL.md','docs\VRCAM-CP25-COMPARISON.md',
-    'wabbajack\switcher-dependencies-019.json','wabbajack\switcher-dependencies-020.json','wabbajack\release-selection.json')) {
+    'docs\PSVR2-019-RC.md','docs\OFXR-V557-INTEGRATION.md','docs\framegen-live-handoff.md','docs\UPSTREAM-021-INSTALL.md','docs\VRCAM-CP25-COMPARISON.md',
+    'wabbajack\switcher-dependencies-019.json','wabbajack\switcher-dependencies-021.json','wabbajack\release-selection.json')) {
     Copy-VerifiedFile (Get-SafePath $repo $rel) (Get-SafePath $switcher $rel)
 }
 Copy-VerifiedFile (Join-Path $repo 'scripts\README-SWITCHER.txt') (Join-Path $switcher 'START-HERE.txt')
