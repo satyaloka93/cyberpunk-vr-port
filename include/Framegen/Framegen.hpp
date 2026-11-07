@@ -12,6 +12,7 @@ enum class Backend:int { FidelityFX=0,Nvidia=1,DlssG=2 };
 const char* BackendName(Backend);
 struct Settings {
     bool enabled=false,overlay=false,autoPace=true;
+    bool flightRecorder=false;
     // NVIDIA's optical flow (OFA) at half resolution under FidelityFX interpolation; a GPU without OFA
     // falls back to FidelityFX's own flow (Generator.cpp).
     Backend backend=Backend::Nvidia;

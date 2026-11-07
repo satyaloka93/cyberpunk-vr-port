@@ -1,4 +1,10 @@
+#include "Framegen/SourceTimeline.hpp"
+#include "Framegen/CaptureTiming.hpp"
+#include "Framegen/FlightRecorder.hpp"
 #include "Framegen/Generator.hpp"
+#include "Framegen/SynthesisQueue.hpp"
+#include "Framegen/GpuCorrelation.hpp"
+#include "Framegen/RefreshCadence.hpp"
 #include "Framegen/DlssFrameGen.hpp"
 #include "Framegen/FrameCapture.hpp"
 #include <FidelityFX/host/backends/dx12/ffx_dx12.h>
@@ -271,23 +277,33 @@ struct Eye {
 }
 struct Generator::Impl {
     ComPtr<ID3D12Device> device;ComPtr<ID3D12CommandQueue> queue;
+    SynthesisQueue routing;bool isolatedRequested{},untrackedGpuWork{};uint64_t signaledValue{};
     ComPtr<ID3D12Fence> fence,consumerFence;uint64_t value{},consumerValue{},frequency{};
     ComPtr<ID3D12RootSignature> root;ComPtr<ID3D12PipelineState> pipelines[4];
     Backend mode{};
     ComPtr<ID3D12QueryHeap> queries;ComPtr<ID3D12Resource> readback;
-    uint64_t lastTimingFence{};bool timingUnavailable{};
+    uint64_t lastTimingFence{};bool timingUnavailable{};unsigned probeSerial{};
     struct Work {
         ComPtr<ID3D12CommandAllocator> allocator,finishAllocator;
         ComPtr<ID3D12GraphicsCommandList> list,finish;
         ComPtr<ID3D12DescriptorHeap> heap;
         uint64_t fence{};uint32_t descriptors{};bool timing{};
         std::shared_ptr<const Inputs> inputs[2];
+        std::shared_ptr<void> colorLease; // retain capture pins through partial/failed dispatch
+        GpuCorrelation correlation;
+        std::shared_ptr<const CaptureTiming> captureTiming;
+        ComPtr<ID3D12Fence> probeCapture;uint64_t probeCaptureValue{};
+        bool probe{},inputsKnown{},inputsPending{};
     };
     std::array<Work,3> work;
     std::unique_ptr<Eye> eyes[2];
     Settings settings;unsigned cursor{};bool failed{};
+#ifdef CVR_FRAMEGEN_TEST_RECEIPTS
+    uint64_t testPackedValue{};
+#endif
     struct Signature {uint64_t width{};uint32_t height{},renderWidth{},renderHeight{},motionWidth{},motionHeight{};bool inverted{},infinite{},jittered{};} signatures[2];
     bool Idle() const {
+        if(untrackedGpuWork)return false;
         if(fence && fence->GetCompletedValue()<value)return false;
         if(consumerFence && consumerFence->GetCompletedValue()<consumerValue)return false;
         for(const auto& eye:eyes)if(eye && !eye->nv.Idle())return false;
@@ -295,7 +311,15 @@ struct Generator::Impl {
     }
     bool Create(ID3D12Device* d,ID3D12CommandQueue* q,ID3D12Resource* colors[2],
                 const std::shared_ptr<const Inputs> (&inputs)[2],const Settings& s) {
-        device=d;queue=q;settings=s;mode=s.backend;
+        device=d;settings=s;mode=s.backend;
+        // Scope this candidate to SteamVR OFA/FFX. Preserve the native DLSS-G
+        // SDK queue contract and all VDXR behavior.
+        isolatedRequested=refresh::Targeted() && mode!=Backend::DlssG;
+        if(!routing.Initialize(d,q,isolatedRequested))return false;
+        queue=routing.Queue();
+        if(isolatedRequested && !routing.Private())flight::Count(flight::Event::SynthesisQueueFallback);
+        Log("[framegen-queue] producer=%p synthesis=%p private=%d priority=%d create=0x%08X backend=%d\n",
+            q,queue.Get(),routing.Private(),queue->GetDesc().Priority,unsigned(routing.CreationResult()),int(mode));
         for(unsigned i=0;i<2;++i) {
             const auto desc=colors[i]->GetDesc();const auto& input=*inputs[i];
             signatures[i]={desc.Width,desc.Height,input.width,input.height,input.motionWidth,input.motionHeight,input.camera.inverted,input.camera.infinite,input.camera.jittered};
@@ -333,7 +357,7 @@ struct Generator::Impl {
         }
         for(unsigned eye=0;eye<2;++eye) {
             eyes[eye]=std::make_unique<Eye>();
-            if(!eyes[eye]->Create(d,q,fence.Get(),colors[eye],*inputs[eye],s))return false;
+            if(!eyes[eye]->Create(d,queue.Get(),fence.Get(),colors[eye],*inputs[eye],s))return false;
         }
         return mode!=Backend::DlssG || CreateDlssFeatures(inputs);
     }
@@ -371,14 +395,14 @@ struct Generator::Impl {
         return evaluated;
     }
     void RetireTiming() {
-        if(MetricsEnabled())return;
+        if(MetricsEnabled()||flight::Enabled())return;
         timingUnavailable=false;
         if(!queries || (lastTimingFence && fence->GetCompletedValue()<lastTimingFence))return;
         for(auto& slot:work)slot.timing=false;
         queries.Reset();readback.Reset();lastTimingFence=frequency=0;
     }
     bool TimingReady() {
-        if(!MetricsEnabled()) {RetireTiming();return false;}
+        if(!MetricsEnabled()&&!flight::Enabled()) {RetireTiming();return false;}
         if(queries)return true;if(timingUnavailable)return false;
         D3D12_QUERY_HEAP_DESC query{};query.Type=D3D12_QUERY_HEAP_TYPE_TIMESTAMP;query.Count=12;
         D3D12_RESOURCE_DESC read{};read.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;read.Width=96;read.Height=1;read.DepthOrArraySize=1;
@@ -429,8 +453,36 @@ struct Generator::Impl {
     }
     bool Submit(ID3D12GraphicsCommandList* list,Work& w) {
         if(FAILED(list->Close()))return false;
+        if(w.probe && list==w.list.Get()) {
+            // Sample one pair in sixteen, recorder-only, on private synthesis.
+            // Calibration is adjacent to enqueue, not a persistent mapping
+            // that can drift across idle periods. No extra GPU lists/queries.
+            w.probe=false;flight::Count(flight::Event::GenerationProbe);
+            const auto pending=[](ID3D12Fence* f,uint64_t v){return f && v && f->GetCompletedValue()<v;};
+            const bool capturePending=pending(w.probeCapture.Get(),w.probeCaptureValue);
+            bool guidesPending=false;w.inputsKnown=w.probeCapture && w.probeCaptureValue;
+            for(const auto& in:w.inputs) {
+                w.inputsKnown=w.inputsKnown && in && in->readyFence && in->fenceValue;
+                if(in)guidesPending|=pending(in->readyFence.Get(),in->fenceValue);
+            }
+            const bool consumerPending=pending(consumerFence.Get(),consumerValue);
+            w.inputsPending=capturePending || guidesPending || consumerPending;
+            if(capturePending)flight::Count(flight::Event::GenerationCapturePending);
+            if(guidesPending)flight::Count(flight::Event::GenerationGuidesPending);
+            if(consumerPending)flight::Count(flight::Event::GenerationConsumerPending);
+            w.probeCapture.Reset();
+            LARGE_INTEGER hz{},before{},after{};QueryPerformanceFrequency(&hz);QueryPerformanceCounter(&before);
+            const auto calibrated=queue->GetClockCalibration(&w.correlation.gpu,&w.correlation.cpu);
+            QueryPerformanceCounter(&after);
+            if(hz.QuadPart>0)flight::Time(flight::Timing::GenerationCalibrationCpu,double(after.QuadPart-before.QuadPart)*1000.0/double(hz.QuadPart));
+            if(SUCCEEDED(calibrated) && hz.QuadPart>0) {
+                w.correlation.cpuHz=uint64_t(hz.QuadPart);w.correlation.gpuHz=frequency;
+                LARGE_INTEGER submitted{};QueryPerformanceCounter(&submitted);w.correlation.submitted=uint64_t(submitted.QuadPart);
+            } else {w.correlation={};flight::Count(flight::Event::GenerationCalibrationFailed);}
+        }
         ID3D12CommandList* lists[]={list};queue->ExecuteCommandLists(1,lists);w.fence=++value;
-        return SUCCEEDED(queue->Signal(fence.Get(),value));
+        if(FAILED(queue->Signal(fence.Get(),value))){untrackedGpuWork=true;failed=true;return false;}
+        signaledValue=value;return true;
     }
     void PrepareInputs(Work& w,ID3D12GraphicsCommandList* list,Eye& eye,const Inputs& inputs) {
         if(!eye.prepareInputs)return;
@@ -460,12 +512,26 @@ struct Generator::Impl {
     }
     void Poll() {
         for(auto& old:work)if(old.fence && fence->GetCompletedValue()>=old.fence) {
-            old.inputs[0].reset();old.inputs[1].reset();
+            old.inputs[0].reset();old.inputs[1].reset();old.colorLease.reset();
         }
     }
-    bool Generate(ID3D12Resource* colors[2],const std::shared_ptr<const Inputs> (&inputs)[2],double frameMs,bool reset,uint64_t frameId) {
+    bool Generate(ID3D12Resource* colors[2],const std::shared_ptr<const Inputs> (&inputs)[2],double frameMs,bool reset,uint64_t frameId,const EyePair (&cameras)[2],ID3D12Fence* colorReady,uint64_t colorReadyValue,std::shared_ptr<void> colorLease,std::shared_ptr<const CaptureTiming> captureTiming) {
         Poll();
-        auto& w=work[cursor];if(w.fence && fence->GetCompletedValue()<w.fence) {OnSkip();return false;}
+        auto& w=work[cursor];if(w.fence && fence->GetCompletedValue()<w.fence) {flight::Count(flight::Event::GeneratorBusy);OnSkip();return false;}
+        // NVIDIA packing/OFA only touches captured color and internal packed/flow
+        // textures. Previous generation is ordered on this same synthesis queue;
+        // display reads only the final output. Defer its receipt until the finish
+        // list, retaining capture/guide waits and all input leases here.
+        const bool overlapConsumer=routing.Private() && mode==Backend::Nvidia && eyes[0]->opticalFlow;
+        if(!routing.Begin(colorReady,colorReadyValue,
+                          overlapConsumer?nullptr:consumerFence.Get(),overlapConsumer?0:consumerValue)) {
+            failed=true;flight::Count(flight::Event::SynthesisSyncFailed);return false;
+        }
+        for(const auto& in:inputs)if(in->readyFence && in->fenceValue && !routing.WaitInput(in->readyFence.Get(),in->fenceValue)) {
+            failed=true;flight::Count(flight::Event::SynthesisSyncFailed);return false;
+        }
+        flight::Count(routing.Private()?flight::Event::SynthesisPrivate:flight::Event::SynthesisShared);
+        if(routing.Private() && (!colorReady || !colorReadyValue))flight::Count(flight::Event::SynthesisInputFallback);
         const bool timed=TimingReady();
         if(timed && w.timing) {
             // FOUR STAMPS A PAIR: the first list (colour packing, optical flow inputs) begins and ends, the finishing
@@ -478,13 +544,41 @@ struct Generator::Impl {
                 if(times[1]>=times[0] && times[3]>=times[2] && times[2]>=times[1])
                     OnGeneration(double((times[1]-times[0])+(times[3]-times[2]))*1000.0/double(frequency),
                                  double(times[3]-times[0])*1000.0/double(frequency));
+                if(w.correlation.submitted) {
+                    if(const auto r=w.correlation.Resolve(times[0],times[3])) {
+                        flight::Time(flight::Timing::GenerationQueue,r->queueMs);
+                        flight::Time(flight::Timing::GenerationTotal,r->totalMs);
+                        if(w.inputsPending)flight::Time(flight::Timing::GenerationQueueInputsPending,r->queueMs);
+                        else if(w.inputsKnown)flight::Time(flight::Timing::GenerationQueueInputsReady,r->queueMs);
+                        if(w.captureTiming) {
+                            const auto cap=w.captureTiming->Read();
+                            const auto enqueue=double(w.correlation.submitted)*1000.0/double(w.correlation.cpuHz);
+                            const auto split=cap?AttributeCaptureStart(cap->endQpcMs,enqueue,enqueue+r->queueMs):std::nullopt;
+                            if(cap && split) {
+                                source_timing::Report(w.captureTiming->source,*cap,enqueue,enqueue+r->queueMs);
+                                flight::Count(flight::Event::CaptureProbePaired);
+                                flight::Time(flight::Timing::CaptureQueue,cap->queueMs);
+                                flight::Time(flight::Timing::CaptureGpu,cap->spanMs);
+                                flight::Time(flight::Timing::CaptureTotal,cap->totalMs);
+                                flight::Time(flight::Timing::GenerationBeforeCaptureReady,split->beforeReadyMs);
+                                flight::Time(flight::Timing::GenerationAfterCaptureReady,split->afterReadyMs);
+                            } else flight::Count(flight::Event::CaptureProbeInvalid);
+                        }
+                    } else flight::Count(flight::Event::GenerationCalibrationInvalid);
+                }
                 D3D12_RANGE none{};readback->Unmap(0,&none);
             }
         }
-        w.timing=false;
+        w.timing=false;w.correlation={};w.probeCapture.Reset();
+        w.probe=timed && flight::Enabled() && routing.Private() && ((probeSerial++%16==0) || captureTiming);
+        w.captureTiming=w.probe?std::move(captureTiming):nullptr;
+        if(w.probe){w.probeCapture=colorReady;w.probeCaptureValue=colorReadyValue;}
         if(FAILED(w.allocator->Reset()) || FAILED(w.list->Reset(w.allocator.Get(),nullptr)) ||
            FAILED(w.finishAllocator->Reset()) || FAILED(w.finish->Reset(w.finishAllocator.Get(),nullptr)))return false;
-        w.descriptors=0;w.inputs[0]=inputs[0];w.inputs[1]=inputs[1];
+        w.descriptors=0;w.inputs[0]=inputs[0];w.inputs[1]=inputs[1];w.colorLease=routing.Private()?std::move(colorLease):std::shared_ptr<void>{};
+        // Any diagnostic capture is ordered behind the same input waits, and
+        // every subsequent return path signals/retains this work's leases.
+        CaptureFrame(device.Get(),queue.Get(),colors,inputs,cameras);
         auto* list=w.list.Get();if(timed)list->EndQuery(queries.Get(),D3D12_QUERY_TYPE_TIMESTAMP,cursor*4);
         if(mode==Backend::DlssG) {
             w.finish->Close();
@@ -524,9 +618,23 @@ struct Generator::Impl {
             if(timed)lastTimingFence=value;
             if(!packedSubmitted) {failed=true;w.finish->Close();return false;}
             const auto packedValue=value;
+#ifdef CVR_FRAMEGEN_TEST_RECEIPTS
+            testPackedValue=packedValue;
+#endif
             if(nvidia && !reset)for(auto& eye:eyes) {
                 if(!eye->nv.Run(fence.Get(),packedValue,eye->current) || FAILED(queue->Wait(eye->nv.fence.Get(),eye->nv.value))) {
                     failed=true;Status("NVIDIA optical flow failed");w.finish->Close();return false;
+                }
+            }
+            if(overlapConsumer) {
+                if(consumerFence && consumerValue) {
+                    flight::Count(flight::Event::SynthesisConsumerDeferred);
+                    if(flight::Enabled() && consumerFence->GetCompletedValue()<consumerValue)
+                        flight::Count(flight::Event::SynthesisConsumerLatePending);
+                }
+                if(!routing.WaitConsumer(consumerFence.Get(),consumerValue)) {
+                    failed=true;flight::Count(flight::Event::SynthesisSyncFailed);
+                    w.finish->Close();return false;
                 }
             }
             list=w.finish.Get();
@@ -589,24 +697,56 @@ Generator::~Generator() {
     // allocation if a device shutdown bypassed that drain.
     if(impl && !impl->Idle()) {Log("[framegen] retaining in-flight resources through shutdown\n");impl.release();}
 }
+void Generator::Shutdown() {
+    if(!impl || !impl->routing.Private())return;
+    // Capture leases call back into the manager. Retire them while that owner
+    // and its lease table still exist, never during member destruction later.
+    const auto deadline=GetTickCount64()+2000;
+    while(!impl->Idle() && !impl->untrackedGpuWork && GetTickCount64()<deadline)Sleep(1);
+    if(!Reset()) {
+        Log("[framegen-queue] bounded shutdown: retaining unfinished synthesis resources and capture pins\n");
+        impl.release(); // GPU/device failure: no unsafe free and no late owner callback
+    }
+}
 bool Generator::Idle() const {return !impl || impl->Idle();}
 void Generator::Poll() {if(impl)impl->Poll();}
 bool Generator::Reset() {if(!Idle())return false;impl.reset();return true;}
 uint64_t Generator::Bytes() const {uint64_t result=0;if(impl)for(const auto& eye:impl->eyes)if(eye)result+=eye->Bytes();return result;}
 ID3D12Resource* Generator::Output(unsigned eye) const {return impl && eye<2 && impl->eyes[eye] ? impl->eyes[eye]->output.resource.Get() : nullptr;}
+#ifdef CVR_FRAMEGEN_TEST_RECEIPTS
+bool Generator::TestPackedReady() const {return impl && impl->testPackedValue && impl->fence->GetCompletedValue()>=impl->testPackedValue;}
+bool Generator::TestOutputReady() const {return impl && impl->signaledValue && impl->fence->GetCompletedValue()>=impl->signaledValue;}
+#endif
+bool Generator::CanPrepare(ID3D12Device* device,ID3D12CommandQueue* queue,ID3D12Resource* const colors[2],
+    const std::shared_ptr<const Inputs> (&inputs)[2],const Settings& settings) const {
+    if(!impl || impl->failed || !impl->routing.Private() || impl->mode!=Backend::Nvidia ||
+       impl->device.Get()!=device || impl->routing.Producer()!=queue || !colors[0] || !colors[1] || !inputs[0] || !inputs[1])return false;
+    ID3D12Resource* pair[]{colors[0],colors[1]};
+    if(!impl->Compatible(pair,inputs,settings))return false; // never create/reconfigure SDK during a submit hold
+    const auto& next=impl->work[impl->cursor];
+    return !next.fence || (impl->fence->GetCompletedValue()!=UINT64_MAX && impl->fence->GetCompletedValue()>=next.fence);
+}
+bool Generator::OutputReady() const {
+    if(!impl || !impl->fence || !impl->signaledValue)return false;
+    const auto done=impl->fence->GetCompletedValue();return done!=UINT64_MAX && done>=impl->signaledValue;
+}
+bool Generator::JoinOutput(ID3D12CommandQueue* consumer){
+    if(!impl || !impl->signaledValue)return false;
+    if(impl->routing.JoinOutput(impl->fence.Get(),impl->signaledValue,consumer))return true;
+    impl->failed=true;impl->untrackedGpuWork=true;flight::Count(flight::Event::SynthesisSyncFailed);return false;
+}
 void Generator::ConsumerFence(ID3D12Fence* fence,uint64_t value) {if(impl) {impl->consumerFence=fence;impl->consumerValue=value;}}
 bool Generator::Generate(ID3D12Device* device,ID3D12CommandQueue* queue,ID3D12Resource* colors[2],
     const std::shared_ptr<const Inputs> (&inputs)[2],const EyePair (&cameras)[2],const Settings& settings,double frameMs,bool reset,
-    uint64_t frameId,bool* interpolated) {
+    uint64_t frameId,bool* interpolated,ID3D12Fence* colorReady,uint64_t colorReadyValue,std::shared_ptr<void> colorLease,ID3D12CommandQueue* consumer,std::shared_ptr<const CaptureTiming> captureTiming,bool deferOutputJoin) {
     if(interpolated)*interpolated=false;
     if(!device || !queue || !colors[0] || !colors[1] || !inputs[0] || !inputs[1])return false;
-    CaptureFrame(device,queue,colors,inputs,cameras);
     Settings effective=settings;
     // DLSS-G needs an RTX 40/50 and the SDK in this build; FidelityFX runs anywhere.
     if(effective.backend==Backend::DlssG && !dlssg::Available(device))effective.backend=Backend::FidelityFX;
     if(effective.backend==Backend::Nvidia && (!effective.flowScale || !NvidiaOpticalFlow(device)))effective.backend=Backend::FidelityFX;
     PublishActiveBackend(effective.backend);
-    if(impl && (impl->device.Get()!=device || impl->queue.Get()!=queue || !impl->Compatible(colors,inputs,effective))) {if(!Reset())return false;reset=true;}
+    if(impl && (impl->device.Get()!=device || impl->routing.Producer()!=queue || impl->isolatedRequested!=(refresh::Targeted() && effective.backend!=Backend::DlssG) || !impl->Compatible(colors,inputs,effective))) {if(!Reset())return false;reset=true;}
     if(impl)impl->RetireTiming();
     if(impl && impl->failed) {Status("Backend failed; toggle generation off/on or change the backend");return false;}
     if(!impl) {
@@ -614,7 +754,13 @@ bool Generator::Generate(ID3D12Device* device,ID3D12CommandQueue* queue,ID3D12Re
         if(!impl->Create(device,queue,colors,inputs,effective)) {impl->failed=true;Status("Framegen backend initialization failed");return false;}
         reset=true;
     }
-    const auto result=impl->Generate(colors,inputs,frameMs,reset,frameId);
+    auto result=impl->Generate(colors,inputs,frameMs,reset,frameId,cameras,colorReady,colorReadyValue,std::move(colorLease),std::move(captureTiming));
+    // Join all successfully signaled work, including priming and partial
+    // dispatch failures, before the caller copies images on its display queue.
+    // Never insert a wait on a value whose Signal failed.
+    if(!deferOutputJoin && !impl->routing.JoinOutput(impl->fence.Get(),impl->signaledValue,consumer)) {
+        impl->failed=true;impl->untrackedGpuWork=true;flight::Count(flight::Event::SynthesisSyncFailed);result=false;
+    }
     if(result && interpolated)*interpolated=!reset;
     if(MetricsEnabled())SetVram(Bytes()+InputVram());return result;
 }

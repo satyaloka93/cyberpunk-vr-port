@@ -1,3 +1,4 @@
+#include "Framegen/FlightRecorder.hpp"
 // OverlayPanels -- every control the headset overlay draws, and the small widgets they are made of.
 //
 // The widgets exist because ImGui has no clamped-int slider that reports change the way this file needs:
@@ -984,6 +985,14 @@ bool DrawLiveControls(LiveControlsUiState& state,int section,bool* foveatedEditi
 
         if (section>=0 ? section==1 : UI::BeginTabItem("FRAMEGEN")) {
             auto& fg=state.framegen;
+            changed|=UI::Checkbox("Flight recorder",&fg.flightRecorder);
+            if(UI::IsItemHovered())UI::SetTooltip("Persist pacing, missed inputs, GPU generation and XR submission counters, plus SteamVR compositor estimates. Works with FPS overlay off. No image capture. Toggle off to stop. Files capped at 16 MiB.");
+            {char status[160]{};cvr::framegen::flight::Status(status,sizeof(status));UI::TextWrapped("Recorder: %s",status);}
+            if(fg.flightRecorder){
+                UI::TextWrapped("Logs: cyberpunkvrport/log/framegen-flight-*.jsonl");
+                if(UI::Button("Mark performance problem"))cvr::framegen::flight::Count(cvr::framegen::flight::Event::Marker);
+                UI::TextWrapped("Submitted frames are not displayed FPS. SteamVR delivery is an estimate; unavailable on VDXR.");
+            }
             changed|=UI::Checkbox("Enable frame generation",&fg.enabled);
             if(UI::IsItemHovered())UI::SetTooltip("While frame generation is enabled, hand smoothing runs at its rate times xr_hand_lerp_framegen_scale (1.25; 0 turns it off).");
             int backend=int(fg.backend);

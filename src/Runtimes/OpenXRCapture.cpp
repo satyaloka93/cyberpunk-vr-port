@@ -1,3 +1,7 @@
+#include "Framegen/SourceTimeline.hpp"
+#include "Framegen/ProducerGate.hpp"
+#include "Framegen/FlightRecorder.hpp"
+#include "Framegen/RefreshCadence.hpp"
 #include "Utils/DebugGate.hpp"
 #include "Render/CommandResources.hpp"
 #include "Render/GpuStageProfile.hpp"
@@ -956,6 +960,7 @@ bool OpenXRManager::CaptureMonoPresentedFrame(ID3D12Resource* backBuffer, const 
         }
     }
     if (!snapshot) {
+        cvr::framegen::flight::Count(cvr::framegen::flight::Event::CaptureNoSlot);
         CVR_DIAGNOSTIC(CyberpunkVR_DebugCapSkipNoSlot.fetch_add(1, std::memory_order_relaxed));
         return false;
     }
@@ -971,6 +976,7 @@ bool OpenXRManager::CaptureMonoPresentedFrame(ID3D12Resource* backBuffer, const 
     const uint32_t nextAllocator = (m_captureAllocatorIndex + 1) % 3;
     const UINT64 allocatorBusy = m_captureAllocatorFence[nextAllocator];
     if (allocatorBusy && m_captureFence->GetCompletedValue() < allocatorBusy) {
+        const double flightWaitStart=cvr::framegen::flight::Enabled()?cvr::framegen::NowMs():0;
         // BOUNDED. This runs on the game's Present thread, so an INFINITE wait turns any
         // GPU hiccup into a hung game. Skipping one capture costs nothing now: the submit
         // side re-sends the frame it already holds, with the pose that belongs to it.
@@ -1004,7 +1010,9 @@ bool OpenXRManager::CaptureMonoPresentedFrame(ID3D12Resource* backBuffer, const 
                    prevMax, fenceUs, std::memory_order_relaxed)) {
         }
         }
+        if(flightWaitStart)cvr::framegen::flight::Time(cvr::framegen::flight::Timing::CaptureWait,cvr::framegen::NowMs()-flightWaitStart);
         if (m_captureFence->GetCompletedValue() < allocatorBusy) {
+            cvr::framegen::flight::Count(cvr::framegen::flight::Event::CaptureTimeout);
             CVR_DIAGNOSTIC(CyberpunkVR_DebugCapSkipFence.fetch_add(1, std::memory_order_relaxed));
             snapshot->Release();
             return false;                                   // the ring stays where it is
@@ -1021,6 +1029,17 @@ bool OpenXRManager::CaptureMonoPresentedFrame(ID3D12Resource* backBuffer, const 
         return false;
     }
 
+    std::shared_ptr<cvr::framegen::CaptureTiming> captureTiming;
+    const auto timingImage=cvr::framegen::flight::Enabled()?cvr::camera::ReadImagePose(backBuffer):cvr::camera::ImagePoseIdentity{};
+    const bool sourceSample=timingImage && timingImage.pose.hasRenderFrameId &&
+        cvr::framegen::source_timing::Wanted(timingImage.pose.renderFrameId);
+    if(cvr::framegen::flight::Enabled() && cvr::framegen::refresh::Targeted() &&
+       cvr::framegen::GetSettings().enabled && (serial%16==0 || sourceSample)) {
+        captureTiming=m_framegenCaptureTimingPool.Next(m_d3dDevice);
+        if(captureTiming && cvr::gpu::KeepCommandResources(m_captureCmdList,
+            {captureTiming->heap.Get(),captureTiming->readback.Get()}))captureTiming->Start(m_captureCmdList);
+        else {captureTiming.reset();cvr::framegen::flight::Count(cvr::framegen::flight::Event::CaptureProbeSkipped);}
+    }
     auto gpuProfile = cvr::gpu::profile::Begin(m_captureCmdList);
     // The pose an eye's image was rendered at: its label's head with this frame's eye offset (Camera/ImagePoseMath.hpp)
     // when the label belongs to this queue and tracking origin, else the pose located for it. The image is submitted
@@ -1685,11 +1704,13 @@ bool OpenXRManager::CaptureMonoPresentedFrame(ID3D12Resource* backBuffer, const 
                 m_sharpenPass->RecordSharpen(m_captureCmdList, color, color, GetVrSharpness(), casAmount);
         }
     }
+    if(captureTiming)captureTiming->End(m_captureCmdList);
     m_captureCmdList->Close();
     ID3D12CommandList* cmdLists[] = {m_captureCmdList};
     XrPosef capturedPoses[2]={poses[0],poses[1]};
     uint64_t capturedPoseIds[2]{},capturedImageGenerations[2]{};
     std::shared_ptr<const cvr::framegen::Inputs> capturedInputs[2];
+    uint64_t framegenColorReadyValue=0;
     {
         // Select labels at the actual queue submission, not when a producer
         // merely recorded commands. The same-queue copy now sits between the
@@ -1730,11 +1751,23 @@ bool OpenXRManager::CaptureMonoPresentedFrame(ID3D12Resource* backBuffer, const 
                 CVR_DIAGNOSTIC(CyberpunkVR_PoseIdImageGeneration[eye].store(0,std::memory_order_relaxed));
             }
         }
+        if(captureTiming){
+            if(capturedInputs[0] && capturedInputs[1] && capturedInputs[0]->frameId==capturedInputs[1]->frameId)
+                captureTiming->source=cvr::framegen::source_timing::Acquire(capturedInputs[0]->frameId,
+                    capturedPoseIds,capturedInputs[0]->origin,m_d3dQueue);
+            captureTiming->Enqueue(m_d3dQueue);
+        }
         m_d3dQueue->ExecuteCommandLists(1,cmdLists);
         ++m_captureFenceValue;
         m_captureAllocatorFence[m_captureAllocatorIndex] = m_captureFenceValue;
-        if (SUCCEEDED(m_d3dQueue->Signal(m_captureFence,m_captureFenceValue)))
+        if (SUCCEEDED(m_d3dQueue->Signal(m_captureFence,m_captureFenceValue))) {
+            framegenColorReadyValue=m_captureFenceValue;
+            if(cvr::framegen::refresh::Targeted() && capturedInputs[0] && capturedInputs[1])
+                cvr::framegen::PublishProducerCapture(m_captureFence,m_captureFenceValue);
+            if(captureTiming){captureTiming->Submitted(m_captureFence,m_captureFenceValue);
+                cvr::framegen::flight::Count(cvr::framegen::flight::Event::CaptureProbeQueued);}
             cvr::gpu::profile::Submitted(gpuProfile, m_d3dQueue, m_captureFence, m_captureFenceValue);
+        }
     }
 
     {
@@ -1745,6 +1778,8 @@ bool OpenXRManager::CaptureMonoPresentedFrame(ID3D12Resource* backBuffer, const 
         m_monoCapturedFrame.texture = snapshot;
         if (m_monoCapturedFrame.texture == snapshot) {
             m_monoCapturedFrame.serial = serial;
+            m_monoCapturedFrame.framegenColorReadyValue=framegenColorReadyValue;
+            m_monoCapturedFrame.framegenCaptureTiming=framegenColorReadyValue?captureTiming:nullptr;
             m_monoCapturedFrame.captureMs = XrDiagNowMs();
             // A frame hung with a screen in the dark is dark already, with the screen in it.
             m_monoCapturedFrame.dark = loadingDark && !loadingWindow;
@@ -1786,7 +1821,7 @@ bool OpenXRManager::CaptureMonoPresentedFrame(ID3D12Resource* backBuffer, const 
         SetEvent(m_monoPresentEvent);
     }
 
-    if(cvr::framegen::MetricsEnabled())cvr::framegen::OnRealFrame(serial,cvr::framegen::NowMs());
+    if(cvr::framegen::MetricsEnabled()||cvr::framegen::flight::Enabled())cvr::framegen::OnRealFrame(serial,cvr::framegen::NowMs());
 
     snapshot->Release();
     if (g_verboseLog && (serial % 300) == 1) {
