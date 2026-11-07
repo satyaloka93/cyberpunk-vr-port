@@ -1,0 +1,22 @@
+--- src/hooks.cpp
++++ src/hooks.cpp
+@@ -17,6 +17,7 @@
+ #include "dlss_nr_lifetime.hpp"
+ #include "ngx_runtime_discovery.hpp"
+ #include "diagnostics.hpp"
++#include "stage_timing_export.hpp"
+ #include "gaze_foveation.hpp"
+ #include "openvr_gaze.hpp"
+ #include "libovr_gaze.hpp"
+@@ -1688,6 +1689,11 @@
+     const auto memory_now = GetTickCount64();
+     auto memory_next = next_nr_memory_log.load();
+     if (memory_now >= memory_next && next_nr_memory_log.compare_exchange_strong(memory_next, memory_now + 5000)) {
++        LARGE_INTEGER stage_qpc{}, stage_frequency{};
++        QueryPerformanceCounter(&stage_qpc);
++        QueryPerformanceFrequency(&stage_frequency);
++        export_stage_timings(GetCurrentProcessId(), stage_qpc.QuadPart,
++            stage_frequency.QuadPart, trace_event);
+         const auto nr = dlss_nr_snapshot();
+         const auto vit = nr_vit_reuse_snapshot();
+         trace_event("NR memory textures=%llu features=%llu cachedFeatures=%llu retiringViews=%llu vitBytes=%llu vitCaches=%llu vitRetired=%llu (excludes NVIDIA internal allocations and game resources)",

@@ -260,3 +260,10 @@ tools/flight_recorder/__pycache__/
 /*.patch
 !tools/flight_recorder/*.py
 !tools/flight_recorder_tests/build.ps1
+
+!tools/cheeky_stage_timing/
+!tools/cheeky_stage_timing/*.py
+!tools/cheeky_stage_timing/*.patch
+tools/cheeky_stage_timing/__pycache__/
+tools/cheeky_stage_timing/bin/
+tools/cheeky_stage_timing/obj/

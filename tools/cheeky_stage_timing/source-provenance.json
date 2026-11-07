@@ -1,0 +1,10 @@
+{
+  "baseline_runtime_sha256": "308138cb3b9c89fc4c05cc406585a91392be3c6cc306a719b49b2d70bc7155c7",
+  "diagnostic_runtime_sha256": "b1a8e363c14699ea92d0fab52e83e640e6a23e55b7539e4721b78f1747ba7333",
+  "source_snapshot": "CheekyFoveatedDLSS/build/nr-cleanup-release-20261101 (local source snapshot, not a branch name)",
+  "source_files": {
+    "src/diagnostics.cpp": "0fb2e74ed8bf0e0ab2587151beace606c7be8830341ae6eb94d70b34740a7847",
+    "src/diagnostics.hpp": "bc47382078b757d1ea4dbd1e1ee9a89d0f8c69866a973673a0d9757799a89d84",
+    "src/hooks.cpp": "73468d8140a02edb10b2b1184c6d7ed4b9ffbc4aaa6fb0bebd0603b81183233e"
+  }
+}
