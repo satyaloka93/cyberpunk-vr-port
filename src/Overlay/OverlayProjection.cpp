@@ -154,8 +154,8 @@ bool GetOverlayProjWindow(const ImVec2& displaySize, float* tanHalfX, float* tan
     // AIMING MAGNIFIES THE IMAGE WITHOUT TOUCHING THE FOV, so a projection built from the FOV alone
     // stops matching the picture the moment the player raises the sights.
     //
-    // Measured on the MAIN view context: the fov scalar at +0x90 reads 68.238 both at rest and
-    // while aiming -- ADS does not go through it. It goes through the projection matrix, +0x214,
+    // Measured on the MAIN view context: the fov scalar at camera+0x20 reads 68.238 both at rest and
+    // while aiming -- ADS does not go through it. It goes through the projection matrix, camera+0x1A4 (view+0x284 on 2.5),
     // and the stereo module already recovers the ratio from there:
     //
     //     ads = MAIN projYY * tan(baseFov / 2)

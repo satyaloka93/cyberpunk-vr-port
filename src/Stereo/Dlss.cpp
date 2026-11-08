@@ -38,6 +38,7 @@
 #include "Stereo/ScopeResolution.hpp"
 #include "Framegen/Inputs.hpp"
 #include "Camera/ImagePoseIdentity.hpp"
+#include "Render/ViewCameraLayout.hpp"
 #include "Utils/StereoLog.hpp"
 #include "Stereo/VrcamConfig.hpp"   // vrcam.json access + CName hashing, shared with the launcher
 #include "Render/ColorBlit.hpp"   // HUD debug overlay on the mirror image
@@ -210,32 +211,38 @@ static __int64 __fastcall SlConstantsInner(void* a1, void* a2, void* a3) {
     // the same camera -> motion vectors stay consistent (no shimmer).
     // Force vrcam camera fov + weapon ZOOM = MAIN via the CAMERA ctx (this writer runs
     // many times per frame -> smooth, exactly like the IPD transform above). Capture
-    // MAIN (slot 0), apply to vrcam (slot 1). Same ctx: fov@0x90, zoom@0x9C. Orientation
-    // (@0x80/0xC0) is left to the engine; aspect stays vrcam's own.
+    // MAIN (slot 0), apply to vrcam (slot 1). Use the shared 2.5 descriptor base;
+    // orientation is left to the engine and aspect stays vrcam's own.
     if (CyberpunkVR_ForceVrcamCam && a2) {
         __try {
             uintptr_t ctx = *reinterpret_cast<uintptr_t*>(reinterpret_cast<uint8_t*>(a2) + 0x18);
             if (ctx) {
                 const uint64_t key = *reinterpret_cast<uint64_t*>(ctx + 0x28);
-                float* c = reinterpret_cast<float*>(ctx);
+                // 2.5 moved the camera from view+0x70 to +0xE0. The old absolute
+                // projection read (+0x214) is now inside a different matrix: deriving
+                // ADS from it makes world markers/dots change scale with camera pose.
+                float* c = reinterpret_cast<float*>(ctx + cvr::view_layout::kCamera);
                 if (is_main_view(reinterpret_cast<void*>(ctx))) {
-                    g_main_cam_fov  = c[0x90 / 4];
-                    g_main_cam_zoom = c[0x9C / 4];
-                    g_main_cam_near = c[0xB0 / 4];
-                    g_main_cam_far  = c[0xB4 / 4];
-                    g_main_proj_yy  = c[0x214 / 4];
+                    g_main_cam_fov  = c[0x20 / 4];
+                    g_main_cam_zoom = c[0x2C / 4];
+                    g_main_cam_near = c[0x40 / 4];
+                    g_main_cam_far  = c[0x44 / 4];
+                    g_main_proj_yy  = c[0x1A4 / 4];
                     // Weapon ADS as a plain scale factor. MAIN's fov scalar is provably NOT
                     // touched by ADS (measured: 68.238 both at rest and while aiming), so it
                     // still describes the UNZOOMED frustum -- which makes cot(fovV/2) the
                     // baseline the live vertical scale divides by. No guessed reference.
                     // Measured: at rest 1.47593 * tan(34.119deg) = 1.0000; aiming 2.21332 the
                     // same way = 1.4998.
-                    if (g_main_cam_fov > 0.f) {
+                    if (std::isfinite(g_main_cam_fov) && g_main_cam_fov > 1.f && g_main_cam_fov < 175.f &&
+                        std::isfinite(g_main_proj_yy) && g_main_proj_yy > 0.f) {
                         const float t = tanf(g_main_cam_fov * 0.5f * 0.01745329252f);
                         if (t > 0.f) {
                             g_ads_factor = g_main_proj_yy * t;
                             CyberpunkVR_MainAdsZoomFactor = g_ads_factor;
                         }
+                    } else {
+                        g_ads_factor = CyberpunkVR_MainAdsZoomFactor = 1.0f;
                     }
                     CyberpunkVR_DebugMainCamFov = g_main_cam_fov;
                     CyberpunkVR_DebugMainProjYY = g_main_proj_yy;
@@ -246,10 +253,10 @@ static __int64 __fastcall SlConstantsInner(void* a1, void* a2, void* a3) {
                     // cluster grid bin along MAIN's depth slicing while this view's pixels look
                     // themselves up along their own -- see the note by CyberpunkVR_VrcamCamFields.
                     const uint32_t camf = CyberpunkVR_VrcamCamFields;
-                    if (camf & 1u) c[0x90 / 4] = g_main_cam_fov;    // fov
-                    if (camf & 2u) c[0x9C / 4] = g_main_cam_zoom;   // zoom
-                    if (camf & 4u) c[0xB0 / 4] = g_main_cam_near;   // near
-                    if (camf & 8u) c[0xB4 / 4] = g_main_cam_far;    // far
+                    if (camf & 1u) c[0x20 / 4] = g_main_cam_fov;    // fov
+                    if (camf & 2u) c[0x2C / 4] = g_main_cam_zoom;   // zoom
+                    if (camf & 4u) c[0x40 / 4] = g_main_cam_near;   // near
+                    if (camf & 8u) c[0x44 / 4] = g_main_cam_far;    // far
 
                     // ---- VRCAM vertical FOV: the only input the RTT projection has --------
                     // Established by measurement (engine_re/dumps/F_rtt_camera_fov.md,
