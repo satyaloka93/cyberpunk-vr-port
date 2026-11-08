@@ -1,0 +1,12 @@
+--- a/projects/psvr2_toolkit_dsx_bridge/main.cpp
++++ b/projects/psvr2_toolkit_dsx_bridge/main.cpp
+@@ -697,7 +697,8 @@
+
+   // TOW2 automatic textures carry sub-quarter-second fail-closed deadlines;
+   // poll frequently enough to restore the loaded trigger profile near them.
+-  const SocketHandle server = OpenServer(options.port, options.tow2Mode ? 25u : 250u);
++  // CET shift profiles last about 160 ms; idle UDP must not hide the whole pulse.
++  const SocketHandle server = OpenServer(options.port, options.tow2Mode ? 25u : 8u);
+   if (server == kInvalidSocket) {
+     std::cerr << "Could not bind UDP 127.0.0.1:" << options.port << ". Close DSX or choose another --port.\n";
+     psvr2_toolkit_deinit();
