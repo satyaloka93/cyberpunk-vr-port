@@ -267,3 +267,7 @@ tools/flight_recorder/__pycache__/
 tools/cheeky_stage_timing/__pycache__/
 tools/cheeky_stage_timing/bin/
 tools/cheeky_stage_timing/obj/
+
+# Local comparison snapshots, never source inputs.
+/integration-notes/
+/build-haptics-tests/
