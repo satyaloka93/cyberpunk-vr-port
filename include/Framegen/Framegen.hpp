@@ -13,6 +13,8 @@ const char* BackendName(Backend);
 struct Settings {
     bool enabled=false,overlay=false,autoPace=true;
     bool flightRecorder=false;
+    // Saved preference; latched with the runtime at startup, never changed on a live XR binding.
+    bool steamVrOptimizations=true;
     // NVIDIA's optical flow (OFA) at half resolution under FidelityFX interpolation; a GPU without OFA
     // falls back to FidelityFX's own flow (Generator.cpp).
     Backend backend=Backend::Nvidia;

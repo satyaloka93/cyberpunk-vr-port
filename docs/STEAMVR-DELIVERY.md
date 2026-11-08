@@ -39,3 +39,6 @@ The authoritative consolidated scope, results and known limitations are in
 documents retain their historical test status. Steam Link follows SteamVR here;
 VDXR bypasses SteamVR-specific adaptation. Adaptive Pacing is not a whole-queue
 opt-out. No new opt-out control was introduced by the checkpoint commit.
+
+A separate [SteamVR package toggle](fixes/steamvr-package-toggle.md) now provides
+the coherent restart-required opt-out described by that checkpoint.

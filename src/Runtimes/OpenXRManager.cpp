@@ -763,7 +763,10 @@ bool OpenXRManager::Init() {
         m_eyeImageLimit[1] = systemProps.graphicsProperties.maxSwapchainImageHeight;
         m_runtimeIsPsvr2.store(cvr::input::IsPsvr2System(systemProps.systemName), std::memory_order_relaxed);
         // SteamVR can report a throttled app period on any HMD. VDXR stays on its native path.
-        cvr::framegen::refresh::Start(m_runtimeIsSteamVR.load());
+        const bool packageRequested=cvr::framegen::GetSettings().steamVrOptimizations;
+        cvr::framegen::refresh::Start(m_runtimeIsSteamVR.load(),packageRequested);
+        Log("[framegen-package] requested=%d active=%d steamvr=%d (latched at startup; restart to apply changes)\n",
+            packageRequested,cvr::framegen::refresh::Targeted(),m_runtimeIsSteamVR.load());
         if (IsRuntimePsvr2()) {
             Log("OpenXRManager[PSVR2]: Sense Triangle touch D-pad and Create SystemButton enabled. "
                 "Haptic actuator ownership remains with the external Toolkit bridge; no OpenXR vibration action.\n");
@@ -1079,7 +1082,7 @@ bool OpenXRManager::InitGraphics(ID3D12Device* device, ID3D12CommandQueue* queue
 
     m_graphicsBinding.type = XR_TYPE_GRAPHICS_BINDING_D3D12_KHR;
     m_graphicsBinding.device = device;
-    if(!cvr::xrqueue::Initialize(device,queue,m_runtimeIsSteamVR.load()))return false;
+    if(!cvr::xrqueue::Initialize(device,queue,cvr::framegen::refresh::Targeted()))return false;
     m_graphicsBinding.queue = cvr::xrqueue::Queue();
 
     LogDxgiAdapterForDevice(device);

@@ -50,6 +50,7 @@ int main(){try{
  for(auto& e:fs::directory_iterator(root)) {std::ifstream file(e.path());std::string line;
  while(std::getline(file,line)){auto j=nlohmann::json::parse(line);if(j["type"]=="header"){header=true;continue;}
  stop=stop||j["type"]=="stop";captured+=j["events"]["capture"].get<uint64_t>();real+=j["events"]["accepted_real"].get<uint64_t>();fg+=j["events"]["accepted_synthetic"].get<uint64_t>();repeat+=j["events"]["fallback_repeat"].get<uint64_t>();
+ check(j["settings"]["steamvr_package_requested"]==true && j["steamvr_package_active"]==false,"requested preference differs from VDXR active route");
  check(j["compositor"]["estimate_fps"].is_null(),"VDXR has no fabricated FPS");check(j["last_xr_error"]==-123,"error persisted");
  sourceN+=j["source_probes"].size();sourceDropped+=j["events"]["source_record_dropped"].get<uint64_t>();
  for(const auto& s:j["source_probes"]){check(s["frame"]==16 && s["mask"]==63 && s["rr"]==true && s["eyes"][1]["pose"]==101 && s["eyes"][1]["stages"][2]["end_qpc_ms"]==96 && s["capture_start_qpc_ms"]==100,"source frame and raw timestamps preserved");}

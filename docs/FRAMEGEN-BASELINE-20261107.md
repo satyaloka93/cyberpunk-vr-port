@@ -5,6 +5,10 @@ This branch preserves the locally tested SteamVR work on upstream tag 0.2.2
 90 FPS delivery. The installed port DLL is unchanged by these commits:
 `36a4cbb7943e9347194cd3a109d326c3a2673bee3a0e465e96f71982b23e4854`.
 
+**Update:** the separate [SteamVR package toggle](fixes/steamvr-package-toggle.md)
+was added after this checkpoint. The snapshot below describes the original
+November 7 baseline; use the toggle document for current controls.
+
 ## Runtime scope and controls
 
 | Change | Applicability |

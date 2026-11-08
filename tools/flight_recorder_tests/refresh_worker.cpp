@@ -20,7 +20,8 @@ void check(bool v,const char* reason){if(!v){std::cerr<<reason<<'\n';refresh::St
 void waitFor(int64_t expected){for(int i=0;i<550&&refresh::Resolve(22222222)!=expected;++i)std::this_thread::sleep_for(std::chrono::milliseconds(10));check(refresh::Resolve(22222222)==expected,"worker refresh update");}
 int main(){
  refresh::Start(false);for(int i=0;i<100;++i)refresh::Submitted();check(!refresh::Targeted()&&reads==0,"VDXR must not start refresh reader");
- refresh::Start(true);check(refresh::Read().periodNs==0,"startup cannot inherit old rate");
+ refresh::Start(true,false);for(int i=0;i<100;++i)refresh::Submitted();check(!refresh::Targeted()&&reads==0,"SteamVR opt-out must not start refresh reader");
+ refresh::Start(true,true);check(refresh::Read().periodNs==0,"startup cannot inherit old rate");
  for(int i=0;i<90;++i)refresh::Submitted();waitFor(11111111);
  check(reads>0,"worker reads refresh independent of flight recorder");
  fakePeriod=8333333;waitFor(8333333);

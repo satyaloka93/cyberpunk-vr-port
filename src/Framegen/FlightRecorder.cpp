@@ -74,14 +74,14 @@ class Recorder {
         };
         if(!write({{"type","header"},{"schema",1},{"pid",GetCurrentProcessId()},
             {"runtime",runtime},{"steamvr",steam},{"clock","QPC milliseconds"},
-            {"build","upstream022-steamvr-source-frontier-v1"},{"headset",headset},
+            {"build","upstream022-steamvr-package-toggle-v1"},{"headset",headset},
             {"semantics","accepted=successful xrEndFrame, not displayed; generated_queued=GPU work queued, not completed; compositor_estimate is not unique-content FPS; window boundaries approximate"}}))return;
         xrfg::SteamVrDelivery reader(steam);
         enabled=true;SetStatus(2,"Writing framegen-flight log (1-second summaries)");
         auto start=Clock::now(),last=start;
         auto settingsJson=[] {
             auto s=GetSettings();return Json{{"enabled",s.enabled},{"backend",int(s.backend)},
-                {"quality",s.quality},{"flow_scale",s.flowScale},{"adaptive_pacing",s.autoPace},{"fps_cap",FpsCap()}};
+                {"quality",s.quality},{"flow_scale",s.flowScale},{"adaptive_pacing",s.autoPace},{"steamvr_package_requested",s.steamVrOptimizations},{"fps_cap",FpsCap()}};
         };
         Json priorSettings=settingsJson();
         double deliverySum=0;uint64_t deliveryN=0,records=0,shown=0,zero=0,dropped=0,mispresented=0,extra=0,holes=0;
@@ -115,6 +115,7 @@ class Recorder {
                     {"effective_backend",int(ActiveBackend())},{"period_ms",periodMs.load()},
                     {"pace_ms",paceMs.load()},{"pacing_active",pacing.load()},
                     {"scanout_correction_steamvr",refresh::Targeted()},
+                    {"steamvr_package_active",refresh::Targeted()},
                     {"physical_period_ms",physical.periodNs?Json(physical.periodNs*1e-6):Json(nullptr)},
                     {"effective_fg_period_ms",effectiveNs*1e-6},
                     {"period_source",refresh::Targeted()&&physical.periodNs?"steamvr_scanout":"runtime_fallback"},

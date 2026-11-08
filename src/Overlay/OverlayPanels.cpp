@@ -1,4 +1,5 @@
 #include "Framegen/FlightRecorder.hpp"
+#include "Framegen/RefreshCadence.hpp"
 // OverlayPanels -- every control the headset overlay draws, and the small widgets they are made of.
 //
 // The widgets exist because ImGui has no clamped-int slider that reports change the way this file needs:
@@ -1012,6 +1013,14 @@ bool DrawLiveControls(LiveControlsUiState& state,int section,bool* foveatedEditi
             }
             if(fg.backend==Backend::DlssG)
                 UI::TextWrapped("NVIDIA's frame generation model on the game's motion vectors and depth. Highest quality, RTX 40/50.");
+            changed|=UI::Checkbox("SteamVR framegen optimizations (restart required)",&fg.steamVrOptimizations);
+            if(UI::IsItemHovered())UI::SetTooltip("Our SteamVR timing and queue package. Applies to Steam Link too; VDXR is unaffected.\nIncludes physical refresh correction, private queues and pacing improvements.\nSave your choice here, then restart the game. Adaptive real-frame pacing remains a separate control.");
+            if(OpenXRManager::Get().IsRuntimeSteamVR()) {
+                const bool packageActive=cvr::framegen::refresh::Targeted();
+                UI::TextWrapped("SteamVR package active this session: %s",packageActive?"ON":"OFF");
+                if(fg.steamVrOptimizations!=packageActive)
+                    UI::TextWrapped("Restart required to turn the SteamVR package %s.",fg.steamVrOptimizations?"ON":"OFF");
+            } else UI::TextWrapped("SteamVR package inactive on this runtime. Preference saved for SteamVR / Steam Link.");
             changed|=UI::Checkbox("Adaptive real-frame pacing",&fg.autoPace);
             if(UI::IsItemHovered())UI::SetTooltip("Up to half headset refresh. Leaves more GPU time for generated frames when adjacent real frames are being missed.");
             UI::TextWrapped("Uses game motion vectors and depth in both eyes. Adds one intermediate frame between real frames.");

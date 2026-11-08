@@ -124,7 +124,7 @@ void SetSettings(Settings value) {
     const bool disabledReportChanged=metricsChanged || value.enabled!=settings.enabled || value.backend!=settings.backend || !CyberpunkVR_FramegenReport[0];
     if(metricsChanged)ClearMetricsLocked();
     if(value.historySeconds!=settings.historySeconds)nextRefresh=nextSummary=0;
-    if(value.enabled!=settings.enabled||value.backend!=settings.backend||value.quality!=settings.quality||value.flowScale!=settings.flowScale||value.autoPace!=settings.autoPace)flight::Count(flight::Event::SettingsChange);
+    if(value.enabled!=settings.enabled||value.backend!=settings.backend||value.quality!=settings.quality||value.flowScale!=settings.flowScale||value.autoPace!=settings.autoPace||value.steamVrOptimizations!=settings.steamVrOptimizations)flight::Count(flight::Event::SettingsChange);
     settings=value;
     enabled.store(value.enabled,std::memory_order_relaxed);
     metrics.store(value.overlay,std::memory_order_relaxed);
@@ -332,6 +332,7 @@ bool ParseSetting(const char* line,Settings& value) {
     int n{};float f{};
     if(sscanf_s(line,"xr_framegen = %d",&n)==1)value.enabled=n!=0;
     else if(sscanf_s(line,"xr_framegen_flight_recorder = %d",&n)==1)value.flightRecorder=n!=0;
+    else if(sscanf_s(line,"xr_framegen_steamvr_optimizations = %d",&n)==1)value.steamVrOptimizations=n!=0;
     else if(sscanf_s(line,"xr_framegen_overlay = %d",&n)==1)value.overlay=n!=0;
     else if(sscanf_s(line,"xr_framegen_pace = %d",&n)==1)value.autoPace=n!=0;
     else if(sscanf_s(line,"xr_framegen_backend = %d",&n)==1)value.backend=Backend(std::clamp(n,0,2));
@@ -351,6 +352,7 @@ bool ParseSetting(const char* line,Settings& value) {
 }
 void WriteSettings(void* file,const Settings& s) {
     std::fprintf(static_cast<FILE*>(file),"xr_framegen_flight_recorder=%d\n",s.flightRecorder);
+    std::fprintf(static_cast<FILE*>(file),"xr_framegen_steamvr_optimizations=%d\n",s.steamVrOptimizations);
     std::fprintf(static_cast<FILE*>(file),"xr_framegen=%d\nxr_framegen_overlay=%d\nxr_framegen_pace=%d\nxr_framegen_backend=%d\nxr_framegen_quality=%d\nxr_framegen_flow_scale=%d\nxr_framegen_overlay_corner=%d\n",
         s.enabled,s.overlay,s.autoPace,int(s.backend),s.quality,s.flowScale,s.overlayCorner);
     std::fprintf(static_cast<FILE*>(file),"xr_framegen_overlay_layout=%d\nxr_framegen_overlay_follow=%d\nxr_framegen_history=%d\nxr_framegen_overlay_cone=%.2f\nxr_framegen_overlay_scale=%.3f\nxr_framegen_overlay_distance=%.3f\nxr_framegen_overlay_x=%.2f\nxr_framegen_overlay_y=%.2f\n",

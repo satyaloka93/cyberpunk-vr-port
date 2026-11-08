@@ -58,6 +58,6 @@ Observation Read(){
 bool Targeted(){return targeted.load(std::memory_order_relaxed);}
 int64_t Resolve(int64_t raw){return Select(Targeted(),raw,Read(),GetTickCount64());}
 void Submitted(){if(Targeted())accepted.fetch_add(1,std::memory_order_relaxed);}
-void Start(bool target){Get().Start(target);}
+void Start(bool steamvr,bool packageEnabled){Get().Start(steamvr && packageEnabled);}
 void Stop(){Get().Stop();}
 }
