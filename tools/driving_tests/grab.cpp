@@ -33,7 +33,9 @@ int main(){
     Check(WheelControlState()==7,"both grips failed to engage");
     Sleep(270);Check(WheelControlState()==4,"test did not expire the old animation publication");
     WheelMaintainGrab();Check(WheelControlState()==7,"missing camera revoked an existing physical grip");
-    slots[49]=0;WheelMaintainGrab();Check(WheelControlState()==6,"right release ignored during camera loss");
+    slots[49]=0;WheelMaintainGrab();Check(WheelControlState()==7,"grip release broke the driving latch during camera loss");
+    slots[49]=1;WheelMaintainGrab();Check(WheelControlState()==6,"second click failed to release during camera loss");
+    slots[49]=0;WheelMaintainGrab();
     slots[49]=1;WheelMaintainGrab();Check(WheelControlState()==6,"camera-loss path started a new grab without proximity");
     slots[0]=0;WheelMaintainGrab();Check(WheelControlState()==4,"tracking loss did not release the remaining grip");
     g_isDriving=false;Check(WheelControlState()==0,"wheel control escaped the driver seat");

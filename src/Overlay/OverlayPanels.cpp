@@ -215,19 +215,20 @@ void DrawVRHandsControls() {
         }
         using BodyMode=cvr::body::RotationMode;
         int mode=static_cast<int>(cvr::body::RotationModeFromFlags(st.xrPhysicalBodyRotation,
-            st.xrTrackedBodyRotation,st.xrHybridBodyRotation));
+            st.xrTrackedBodyRotation,st.xrHybridBodyRotation,st.xrHeadLedBodyRotation));
         static const char* bodyModes[]{"Stick / snap only","Head + free-look cone",
-            "HMD + controllers","Hybrid (default)"};
+            "HMD + controllers","Hybrid","Head-led (default)"};
         UI::SetNextItemWidth(410.0f);
-        if(widgets::Combo("Body rotation",&mode,bodyModes,4)){
+        if(widgets::Combo("Body rotation",&mode,bodyModes,5)){
             st.xrPhysicalBodyRotation=mode==static_cast<int>(BodyMode::HeadCone);
             st.xrTrackedBodyRotation=mode==static_cast<int>(BodyMode::Tracked);
             st.xrHybridBodyRotation=mode==static_cast<int>(BodyMode::Hybrid);
+            st.xrHeadLedBodyRotation=mode==static_cast<int>(BodyMode::HeadLed);
             SetLiveControlsUiState(&st,1);
         }
-        if(UI::IsItemHovered())UI::SetTooltip("Hybrid: use the head cone while upright.\n"
-            "Looking down by 10 degrees or bending by 5 degrees uses HMD + controllers.\n"
-            "Return below 8 / 3 degrees; the current body heading is preserved at handover.\n"
+        if(UI::IsItemHovered())UI::SetTooltip("Head-led: the body stays while the head looks within 10 degrees, then turns\n"
+            "to the head at 300 deg/s; looking down (past 30 degrees) it stays until 70 degrees. No controllers.\n"
+            "Hybrid: the head cone upright, HMD + controllers looking down or bent.\n"
             "HMD + controllers always disables the body cones. Missing tracking holds heading.");
         const bool trackedBody=mode==static_cast<int>(BodyMode::Tracked);
         const bool hybridBody=mode==static_cast<int>(BodyMode::Hybrid);

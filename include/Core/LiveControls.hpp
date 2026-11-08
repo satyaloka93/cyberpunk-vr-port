@@ -106,8 +106,9 @@ struct LiveControls {
     volatile float xrVehicleThrottleTrim; // how much of the throttle's full travel the left stick adds or removes per second while a weapon is out. Default 0.5.
     volatile int xrPhysicalBodyRotation; // 1 = physical body rotation (avatar body follows HMD/aim heading). 0 (default) = classic stick/snap heading. Gates the aiming/weapon body-turn paths; vehicles unaffected.
     volatile int xrTrackedBodyRotation = 0; // HMD + controllers, replaces head/cone follow while enabled
-    volatile int xrHybridBodyRotation = 1; // upright head cone; tracked body yaw on looking down / bending
-    volatile int xrBodyRotationMode = 3; // derived single-scalar publication; never serialize separately
+    volatile int xrHybridBodyRotation = 0; // upright head cone; tracked body yaw on looking down / bending (not the default)
+    volatile int xrHeadLedBodyRotation = 1; // the head-led body turn (Runtimes/HeadLedBodyTurn.hpp); the default
+    volatile int xrBodyRotationMode = 4; // derived single-scalar publication; never serialize separately
     volatile int xrRoomscaleMovement = 1; // horizontal physical displacement through the native CCT
     volatile int xrPhysicalCrouch = 1;
     volatile float xrPhysicalCrouchDepth = .45f; // height loss after measured hinge contribution, metres (default: the tuned value, 2026-10-17)

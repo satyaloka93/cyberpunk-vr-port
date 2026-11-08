@@ -123,6 +123,7 @@ struct LiveControlsUiState {
     int xrPhysicalBodyRotation;
     int xrTrackedBodyRotation;
     int xrHybridBodyRotation;
+    int xrHeadLedBodyRotation;
     int xrRoomscaleMovement;
     int xrPhysicalCrouch;
     float xrPhysicalCrouchDepth;

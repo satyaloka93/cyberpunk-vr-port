@@ -658,6 +658,7 @@ void PollLiveControls() {
     int xrPhysicalBodyRotation = g_liveControls.xrPhysicalBodyRotation;
     int xrTrackedBodyRotation = g_liveControls.xrTrackedBodyRotation;
     int xrHybridBodyRotation = g_liveControls.xrHybridBodyRotation;
+    int xrHeadLedBodyRotation = g_liveControls.xrHeadLedBodyRotation;
     int xrRoomscaleMovement = g_liveControls.xrRoomscaleMovement;
     int xrPhysicalCrouch = g_liveControls.xrPhysicalCrouch;
     float xrPhysicalCrouchDepth = g_liveControls.xrPhysicalCrouchDepth;
@@ -1590,6 +1591,7 @@ void PollLiveControls() {
         }
         if (sscanf_s(line, "xr_tracked_body_rotation = %d", &intValue) == 1) xrTrackedBodyRotation=intValue;
         if (sscanf_s(line, "xr_hybrid_body_rotation = %d", &intValue) == 1) xrHybridBodyRotation=intValue;
+        if (sscanf_s(line, "xr_head_led_body_rotation = %d", &intValue) == 1) xrHeadLedBodyRotation=intValue;
         if (sscanf_s(line, "xr_physical_body_rotation=%d", &intValue) == 1 ||
             sscanf_s(line, "xr_physical_body_rotation = %d", &intValue) == 1) {
             xrPhysicalBodyRotation = intValue;
@@ -1833,8 +1835,9 @@ void PollLiveControls() {
     g_liveControls.xrPhysicalBodyRotation = xrPhysicalBodyRotation != 0 ? 1 : 0;
     g_liveControls.xrTrackedBodyRotation = xrTrackedBodyRotation != 0 ? 1 : 0;
     g_liveControls.xrHybridBodyRotation = xrHybridBodyRotation != 0 ? 1 : 0;
+    g_liveControls.xrHeadLedBodyRotation = xrHeadLedBodyRotation != 0 ? 1 : 0;
     g_liveControls.xrBodyRotationMode=static_cast<int>(cvr::body::RotationModeFromFlags(
-        xrPhysicalBodyRotation,xrTrackedBodyRotation,xrHybridBodyRotation));
+        xrPhysicalBodyRotation,xrTrackedBodyRotation,xrHybridBodyRotation,xrHeadLedBodyRotation));
     g_liveControls.xrRoomscaleMovement = xrRoomscaleMovement != 0 ? 1 : 0;
     g_liveControls.xrPhysicalCrouch = xrPhysicalCrouch != 0 ? 1 : 0;
     g_liveControls.xrPhysicalCrouchDepth = cvr::body::CrouchThreshold(xrPhysicalCrouchDepth);
@@ -2205,6 +2208,7 @@ LiveControlsUiState MakeLiveControlsUiState() {
     state.xrPhysicalBodyRotation = bodyMode==cvr::body::RotationMode::HeadCone;
     state.xrTrackedBodyRotation = bodyMode==cvr::body::RotationMode::Tracked;
     state.xrHybridBodyRotation = bodyMode==cvr::body::RotationMode::Hybrid;
+    state.xrHeadLedBodyRotation = bodyMode==cvr::body::RotationMode::HeadLed;
     state.xrRoomscaleMovement = g_liveControls.xrRoomscaleMovement;
     state.xrPhysicalCrouch = g_liveControls.xrPhysicalCrouch;
     state.xrPhysicalCrouchDepth = g_liveControls.xrPhysicalCrouchDepth;
@@ -2591,6 +2595,7 @@ void PersistLiveControlsUiState(const LiveControlsUiState& state) {
     fprintf(file, "xr_physical_body_rotation=%d\n", state.xrPhysicalBodyRotation != 0 ? 1 : 0);
     fprintf(file, "xr_tracked_body_rotation=%d\n", state.xrTrackedBodyRotation != 0 ? 1 : 0);
     fprintf(file, "xr_hybrid_body_rotation=%d\n", state.xrHybridBodyRotation != 0 ? 1 : 0);
+    fprintf(file, "xr_head_led_body_rotation=%d\n", state.xrHeadLedBodyRotation != 0 ? 1 : 0);
     fprintf(file, "xr_roomscale_movement=%d\n", state.xrRoomscaleMovement != 0 ? 1 : 0);
     fprintf(file, "xr_physical_crouch=%d\n", state.xrPhysicalCrouch != 0 ? 1 : 0);
     fprintf(file, "xr_physical_crouch_depth=%.3f\n", cvr::body::CrouchThreshold(state.xrPhysicalCrouchDepth));
@@ -2731,8 +2736,9 @@ extern "C" void SetLiveControlsUiState(const LiveControlsUiState* state, int per
     g_liveControls.xrMaxInputThreshold=cvr::input::StickFullInput(state->xrMaxInputThreshold);
     g_liveControls.xrTrackedBodyRotation = state->xrTrackedBodyRotation != 0 ? 1 : 0;
     g_liveControls.xrHybridBodyRotation = state->xrHybridBodyRotation != 0 ? 1 : 0;
+    g_liveControls.xrHeadLedBodyRotation = state->xrHeadLedBodyRotation != 0 ? 1 : 0;
     g_liveControls.xrBodyRotationMode=static_cast<int>(cvr::body::RotationModeFromFlags(
-        state->xrPhysicalBodyRotation,state->xrTrackedBodyRotation,state->xrHybridBodyRotation));
+        state->xrPhysicalBodyRotation,state->xrTrackedBodyRotation,state->xrHybridBodyRotation,state->xrHeadLedBodyRotation));
     g_liveControls.xrRoomscaleMovement = state->xrRoomscaleMovement != 0 ? 1 : 0;
     g_liveControls.xrPhysicalCrouch = state->xrPhysicalCrouch != 0 ? 1 : 0;
     g_liveControls.xrPhysicalCrouchDepth = cvr::body::CrouchThreshold(state->xrPhysicalCrouchDepth);
