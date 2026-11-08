@@ -17,6 +17,7 @@
 #include "Natives/VrMenu.hpp"
 #include "Runtimes/WristBase.hpp"
 #include "Hooks/Psvr2Input.hpp"
+#include "Hooks/TouchInventory.hpp"
 #include "Camera/ImagePoseIdentity.hpp"
 #include "Runtimes/RoomscaleTracking.hpp"
 #include "Runtimes/SimulatorRecenter.hpp"
@@ -1637,6 +1638,7 @@ DWORD OpenXRManager::FrameThreadMain() {
                 bool leftStickClicked  = false;
                 bool dpadUsedThisFrame = false;
                 bool triangleShift = false;
+                bool thumbrestShift = false;
 
                 std::lock_guard<std::mutex> handLock(m_handMutex);
                 // ONE INSTANT: the head position that goes with these controller poses, plus the
@@ -1954,6 +1956,13 @@ DWORD OpenXRManager::FrameThreadMain() {
                         leftStickClicked = sclick;
                         triangleShift = IsRuntimePsvr2() && m_psvr2TriangleTouchAction != XR_NULL_HANDLE &&
                             getBool(m_psvr2TriangleTouchAction);
+                        thumbrestShift = !IsRuntimePsvr2() && syncRes == XR_SUCCESS &&
+                            m_sessionState == XR_SESSION_STATE_FOCUSED &&
+                            m_thumbrestTouchAction != XR_NULL_HANDLE && getBool(m_thumbrestTouchAction);
+                        if (thumbrestShift) {
+                            static bool logged = false;
+                            if (!logged) { logged = true; Log("OpenXRManager[Touch]: Left-thumbrest D-pad/inventory modifier active.\n"); }
+                        }
                         if (triangleShift) {
                             static bool logged = false;
                             if (!logged) { logged = true; Log("OpenXRManager[PSVR2]: Triangle-touch D-pad modifier active.\n"); }
@@ -1963,7 +1972,8 @@ DWORD OpenXRManager::FrameThreadMain() {
                         ctrl.rightGrip    = grip;
                         ctrl.rightThumbX  = sx;
                         ctrl.rightThumbY  = sy;
-                        if (sclick) ctrl.buttons |= XB_RIGHT_THUMB;
+                        // RC5 Quest inventory shortcut. Keep L3+R3 for the upstream overlay.
+                        ctrl.buttons |= cvr::input::TouchRightStickButton(thumbrestShift, sclick, leftStickClicked);
                         if (prim)   ctrl.buttons |= XB_A;
                         if (sec)    ctrl.buttons |= XB_B;
                         if(frameBumper)ctrl.buttons|=XB_RIGHT_SHOULDER;
@@ -1971,7 +1981,7 @@ DWORD OpenXRManager::FrameThreadMain() {
                         // D-PAD CHORD: while the LEFT stick click is held, the RIGHT
                         // stick picks the D-Pad direction. The right axes are zeroed for
                         // the whole hold so snap-turn/camera cannot fire during selection.
-                        if (triangleShift) {
+                        if (triangleShift || thumbrestShift) {
                             dpadUsedThisFrame = cvr::input::TriangleDpad(true, ctrl.rightThumbX, ctrl.rightThumbY, ctrl.buttons);
                         } else if (leftStickClicked) {
                             float threshold = CyberpunkVR_DpadChordStick;
@@ -2038,13 +2048,13 @@ DWORD OpenXRManager::FrameThreadMain() {
                 {std::lock_guard<std::mutex> rawLock(m_inputMutex);m_rawControllerState=ctrl;}
                 if(cvr::vrui::CapturesInput())ctrl={};
                 if (gameplayInputActive) {
+                    ctrl.touchDpadShift = (triangleShift || thumbrestShift) && !cvr::vrui::CapturesInput();
                     const bool menuPressed = getGlobalBool(m_menuButtonAction);
                     if (IsRuntimePsvr2()) {
                         // L3+R3 belongs to upstream's overlay, not our menu fallback.
                         const bool chord = triangleShift && uiTracking.hands[1].stickClick && !leftStickClicked;
                         ctrl.psvr2SystemAvailable = syncRes == XR_SUCCESS && m_sessionState == XR_SESSION_STATE_FOCUSED;
                         ctrl.psvr2SystemPressed = menuPressed || (chord && !cvr::vrui::CapturesInput());
-                        ctrl.psvr2DpadShift = triangleShift && !cvr::vrui::CapturesInput();
                         if (chord) ctrl.buttons &= static_cast<uint16_t>(~0x0080u);
                         if (menuPressed) {
                             static bool logged = false;

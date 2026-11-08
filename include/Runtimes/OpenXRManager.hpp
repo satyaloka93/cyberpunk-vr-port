@@ -77,7 +77,7 @@ struct VRControllerState {
     bool     rightHandValid = false;
     bool     psvr2SystemPressed = false;
     bool     psvr2SystemAvailable = false;
-    bool     psvr2DpadShift = false;
+    bool     touchDpadShift = false;
 };
 
 extern "C" int GetXrRuntimeMode();
@@ -981,6 +981,7 @@ private:
     int m_hapticLastResult[2] = {123456, 123456};
     XrAction m_hapticAction = XR_NULL_HANDLE;            // Vibration OUTPUT, per hand
     XrAction m_psvr2TriangleTouchAction = XR_NULL_HANDLE;
+    XrAction m_thumbrestTouchAction = XR_NULL_HANDLE; // Quest/Touch thumb-rest modifier
     cvr::input::SteamFrameActions m_steamFrameActions{};
     XrPath m_handPaths[2] = { XR_NULL_PATH, XR_NULL_PATH };
     XrSpace m_handSpaces[2] = { XR_NULL_HANDLE, XR_NULL_HANDLE };

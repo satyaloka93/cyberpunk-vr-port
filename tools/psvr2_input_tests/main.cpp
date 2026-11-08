@@ -1,4 +1,5 @@
 #include "Hooks/Psvr2Input.hpp"
+#include "Hooks/TouchInventory.hpp"
 #include <cstdlib>
 #include <iostream>
 #include <limits>
@@ -27,6 +28,11 @@ int main() {
     check(TriangleDpad(true,x,y,buttons) && buttons==9, "diagonal D-pad");
     x=std::numeric_limits<float>::quiet_NaN(); y=0; buttons=0;
     check(!TriangleDpad(true,x,y,buttons) && x==0, "invalid axis neutralized");
+    check(TouchRightStickButton(true,true,false)==0x20, "Quest thumbrest R3 is inventory without crouch");
+    check(TouchRightStickButton(false,true,false)==0x80, "bare R3 remains crouch/scanner action");
+    check(TouchRightStickButton(true,true,true)==0x80, "L3 R3 overlay chord takes precedence");
+    check(TouchRightStickButton(true,false,false)==0, "thumbrest alone does not open inventory");
+    check(TouchRightStickButton(false,false,false)==0, "release clears inventory input");
     SenseSystemButton system;
     check(system.Update(true,1000,true)==0, "tap does not emit on press");
     check(system.Update(false,1499,true)==0x10, "499 ms release is Start");
