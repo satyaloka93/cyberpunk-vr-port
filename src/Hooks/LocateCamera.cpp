@@ -375,6 +375,8 @@ void RefreshPlayerCameraState() {
     }
 }
 
+extern "C" __declspec(dllexport) uint64_t CyberpunkVR_DebugSceneLabelPublished = 0;
+
 extern "C" void __fastcall OnLocateCameraCallback(float* rbxPtr, float xmm0_val) {
     (void)xmm0_val;
     g_locateCameraHits++;
@@ -596,6 +598,10 @@ extern "C" void __fastcall OnLocateCameraCallback(float* rbxPtr, float xmm0_val)
     OpenXRHeadPose takeoverPose{};
     uint64_t takeoverPoseId{};
     bool takeoverLabelKnown=false;
+    // The scene camera's label (a braindance, or a scene the ForceFPP gate hands to this route): see its publish.
+    OpenXRHeadPose scenePose{};
+    uint64_t scenePoseId{};
+    bool sceneLabelKnown=false;
     if (hasXR) {
         // Hand the EXACT sample this frame's camera is built from to the submit path, so
         // the image is labelled with the pose it was rendered from instead of whatever the
@@ -977,6 +983,19 @@ extern "C" void __fastcall OnLocateCameraCallback(float* rbxPtr, float xmm0_val)
                 takeoverPoseId && takeoverPoseId==cameraPoseSequence &&
                 takeoverPose.originSerial==xrPose.originSerial &&
                 cvr::camera::CurrentSerializedCameraComponent()==g_lensComp.load(std::memory_order_acquire);
+            // The head sample the scene camera's orientation was composed from: the write site's, when that
+            // composition was taken, or this site's own -- the frame's one sample, the same struct PatchCamera
+            // composes from (AcquireCameraPoseFrame), identified by its sequence.
+            if (bdNow && !takeoverNow) {
+                if (bdUseWriteSite) {
+                    scenePose=takeoverPose;scenePoseId=takeoverPoseId;
+                    sceneLabelKnown=takeoverPose.valid && takeoverPoseId && takeoverPoseId==cameraPoseSequence &&
+                        takeoverPose.originSerial==xrPose.originSerial;
+                } else {
+                    scenePose=xrPose;scenePoseId=cameraPoseSequence;
+                    sceneLabelKnown=CyberpunkVR_OneSamplePerFrame && cameraPoseSequence && xrPose.valid;
+                }
+            }
         }
     }
 
@@ -1432,6 +1451,25 @@ extern "C" void __fastcall OnLocateCameraCallback(float* rbxPtr, float xmm0_val)
                                 takeoverLabelKnown?&takeoverPose:nullptr,takeoverPoseId);
             CVR_DIAGNOSTIC(++CyberpunkVR_DebugTakeoverPush);
         }
+    }
+
+    // A SCENE CAMERA IS LABELLED LIKE A TAKEOVER, and frame generation depends on it.
+    //
+    // In a braindance, and in every scene the ForceFPP gate hands to this route (the post-prologue montage, a
+    // dialogue with its own camera), MAIN is rendered through THIS buffer with the orientation written above. The
+    // label the component carried into it no longer matches what is in it, and nothing replaced it. So the render
+    // nodes had no pose identity, the image had no label, and framegen found no depth and motion vectors belonging
+    // to the submitted pose. It sat at "Waiting for matching depth and motion vectors in both eyes" for the whole
+    // scene (measured 2026-11-06 in the montage: input stage 2 = 0 of 1210 calls, 482 unlabelled captures in 3 s).
+    // "framegen does not work in bd/scene cam".
+    //
+    // Published here, after the last write to the buffer (the half-IPD above), so the fingerprint is what the
+    // engine copies on. The blender and MainRead carry it to the view like any other, the same chain as the
+    // takeover's.
+    if (sceneLabelKnown && scenePoseId) {
+        cvr::camera::PublishCameraSetupPose(reinterpret_cast<uintptr_t>(rbxPtr),
+            cvr::camera::CurrentSerializedCameraComponent(),1,scenePoseId,scenePose);
+        CVR_DIAGNOSTIC(++CyberpunkVR_DebugSceneLabelPublished);
     }
 
     if (CyberpunkVR_BdPushTransform != 0 && g_headQuatValid &&
