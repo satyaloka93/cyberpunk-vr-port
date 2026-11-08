@@ -1104,6 +1104,7 @@ DWORD OpenXRManager::FrameThreadMain() {
     do {
         PollEvents();
         TickAutoCalibration();
+        if(m_framegen.ApplySteamVrSettings())m_submitPacer.Reset();
 
         if (!m_sessionRunning.load(std::memory_order_relaxed)) {
             Sleep(10);

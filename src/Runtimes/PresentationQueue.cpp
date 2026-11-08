@@ -2,11 +2,13 @@
 #include "Framegen/FlightRecorder.hpp"
 #include <memory>
 #include <algorithm>
+#include <atomic>
 #include <psapi.h>
 extern void Log(const char*,...);
 namespace cvr::xrqueue {
 namespace {
 std::unique_ptr<GpuQueue> route;
+std::atomic<bool> isolationRequested{false},isolationActive{false};
 bool ExternalLayer() {
     HMODULE modules[1024]{};DWORD bytes{};
     if(!EnumProcessModules(GetCurrentProcess(),modules,sizeof(modules),&bytes))return true;
@@ -20,14 +22,18 @@ void Failure(){framegen::flight::Count(framegen::flight::Event::PresentationSync
 }
 bool Initialize(ID3D12Device* device,ID3D12CommandQueue* queue,bool steamvr) {
     Shutdown();route=std::make_unique<GpuQueue>();
+    isolationRequested=steamvr;
     const bool external=ExternalLayer();
     if(!route->Initialize(device,queue,steamvr&&!external)){route.reset();return false;}
+    isolationActive=route->Private();
     Log("[presentation-queue] application=%p runtime=%p private=%d create=0x%08X external=%d\n",
         queue,route->Queue(),route->Private(),unsigned(route->CreationResult()),external);
     return true;
 }
 ID3D12CommandQueue* Queue(){return route?route->Queue():nullptr;}
 bool Private(){return route&&route->Private();}
+bool IsolationRequested(){return isolationRequested.load(std::memory_order_relaxed);}
+bool IsolationActive(){return isolationActive.load(std::memory_order_relaxed);}
 bool WaitCapture(ID3D12Fence* fence,uint64_t value){
     if(!route)return false;
     const bool ok=route->WaitCapture(fence,value);if(!ok)Failure();return ok;
@@ -100,6 +106,7 @@ framegen::DisplayDeadline* ProbeBegin(bool enabled){
 void Drain(){if(route){if(!route->Drain())Log("[presentation-queue] bounded drain incomplete\n");route->PollProbes(CollectProbe);}}
 
 void Shutdown(){
+    isolationRequested=false;isolationActive=false;
     if(route&&!route->Drain()){
         Log("[presentation-queue] retaining unfinished queue/fences through shutdown\n");route.release();
     }else route.reset();

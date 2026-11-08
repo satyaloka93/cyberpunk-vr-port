@@ -9,7 +9,7 @@
 
 namespace cvr::framegen::refresh {
 namespace {
-std::atomic<bool> targeted{false};
+std::atomic<bool> targeted{false},steamVrSession{false};
 std::atomic<uint64_t> accepted{};
 // One atomic publishes period+timestamp together; high32 = milliseconds since
 // system boot, low32 = nanoseconds. Tick arithmetic handles the49-day wrap.
@@ -58,6 +58,8 @@ Observation Read(){
 bool Targeted(){return targeted.load(std::memory_order_relaxed);}
 int64_t Resolve(int64_t raw){return Select(Targeted(),raw,Read(),GetTickCount64());}
 void Submitted(){if(Targeted())accepted.fetch_add(1,std::memory_order_relaxed);}
-void Start(bool steamvr,bool packageEnabled){Get().Start(steamvr && packageEnabled);}
-void Stop(){Get().Stop();}
+void Start(bool steamvr,bool packageEnabled){steamVrSession=steamvr;Get().Start(steamvr && packageEnabled);}
+bool SteamVrSession(){return steamVrSession.load(std::memory_order_relaxed);}
+void SetEnabled(bool enabled){const bool target=SteamVrSession()&&enabled;if(target!=Targeted())Get().Start(target);}
+void Stop(){Get().Stop();steamVrSession=false;}
 }

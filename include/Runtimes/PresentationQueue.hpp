@@ -86,6 +86,8 @@ public:
 bool Initialize(ID3D12Device*,ID3D12CommandQueue*,bool steamvr);
 ID3D12CommandQueue* Queue();
 bool Private();
+bool IsolationRequested();
+bool IsolationActive();
 bool WaitCapture(ID3D12Fence*,uint64_t);
 bool WaitPublished(ID3D12Fence*,uint64_t);
 XrResult WaitApplicationImage(XrSwapchain,const XrSwapchainImageWaitInfo*);

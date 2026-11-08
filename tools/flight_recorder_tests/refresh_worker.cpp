@@ -27,6 +27,9 @@ int main(){
  fakePeriod=8333333;waitFor(8333333);
  fakePeriod=11111111;waitFor(11111111);
  fakePeriod=0;waitFor(22222222);
+ refresh::SetEnabled(false);check(!refresh::Targeted()&&refresh::Read().periodNs==0,"dynamic disable clears observation");
+ refresh::SetEnabled(true);check(refresh::Targeted()&&refresh::Read().periodNs==0,"dynamic enable starts fresh");
+ fakePeriod=11111111;for(int i=0;i<90;++i)refresh::Submitted();waitFor(11111111);
  refresh::Stop();check(!refresh::Targeted()&&refresh::Read().periodNs==0,"stop clears observation");
  refresh::Start(false);check(refresh::Resolve(22222222)==22222222,"recreated VDXR session unaffected");refresh::Stop();
  std::cout<<"PASS:worker lifecycle, successful-submission gate, recorder independence, refresh changes and failed query fallback\n";

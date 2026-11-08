@@ -1,49 +1,61 @@
-# Separate SteamVR framegen package toggle
+# SteamVR framegen controls
 
-F10 > FRAMEGEN > **SteamVR framegen optimizations (restart required)**.
-Stored as `xr_framegen_steamvr_optimizations=1` in the port's config/vrport.ini.
-Defaults ON for existing installations with no key, preserving the tested build.
+F10 > FRAMEGEN now separates two controls:
 
-The checkbox saves the requested preference immediately. Restart the game to
-apply it. F10 shows the package's active state for the current SteamVR session
-and a restart notice if the requested state differs. The control is independent
-of upstream's **Adaptive real-frame pacing**, which remains live and unchanged.
+- **SteamVR framegen optimizations (restart FG)** changes refresh correction,
+  synthesis queue isolation, producer gating and submission pacing. Turn FG OFF,
+  select the option, then turn FG ON. No game restart needed for this control.
+- **SteamVR presentation queue isolation (restart game)** selects the queue bound
+  to the OpenXR session. Its requested and actual states are displayed separately.
+  Leave ON for the normal optimized setup. Changing it needs a game restart.
 
-At XR initialization, RefreshCadence latches `isSteamVR && preference`. Both
-presentation-queue creation and existing synthesis/pacing consumers use that
-same latched decision, never the live checkbox. With the package OFF:
+Upstream **Adaptive real-frame pacing** remains independent and live. The two
+SteamVR controls apply to Steam Link too; VDXR/non-SteamVR bypass both.
 
-- Use the application's OpenXR graphics-binding queue and synthesis queue.
-- Use the runtime-reported refresh period and upstream adaptive recovery.
-- Disable added SteamVR submission-grid feedback, bounded producer GPU gate,
-  and synthesis preparation during the existing idle hold.
-- Keep native framegen and upstream Adaptive Pacing available.
+## Persistence and migration
 
-VDXR and other non-SteamVR runtimes bypass these adaptations in either setting.
-Steam Link is SteamVR, so the control applies there too. Existing backend and
-external OFXR restrictions remain: DLSS-G does not use our isolated generation
-queue; an identified external XRFrameBridge layer prevents private presentation.
-General rendering/scope fixes, synchronization correctness and independently
-selected diagnostics remain in place; this is not a stock-binary selector.
+`xr_framegen_steamvr_optimizations` retains the timing/synthesis preference.
+`xr_framegen_steamvr_presentation_isolation` stores the new startup preference.
+An old INI without the new key inherits its old combined toggle once, preserving
+both ON and OFF installs. Explicit presentation isolation wins regardless of key
+order; the next settings write saves both independently. Defaults remain ON.
 
-Restart is deliberate: the runtime's D3D12 queue is bound at session creation.
-Hot-editing only pacing or generator queues would create a partial comparison
-and could leave resource ownership inconsistent. Editing then reverting the
-preference removes the pending-change notice without altering live routing.
+## Transition ownership
 
-Log marker `upstream022-steamvr-package-toggle-v1`; startup logs requested/active
-and SteamVR detection. Flight records separate `steamvr_package_requested`
-(in settings) and `steamvr_package_active`. Requested changes are not effective
-routing changes until restart. The flight recorder can still measure SteamVR
-compositor delivery with this package OFF.
+UI settings changes only request a transition. SetSettings records an internal,
+non-persisted restart serial whenever FG enabled changes. Even quick
+OFF/ON clicks between display cycles cannot disappear. Editing optimization
+while FG is running stays pending until the next stop; editing while already
+OFF applies after GPU work drains.
 
-Validation: production Release build; 16 Windows framegen/GPU tests plus HUD.
-New fixture uses actual settings Parse/Write/Set/Get and RefreshCadence startup
-latching; checks both independent checkbox values, roundtrip, default-on, invalid
-input, live no-op then recreation, and non-SteamVR exclusion. Worker test verifies
-SteamVR-off never starts refresh polling. Existing queue tests cover shared and
-private routes. Recorder fixture verifies requested-on/active-off on VDXR.
-Manual F10 restart/application check remains a headset test, not claimed here.
+The XR thread calls Presenter::ApplySteamVrSettings before xrWaitFrame. It polls
+and resets the generator only once both generation and last consuming GPU fence
+are complete. Until then it shows real frames, suppresses preparation/generation,
+and retains prepared endpoints and capture leases. Real drain submissions never
+advance the old generator's consumer fence (which could prevent retirement under
+load); rejected submissions are not counted as delivered frames.
 
-No release or push. Full fork haptics, independent dual-wield aiming and driving
-grip toggle remain separate required integration work.
+After safe retirement it clears cadence/history, applies runtime-gated timing,
+resets adaptive/producer/submit timing, and primes with a real frame. No blocking
+fence wait and no OpenXR session/swapchain recreation. The presentation binding
+is never changed by this transition. Refresh monitoring restarts with a fresh
+sample and its existing successful-submission/establishment gate.
+
+External OFXR still prevents private presentation and native generation under
+the existing safeguards. DLSS-G retains its existing synthesis routing; the
+private OFA/FidelityFX synthesis path is not forced onto DLSS-G.
+
+## Validation
+
+Production MSVC Release build and the 16-test Windows framegen suite. Extended
+production-Presenter fixture covers outstanding GPU work, pinned prepared images,
+fast off/on, first-real history, no new generation while draining, consumer-fence
+starvation prevention and rejected-submission accounting. Actual settings and
+refresh-worker fixtures cover legacy migration, independent roundtrip, internal
+restart serial, dynamic disable/re-enable and non-SteamVR bypass. Existing real-GPU
+generator tests cover output and consumer fences blocking reset.
+
+Headset validation remains pending. This changes control/application behavior,
+not the algorithms or tuning of the previously tested optimizations. A dynamic
+OFF comparison retains the same presentation queue; to compare that part too,
+change its separate setting and restart the game. No release or push.

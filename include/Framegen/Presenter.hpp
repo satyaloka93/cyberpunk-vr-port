@@ -31,6 +31,9 @@ struct Selection {
 };
 class Presenter {
 public:
+    // Called once before xrWaitFrame. Returns true after a completed restart so
+    // the caller can clear submit timing. Never blocks waiting for a GPU fence.
+    bool ApplySteamVrSettings();
     Selection Select(ID3D12Device*,ID3D12CommandQueue*,Frame,bool gameplay,ID3D12CommandQueue* consumer=nullptr);
     bool WantsPrepare(uint64_t serial) const {return primed && !prepared.frame.identity.serial && serial>generatedSerial;}
     bool Prepare(ID3D12Device*,ID3D12CommandQueue*,Frame,ID3D12CommandQueue* consumer);
@@ -39,6 +42,8 @@ public:
     void Shutdown();
     bool Pending() const {return cadence.Pending()!=0;}
 private:
+    uint64_t appliedRestartSerial{};
+    bool settingsReady=true;
     Cadence cadence;
     Generator generator;
     Frame pending;
