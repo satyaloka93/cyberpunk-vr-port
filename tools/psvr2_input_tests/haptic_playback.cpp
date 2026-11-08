@@ -49,8 +49,24 @@ int main() {
     SetVehicleHaptics(.3f,.4f); SetVehicleGain(0); Tick();
     check(output.empty(),"vehicle gain zero mutes existing audio");
     Clear(); HapticRoute().Request(2); HapticRoute().BeginSession(true,true);
-    SetVehicleGain(1); SetVehicleHaptics(.5f,.5f); Shot(2,true); Tick();
-    check(output.empty(),"Toolkit owns vehicle and shot effects exclusively");
+    auto& roadChannel=cvr::psvr2::Haptics();roadChannel.events.clear();
+    SetVehicleAudioChannels(1); SetVehicleGain(1); SetVehicleHaptics(.05f,.5f); Shot(2,true); Tick();
+    check(output.empty(),"Toolkit road never calls OpenXR alongside the bridge");
+    check(roadChannel.events.size()==2 && roadChannel.events[0].hand==0 && roadChannel.events[1].hand==1,
+          "Toolkit road reaches BOTH hands while full-game audio is independent");
+    check(roadChannel.events[0].amplitude==roadChannel.events[1].amplitude && roadChannel.events[0].amplitude>.5f,
+          "stronger channel mirrors even when the engine is panned");
+    roadChannel.events.clear(); SetVehicleAudioRequireGrip(true);
+    cvr::anim::g_wheelBlendLeft=1; cvr::anim::g_wheelBlendRight=0; Tick();
+    check(roadChannel.events.size()==1 && roadChannel.events[0].hand==0,"Toolkit road grip gate is per hand");
+    roadChannel.events.clear(); SetVehicleAudioRequireGrip(false); g_isDriving=false; Tick();
+    check(roadChannel.events.empty(),"Toolkit road stops immediately on vehicle exit");
+    g_isDriving=true; SetVehicleGain(0); Tick();
+    check(roadChannel.events.empty(),"Toolkit road switch mutes it independently");
+    SetVehicleGain(1); SetVehicleAudioChannels(0); SetVehicleHaptics(.1f,.4f); Tick();
+    check(roadChannel.events.size()==2 && roadChannel.events[0].amplitude<roadChannel.events[1].amplitude,"stereo remains available");
+    roadChannel.events.clear(); Clear(); SetVehicleHaptics(.2f,.6f); Play(kMeleeParry,kRight); Tick();
+    check(roadChannel.events.size()==2 && roadChannel.events[1].duration<25,"parry remains above road rumble on Toolkit");
     HapticRoute().BeginSession(true,false); Clear(); Pulse(0,.6f,85); Tick();
     check(output.size()==1 && output[0].hand==0,"PSVR2 without bridge receives generic swing");
     Clear(); output.clear(); Play(kBeltTouch,kLeft); Clear(); Tick();

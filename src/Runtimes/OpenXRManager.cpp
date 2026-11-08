@@ -1047,7 +1047,8 @@ bindings_done:
     }
 
     m_initialized = true;
-    if (!cvr::haptics::HapticRoute().Toolkit()) cvr::haptics::StartVehicleAudioCapture();
+    // Capture is shared; Tick routes road rumble through the selected actuator owner.
+    cvr::haptics::StartVehicleAudioCapture();
     return true;
 }
 

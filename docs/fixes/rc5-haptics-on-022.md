@@ -1,6 +1,6 @@
 # RC5 haptics on upstream 0.2.2
 
-Restore the committed RC5 behavior (`de19d872`), retaining 0.2.2's physical
+Restore the RC5 event model (`de19d872`), retaining 0.2.2's physical
 left-handed mapping and all 16 interaction profiles. This is a haptics-only
 change; frame generation and adaptive pacing are unchanged.
 
@@ -40,3 +40,28 @@ fired on the additional projectile/orientation paths.
 Suggested PR: **Restore configurable OpenXR/Toolkit haptics and per-hand impacts**.
 Include this code, Lua swing change and tests together. It does not depend on
 our framegen package or driving-grip toggle.
+
+## Follow-up: driving feedback while Toolkit is selected
+
+The first integration hid the channel/grip controls and never started the port's
+vehicle capture in Toolkit mode. This matches the inspected RC5 snapshot, but
+fails the user's required later driving behavior: with the full-game audio layer
+off, only the bike's left Machine-profile grip rhythm remains. The unchanged EDS
+bike script still swaps the trigger baselines and moves the shift pop to R2.
+Do not confuse that asymmetric semantic effect with balanced road audio.
+
+The existing 28–320 Hz vehicle capture now feeds either selected owner. Toolkit
+receives it through the existing fair per-hand mailbox; OpenXR remains excluded
+in Toolkit mode. The F10 driving enable, strength, channels and grip gate are
+available with either route. New configurations default to stronger-channel-to-
+both. Existing saved channel preferences remain intact. The local deployment
+explicitly selects both hands. Toolkit road pulses last 90 ms to cover alternating
+mailbox delivery at 30 FPS; OpenXR retains 45 ms. Road effects stop being queued
+on exit/mute/stale input and the final short pulse expires naturally.
+
+This is an extension of the port's existing road-envelope path to Toolkit, not a
+claim that the exact same conditional routing existed in the RC5 commit. No
+bridge executable, trigger profile or full-game audio preference is replaced.
+Full-game audio and DSX semantic rhythms can still contribute separately.
+Production playback tests cover both owners, panned audio, grip gating, mute,
+vehicle exit and priority. Physical balance remains a headset validation.

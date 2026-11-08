@@ -142,7 +142,7 @@ void Queue(int row, int handMask, float mul) {
 
 void SetLegacyGain(float gain) { g_legacyGain.store(SafeGain(gain, 1.25f)); }
 float LegacyGain() { return g_legacyGain.load(); }
-static std::atomic<int> vehicleChannels{0};
+static std::atomic<int> vehicleChannels{1};
 static std::atomic<bool> vehicleRequireGrip{false};
 void SetVehicleAudioChannels(int mode) { vehicleChannels.store(std::clamp(mode,0,3)); }
 int VehicleAudioChannels() { return vehicleChannels.load(); }
@@ -250,7 +250,7 @@ void Tick() {
                 const double left = static_cast<double>(e.end[started] - now) / static_cast<double>(QpcFreq());
                 if (left > 0.003) due[h] = { e.amp[started], static_cast<float>(left) };
             }
-            if (now >= e.done && !HapticRoute().Toolkit() && VehicleGain() > 0 &&
+            if (now >= e.done && VehicleGain() > 0 &&
                 VehicleFresh(g_isDriving.load(std::memory_order_relaxed), nowMs, g_vehicleMs)) {
                 const bool held = (h == 0 ? cvr::anim::g_wheelBlendLeft.load() : cvr::anim::g_wheelBlendRight.load()) > .01f;
                 float audio = g_vehicle[h];
@@ -259,7 +259,9 @@ void Tick() {
                 else if (channels == 2) audio = g_vehicle[0];
                 else if (channels == 3) audio = g_vehicle[1];
                 const float amplitude = VehicleAudioRequireGrip() && !held ? 0.0f : std::min(1.0f, audio * gain);
-                if (amplitude > .01f) due[h] = {amplitude, .045f};
+                // The bridge v1 mailbox delivers one hand per frame. Cover two
+                // frames even at 30 FPS rather than alternating silent gaps.
+                if (amplitude > .01f) due[h] = {amplitude, HapticRoute().Toolkit() ? .090f : .045f};
             }
         }
     }

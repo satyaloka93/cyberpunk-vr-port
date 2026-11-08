@@ -1220,7 +1220,7 @@ bool DrawLiveControls(LiveControlsUiState& state,int section,bool* foveatedEditi
                 }
                 if(!audioValid)UI::TextWrapped("Toolkit audio companion settings missing or invalid. Install the PSVR2Toolkit audio settings companion.");
                 if(!audioError.empty())UI::TextWrapped("%s",audioError.c_str());
-                UI::TextWrapped("Applies live through the updated Toolkit bridge. Captures default playback audio; weapon effects and adaptive triggers are separate. This bridge version does not expose audio channel selection or grip gating.");
+                UI::TextWrapped("Applies live through the updated Toolkit bridge. Captures default playback audio; weapon effects and adaptive triggers are separate. The driving-only channel and grip controls below apply to the separate port road/engine effect.");
             }
             changed |= CheckboxInt("Controller vibration", &state.xrHaptics);
             if (UI::IsItemHovered()) {
@@ -1231,17 +1231,18 @@ bool DrawLiveControls(LiveControlsUiState& state,int section,bool* foveatedEditi
             }
             UI::BeginDisabled(state.xrHaptics == 0);
             changed |= widgets::SliderFloat("Vibration strength", &state.xrHapticScale, 0.0f, 2.0f, "%.2fx");
-            if (!cvr::haptics::HapticRoute().Toolkit()) {
-                changed |= widgets::SliderFloat("OpenXR gun/swing/vehicle gain", &state.xrOpenXrHapticGain, 0.0f, 2.0f, "%.2fx");
+            {
+                if (!cvr::haptics::HapticRoute().Toolkit())
+                    changed |= widgets::SliderFloat("OpenXR gun/swing/road gain", &state.xrOpenXrHapticGain, 0.0f, 2.0f, "%.2fx");
                 bool vehicleAudio=state.xrOpenXrVehicleHapticGain>0;
-                if(UI::Checkbox("OpenXR driving audio haptics", &vehicleAudio)) {
+                if(UI::Checkbox("Driving road/engine haptics", &vehicleAudio)) {
                     state.xrOpenXrVehicleHapticGain=vehicleAudio?1.0f:0.0f;changed=true;
                 }
-                changed |= widgets::SliderFloat("OpenXR vehicle audio rumble", &state.xrOpenXrVehicleHapticGain, 0.0f, 2.0f, "%.2fx");
+                changed |= widgets::SliderFloat("Driving road/engine strength", &state.xrOpenXrVehicleHapticGain, 0.0f, 2.0f, "%.2fx");
                 changed |= widgets::Combo("Driving audio channels", &state.xrVehicleAudioChannels,
                     "Stereo\0Stronger channel to both hands\0Left audio to both hands\0Right audio to both hands\0");
                 changed |= UI::Checkbox("Driving audio only while each hand holds wheel/handlebar", &state.xrVehicleAudioRequireGrip);
-                UI::TextWrapped("Unchecked: road/engine rumble continues with hands off while driving. These controls affect OpenXR vehicle audio only.");
+                UI::TextWrapped("Unchecked: road/engine rumble continues with hands off while driving. Uses the active Toolkit or OpenXR output. Toolkit full-game audio above is independent; leave it off if you only want driving rumble.");
                 if (UI::IsItemHovered()) UI::SetTooltip("Earlier fork's 28-320 Hz road/engine envelope, only while driving.\n"
                     "Default output audio (including music/other apps) can contribute. Zero disables vehicle rumble only.");
             }
