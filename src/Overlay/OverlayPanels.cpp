@@ -654,14 +654,14 @@ static bool DrawDrivingControls(LiveControlsUiState& state) {
     bool changed=false;
             UI::Separator();
             UI::TextUnformatted("Driving -- hands on the wheel");
-            changed |= CheckboxInt("Grab the wheel with the grips", &state.xrWheelGrab);
+            changed |= CheckboxInt("Toggle wheel grab with the grips", &state.xrWheelGrab);
             if (UI::IsItemHovered()) {
                 UI::SetTooltip(
                     "While DRIVING, bring a hand to where the driving animation holds the\n"
-                    "wheel (or the handlebars) and squeeze that grip: the arm is handed back\n"
+                    "wheel (or the handlebars) and click that grip: the arm is handed back\n"
                     "to the game's own animation -- hand on the wheel, fingers wrapped around\n"
-                    "it -- instead of following the controller. Release the grip and it goes\n"
-                    "back to your hand.\n\n"
+                    "it -- instead of following the controller. Click again to release it\n"
+                    "back to your hand; you can let go between clicks.\n\n"
                     "Each hand is independent: hold the wheel with one and keep the other on\n"
                     "a gun. While a hand is at the wheel that grip does nothing else (no\n"
                     "holster equip, no magazine grab).");

@@ -271,3 +271,7 @@ tools/cheeky_stage_timing/obj/
 # Local comparison snapshots, never source inputs.
 /integration-notes/
 /build-haptics-tests/
+
+!tools/driving_grip_tests/
+!tools/driving_grip_tests/*.py
+tools/driving_grip_tests/__pycache__/
