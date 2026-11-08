@@ -12,12 +12,10 @@ inline int64_t Select(bool steamvr,int64_t raw,Observation physical,uint64_t now
         nowMs>=physical.observedMs&&nowMs-physical.observedMs<=6000)return physical.periodNs;
     return raw;
 }
-// Runtime identity is latched at XR initialization. Timing/synthesis can change
-// only on the XR thread after the Presenter has drained its old GPU work.
+// Latch the complete package once at XR initialization. Saved UI edits take effect
+// on the next initialization; every timing/queue consumer uses Targeted().
 void Start(bool steamvr,bool packageEnabled=true);
 void Stop();
-bool SteamVrSession();
-void SetEnabled(bool enabled); // drained XR-thread transition only; never changes the XR binding
 void Submitted();
 int64_t Resolve(int64_t raw);
 Observation Read();

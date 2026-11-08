@@ -1,61 +1,67 @@
-# SteamVR framegen controls
+# One complete SteamVR framegen optimization toggle
 
-F10 > FRAMEGEN now separates two controls:
+F10 > FRAMEGEN > **SteamVR framegen optimizations (restart game)**.
+This one setting controls the complete package: presentation queue isolation,
+synthesis queue isolation, physical refresh correction, producer gating,
+submission pacing and advance preparation. Defaults ON.
 
-- **SteamVR framegen optimizations (restart FG)** changes refresh correction,
-  synthesis queue isolation, producer gating and submission pacing. Turn FG OFF,
-  select the option, then turn FG ON. No game restart needed for this control.
-- **SteamVR presentation queue isolation (restart game)** selects the queue bound
-  to the OpenXR session. Its requested and actual states are displayed separately.
-  Leave ON for the normal optimized setup. Changing it needs a game restart.
+Changing it saves the next-launch preference immediately. Restart the GAME to
+apply; turning framegen off/on only changes generation and does not apply the
+package preference. F10 shows active state for the current session and a restart
+notice when the saved preference differs. Upstream Adaptive real-frame pacing
+remains its own live control. Dynamic backend/model switching remains available.
 
-Upstream **Adaptive real-frame pacing** remains independent and live. The two
-SteamVR controls apply to Steam Link too; VDXR/non-SteamVR bypass both.
+## Why the single startup boundary
 
-## Persistence and migration
+Presentation isolation is essential to the tested package. OpenXR binds its
+D3D12 presentation queue at session creation. Applying only timing/synthesis
+live leaves a partially optimized route and is a misleading complete ON/OFF
+comparison. Therefore the complete package is latched once at startup, used by
+both runtime graphics binding and all timing/synthesis consumers.
 
-`xr_framegen_steamvr_optimizations` retains the timing/synthesis preference.
-`xr_framegen_steamvr_presentation_isolation` stores the new startup preference.
-An old INI without the new key inherits its old combined toggle once, preserving
-both ON and OFF installs. Explicit presentation isolation wins regardless of key
-order; the next settings write saves both independently. Defaults remain ON.
+The temporary split/dynamic UI from d25642ae is retired at the user's request.
+`xr_framegen_steamvr_optimizations` remains authoritative. The obsolete
+`xr_framegen_steamvr_presentation_isolation` key is accepted and ignored, is no
+longer written, and cannot override the complete package in either key order.
+Existing unrelated settings and all 0.2.3 selected backports remain intact.
 
-## Transition ownership
-
-UI settings changes only request a transition. SetSettings records an internal,
-non-persisted restart serial whenever FG enabled changes. Even quick
-OFF/ON clicks between display cycles cannot disappear. Editing optimization
-while FG is running stays pending until the next stop; editing while already
-OFF applies after GPU work drains.
-
-The XR thread calls Presenter::ApplySteamVrSettings before xrWaitFrame. It polls
-and resets the generator only once both generation and last consuming GPU fence
-are complete. Until then it shows real frames, suppresses preparation/generation,
-and retains prepared endpoints and capture leases. Real drain submissions never
-advance the old generator's consumer fence (which could prevent retirement under
-load); rejected submissions are not counted as delivered frames.
-
-After safe retirement it clears cadence/history, applies runtime-gated timing,
-resets adaptive/producer/submit timing, and primes with a real frame. No blocking
-fence wait and no OpenXR session/swapchain recreation. The presentation binding
-is never changed by this transition. Refresh monitoring restarts with a fresh
-sample and its existing successful-submission/establishment gate.
-
-External OFXR still prevents private presentation and native generation under
-the existing safeguards. DLSS-G retains its existing synthesis routing; the
-private OFA/FidelityFX synthesis path is not forced onto DLSS-G.
+VDXR/non-SteamVR runtimes bypass the package; Steam Link uses SteamVR and is
+eligible. Existing external OFXR protection can prevent private presentation;
+DLSS-G retains its own generator routing. General rendering/scope fixes and
+independently chosen diagnostics are not switched off by this control.
 
 ## Validation
 
-Production MSVC Release build and the 16-test Windows framegen suite. Extended
-production-Presenter fixture covers outstanding GPU work, pinned prepared images,
-fast off/on, first-real history, no new generation while draining, consumer-fence
-starvation prevention and rejected-submission accounting. Actual settings and
-refresh-worker fixtures cover legacy migration, independent roundtrip, internal
-restart serial, dynamic disable/re-enable and non-SteamVR bypass. Existing real-GPU
-generator tests cover output and consumer fences blocking reset.
+Production MSVC Release succeeded; all 16 Windows framegen tests passed. Actual settings/latch fixture
+covers persistence, independent adaptive control, legacy split-key acceptance
+without override, runtime bypass, no live queue switch and startup application.
+Log/flight build marker: upstream022-steamvr-package-unified-v3. Recorder keeps
+requested preference distinct from active package state. Headset validation of
+this unified UI is pending; underlying package matches the pre-split build.
 
-Headset validation remains pending. This changes control/application behavior,
-not the algorithms or tuning of the previously tested optimizations. A dynamic
-OFF comparison retains the same presentation queue; to compare that part too,
-change its separate setting and restart the game. No release or push.
+## Existing Quest / Steam Link comparison
+
+Nov8 first run PID12108 had the full package ON; second run PID30280 started
+fully OFF. Stable gameplay, menus/transitions/teardown excluded, priming stalls
+retained. Same 90Hz, eye output 2856x3088 / input 952x1029, OFA+FidelityFX medium,
+50% flow and upstream adaptive pacing enabled. Different natural gameplay:
+this is supporting evidence, not a matched-scene causal throughput measurement.
+
+| Metric | Full ON (first run) | Full OFF (second run start) |
+|---|---:|---:|
+| Selected gameplay seconds |118.72|129.78|
+| Real accepted/s |34.79|36.35|
+| Synthetic accepted/s |34.62|32.32|
+| Fresh accepted sum/s |69.41|68.67|
+| SteamVR compositor estimate |85.85|80.96|
+| Source age mean ms |24.56|23.40|
+| Pair gaps/s |0.18|4.00|
+| Pacing budget max ms |24.04|66.67|
+
+Main benefit is consistent pairing and avoiding prolonged pacing backoff, not a
+large average fresh-frame throughput gain. Neither compositor estimate nor fresh
+submission rate proves distinct decoded headset FPS; source age is not end-to-end
+latency. Second run's later timing-only ON phase is separate: presentation remained
+shared, so it did not test the complete package. Archives and weighted selection:
+`integration-notes/quest-steamlink-20261108-1754/full-package-comparison.json` and
+`full-package-assessment.md` (local diagnostic artifacts, not shipped).

@@ -90,7 +90,7 @@ target_compile_definitions(source_timeline_tests PRIVATE NOMINMAX WIN32_LEAN_AND
 target_link_libraries(source_timeline_tests PRIVATE d3d12 dxgi)
 add_test(NAME source_timeline COMMAND source_timeline_tests)
 
-# Exercise actual settings persistence and runtime-gated changes; unrelated telemetry
+# Exercise actual settings persistence and startup latch; unrelated telemetry
 # and AFW providers are stubbed, not the settings or refresh implementation.
 add_executable(package_settings_tests package_settings.cpp ../../src/Framegen/Framegen.cpp ../../src/Framegen/RefreshCadence.cpp)
 target_include_directories(package_settings_tests PRIVATE ../../include "${FLIGHT_OPENXR_INCLUDE}")

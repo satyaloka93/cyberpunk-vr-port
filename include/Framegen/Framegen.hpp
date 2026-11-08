@@ -13,12 +13,8 @@ const char* BackendName(Backend);
 struct Settings {
     bool enabled=false,overlay=false,autoPace=true;
     bool flightRecorder=false;
-    // Timing/synthesis preference: applied at a drained FG-off/restart boundary.
+    // Saved preference; latched with the runtime at startup, never changed on a live XR binding.
     bool steamVrOptimizations=true;
-    // -1 migrates an old combined setting; normalized to 0/1 by SetSettings.
-    int steamVrPresentationIsolation=-1;
-    // Internal, not persisted. Records every enable edge, including an off/on pair between XR cycles.
-    uint64_t restartSerial{};
     // NVIDIA's optical flow (OFA) at half resolution under FidelityFX interpolation; a GPU without OFA
     // falls back to FidelityFX's own flow (Generator.cpp).
     Backend backend=Backend::Nvidia;
@@ -26,9 +22,6 @@ struct Settings {
     int overlayLayout=0,overlayFollow=1,historySeconds=30;
     float overlayCone=60,overlayScale=1,overlayDistance=1.25f,overlayX=0,overlayY=0;
 };
-inline bool PresentationIsolation(const Settings& s) {
-    return s.steamVrPresentationIsolation<0?s.steamVrOptimizations:s.steamVrPresentationIsolation!=0;
-}
 struct Statistics {
     double realFps{},generatedFps{},outputFps{},repeatFps{};
     // generationMs: the GPU time of a pair's generation (its command lists); generationSpanMs: from its start to its
@@ -78,7 +71,6 @@ void DisplayPeriod(int64_t nanoseconds);
 bool FpsCap();
 void SetFpsCap(bool);
 void PacingReady(bool);
-void ResetPacingHistory(); // drained FG restart, including a fast off/on between producer frames
 void OnPresentationCycle(bool missedAdjacentFrame);
 void PaceRenderedFrame();
 bool ParseSetting(const char*,Settings&);

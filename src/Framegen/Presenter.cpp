@@ -49,33 +49,13 @@ bool SameProjection(const Frame& a,const Frame& b) {
     return true;
 }
 }
-bool Presenter::ApplySteamVrSettings() {
-    const auto s=GetSettings();
-    const bool wanted=refresh::SteamVrSession() && s.steamVrOptimizations;
-    const bool needsRestart=s.restartSerial!=appliedRestartSerial || (!s.enabled && wanted!=refresh::Targeted());
-    if(settingsReady && !needsRestart)return false;
-    settingsReady=false;
-    PacingReady(false);
-    generator.Poll();
-    // Preserve prepared endpoints and capture leases until both generation and
-    // its last consuming presentation fence complete. Keep displaying real frames.
-    if(!generator.Reset())return false;
-    Reset();
-    refresh::SetEnabled(s.steamVrOptimizations);
-    ResetPacingHistory();
-    appliedRestartSerial=s.restartSerial;
-    settingsReady=true;
-    Log("[framegen-package] applied timing=%d requested=%d restart=%llu; presentation binding unchanged\n",
-        refresh::Targeted(),s.steamVrOptimizations,static_cast<unsigned long long>(appliedRestartSerial));
-    return true;
-}
 void Presenter::Remember(const Frame& current){
     previous=current;previous.lease.reset();previous.inputs[0].reset();previous.inputs[1].reset();
     previous.color[0]=previous.color[1]=nullptr;previous.colorReady.Reset();previous.colorReadyValue=0;previous.captureTiming.reset();primed=true;
 }
 bool Presenter::Prepare(ID3D12Device* device,ID3D12CommandQueue* queue,Frame current,ID3D12CommandQueue* consumer){
     const auto settings=GetSettings();
-    if(!settingsReady || settings.restartSerial!=appliedRestartSerial || !refresh::Targeted() || !settings.enabled || !settings.autoPace || settings.backend!=Backend::Nvidia ||
+    if(!refresh::Targeted() || !settings.enabled || !settings.autoPace || settings.backend!=Backend::Nvidia ||
        ActiveBackend()!=Backend::Nvidia || !consumer || consumer==queue || ExternalBridgeLoaded() ||
        !WantsPrepare(current.identity.serial) || !current.lease || !CanInterpolate(previous.identity,current.identity) ||
        !SameProjection(previous,current) || !generator.CanPrepare(device,queue,current.color,current.inputs,settings))return false;
@@ -101,10 +81,6 @@ bool Presenter::Prepare(ID3D12Device* device,ID3D12CommandQueue* queue,Frame cur
 Selection Presenter::Select(ID3D12Device* device,ID3D12CommandQueue* queue,Frame current,bool gameplay,ID3D12CommandQueue* consumer) {
     generator.Poll();
     const auto settings=GetSettings();
-    if(!settingsReady || settings.restartSerial!=appliedRestartSerial) {
-        settingsReady=false;PacingReady(false);Status("Applying framegen settings: waiting for pending GPU work");
-        return {current,Cadence::Next::Real,{},false};
-    }
     if(prepared.frame.identity.serial && (!gameplay || !settings.enabled || !settings.autoPace ||
         !refresh::Targeted() || settings.backend!=preparedSettings.backend || settings.quality!=preparedSettings.quality ||
         settings.flowScale!=preparedSettings.flowScale || current.identity.origin!=preparedEndpoint.identity.origin ||
@@ -207,13 +183,6 @@ Selection Presenter::Select(ID3D12Device* device,ID3D12CommandQueue* queue,Frame
 void Presenter::Submitted(const Selection& result,ID3D12Fence* fence,uint64_t value,bool accepted) {
     if(result.frame.lease)result.frame.lease->fence=std::max(result.frame.lease->fence,value);
     if(result.generatedFrom)result.generatedFrom->fence=std::max(result.generatedFrom->fence,value);
-    // A real-only drain frame must not move the old generator's consumer fence
-    // forward forever under load, or the transition could never become idle.
-    if(!settingsReady) {
-        if(!accepted)flight::Count(flight::Event::SubmitRejected);
-        else if(MetricsEnabled()||flight::Enabled())OnSubmitted(result.frame.identity.serial,false,false,NowMs());
-        return;
-    }
     generator.ConsumerFence(fence,value);
     if(!accepted) {flight::Count(flight::Event::SubmitRejected);Reset();return;}
     cadence.Accepted(result.kind,result.frame.identity.serial);

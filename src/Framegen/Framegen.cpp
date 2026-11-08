@@ -41,7 +41,6 @@ std::atomic<double> displayCycleMs{0};
 std::atomic<bool> fpsCap{true};
 std::atomic<double> pacingIntervalMs{0};
 std::atomic<bool> resetPacing{true};
-std::atomic<uint64_t> pacingRestart{};
 Statistics stats;
 struct Sample {double stamp{},duration{};};
 template<size_t N> struct Window {
@@ -125,9 +124,7 @@ void SetSettings(Settings value) {
     const bool disabledReportChanged=metricsChanged || value.enabled!=settings.enabled || value.backend!=settings.backend || !CyberpunkVR_FramegenReport[0];
     if(metricsChanged)ClearMetricsLocked();
     if(value.historySeconds!=settings.historySeconds)nextRefresh=nextSummary=0;
-    if(value.enabled!=settings.enabled||value.backend!=settings.backend||value.quality!=settings.quality||value.flowScale!=settings.flowScale||value.autoPace!=settings.autoPace||value.steamVrOptimizations!=settings.steamVrOptimizations||PresentationIsolation(value)!=PresentationIsolation(settings))flight::Count(flight::Event::SettingsChange);
-    value.restartSerial=settings.restartSerial+(settings.enabled!=value.enabled ? 1u : 0u);
-    value.steamVrPresentationIsolation=PresentationIsolation(value)?1:0;
+    if(value.enabled!=settings.enabled||value.backend!=settings.backend||value.quality!=settings.quality||value.flowScale!=settings.flowScale||value.autoPace!=settings.autoPace||value.steamVrOptimizations!=settings.steamVrOptimizations)flight::Count(flight::Event::SettingsChange);
     settings=value;
     enabled.store(value.enabled,std::memory_order_relaxed);
     metrics.store(value.overlay,std::memory_order_relaxed);
@@ -273,7 +270,6 @@ void PacingReady(bool ready) {
     pacingReady.store(ready,std::memory_order_relaxed);
     if(!ready){pacingIntervalMs.store(0,std::memory_order_relaxed);resetPacing.store(true,std::memory_order_relaxed);}
 }
-void ResetPacingHistory() {PacingReady(false);pacingRestart.fetch_add(1,std::memory_order_release);}
 void OnPresentationCycle(bool missedAdjacentFrame) {
     static AdaptivePacing feedback;
     if(!Enabled() || !autoPace.load(std::memory_order_relaxed)) {feedback.Reset();pacingIntervalMs=0;return;}
@@ -287,11 +283,8 @@ void PaceRenderedFrame() {
     // limits each worker independently, allowing the combined stream to run
     // faster than half refresh. Serialize one schedule for that stream.
     static Timer timer;
-    static uint64_t restartSeen{};
     static std::mutex paceMutex;
     std::lock_guard paceLock(paceMutex);
-    const auto restart=pacingRestart.load(std::memory_order_acquire);
-    if(restart!=restartSeen){timer.last=0;timer.cadence=0;restartSeen=restart;}
     const auto period=framegenPeriod.load(std::memory_order_relaxed);
     // Framegen's pacing (two display periods a real frame) when it runs; the plain refresh cap otherwise.
     if(!Enabled() || !autoPace.load(std::memory_order_relaxed) || !pacingReady.load(std::memory_order_relaxed) || !period) {
@@ -340,7 +333,9 @@ bool ParseSetting(const char* line,Settings& value) {
     if(sscanf_s(line,"xr_framegen = %d",&n)==1)value.enabled=n!=0;
     else if(sscanf_s(line,"xr_framegen_flight_recorder = %d",&n)==1)value.flightRecorder=n!=0;
     else if(sscanf_s(line,"xr_framegen_steamvr_optimizations = %d",&n)==1)value.steamVrOptimizations=n!=0;
-    else if(sscanf_s(line,"xr_framegen_steamvr_presentation_isolation = %d",&n)==1)value.steamVrPresentationIsolation=n!=0;
+    // Retired split-control key: accept old INIs, but the complete package owns
+    // presentation isolation again. Never let this line override the main toggle.
+    else if(sscanf_s(line,"xr_framegen_steamvr_presentation_isolation = %d",&n)==1)return true;
     else if(sscanf_s(line,"xr_framegen_overlay = %d",&n)==1)value.overlay=n!=0;
     else if(sscanf_s(line,"xr_framegen_pace = %d",&n)==1)value.autoPace=n!=0;
     else if(sscanf_s(line,"xr_framegen_backend = %d",&n)==1)value.backend=Backend(std::clamp(n,0,2));
@@ -361,7 +356,6 @@ bool ParseSetting(const char* line,Settings& value) {
 void WriteSettings(void* file,const Settings& s) {
     std::fprintf(static_cast<FILE*>(file),"xr_framegen_flight_recorder=%d\n",s.flightRecorder);
     std::fprintf(static_cast<FILE*>(file),"xr_framegen_steamvr_optimizations=%d\n",s.steamVrOptimizations);
-    std::fprintf(static_cast<FILE*>(file),"xr_framegen_steamvr_presentation_isolation=%d\n",PresentationIsolation(s));
     std::fprintf(static_cast<FILE*>(file),"xr_framegen=%d\nxr_framegen_overlay=%d\nxr_framegen_pace=%d\nxr_framegen_backend=%d\nxr_framegen_quality=%d\nxr_framegen_flow_scale=%d\nxr_framegen_overlay_corner=%d\n",
         s.enabled,s.overlay,s.autoPace,int(s.backend),s.quality,s.flowScale,s.overlayCorner);
     std::fprintf(static_cast<FILE*>(file),"xr_framegen_overlay_layout=%d\nxr_framegen_overlay_follow=%d\nxr_framegen_history=%d\nxr_framegen_overlay_cone=%.2f\nxr_framegen_overlay_scale=%.3f\nxr_framegen_overlay_distance=%.3f\nxr_framegen_overlay_x=%.2f\nxr_framegen_overlay_y=%.2f\n",

@@ -33,36 +33,35 @@ Settings roundtrip(Settings before) {
  while(fgets(line,sizeof(line),file))check(ParseSetting(line,after),"written key parses");fclose(file);return after;
 }
 int main(){
- Settings requested;check(requested.steamVrOptimizations && PresentationIsolation(requested),"existing default on");
- for(bool timing:{false,true})for(bool isolation:{false,true})for(bool adaptive:{false,true}) {
-  requested.steamVrOptimizations=timing;requested.steamVrPresentationIsolation=isolation;requested.autoPace=adaptive;
+ Settings requested;check(requested.steamVrOptimizations,"existing installs keep package default on");
+ for(bool package:{false,true})for(bool adaptive:{false,true}) {
+  requested.steamVrOptimizations=package;requested.autoPace=adaptive;
   const auto loaded=roundtrip(requested);
-  check(loaded.steamVrOptimizations==timing && PresentationIsolation(loaded)==isolation && loaded.autoPace==adaptive,"three independent settings roundtrip");
+  check(loaded.steamVrOptimizations==package && loaded.autoPace==adaptive,"independent settings roundtrip");
  }
- Settings old;ParseSetting("xr_framegen_steamvr_optimizations=0",old);SetSettings(old);
- check(!PresentationIsolation(GetSettings()),"legacy combined OFF preserves presentation opt-out");
- old.steamVrOptimizations=true;SetSettings(old);check(PresentationIsolation(GetSettings()),"legacy combined ON migrates");
- Settings explicitOff;ParseSetting("xr_framegen_steamvr_presentation_isolation=0",explicitOff);
- ParseSetting("xr_framegen_steamvr_optimizations=1",explicitOff);SetSettings(explicitOff);
- check(!PresentationIsolation(GetSettings()),"explicit isolation takes precedence regardless of order");
+ for(bool package:{false,true})for(int retired:{0,1}) {
+  Settings legacy;legacy.steamVrOptimizations=package;
+  const std::string line="xr_framegen_steamvr_presentation_isolation="+std::to_string(retired);
+  check(ParseSetting(line.c_str(),legacy),"retired split key consumed");
+  check(legacy.steamVrOptimizations==package,"retired key must never override the unified package");
+  const auto loaded=roundtrip(legacy);check(loaded.steamVrOptimizations==package,"unified preference persists after retired key");
+ }
  check(!ParseSetting("xr_framegen_steamvr_optimizations=oops",requested),"invalid value ignored");
- check(!ParseSetting("xr_framegen_steamvr_presentation_isolation=oops",requested),"invalid isolation ignored");
- requested=GetSettings();requested.enabled=true;SetSettings(requested);const auto before=GetSettings().restartSerial;
- requested.enabled=false;SetSettings(requested);requested.enabled=true;SetSettings(requested);
- check(GetSettings().restartSerial==before+2,"quick off/on retained even with stale UI snapshot");
- requested=GetSettings();requested.enabled=false;SetSettings(requested);const auto stopped=GetSettings().restartSerial;
- requested=GetSettings();requested.steamVrOptimizations=!requested.steamVrOptimizations;requested.enabled=true;SetSettings(requested);
- check(GetSettings().restartSerial==stopped+1,"enable from already-OFF captures a pending edit before the next XR cycle");
- const auto finalEpoch=GetSettings().restartSerial;
- requested=GetSettings();requested.restartSerial=99999;SetSettings(requested);
- check(GetSettings().restartSerial==finalEpoch,"UI cannot overwrite internal restart epoch");
- auto persisted=roundtrip(GetSettings());check(persisted.restartSerial==0,"restart epoch not persisted");
- refresh::Start(true,false);requested.steamVrOptimizations=true;SetSettings(requested);
- check(!refresh::Targeted(),"UI edit alone never changes active timing");
- refresh::SetEnabled(true);check(refresh::Targeted() && refresh::SteamVrSession(),"drained boundary enables timing without session restart");
- refresh::SetEnabled(false);check(!refresh::Targeted() && refresh::Resolve(22222222)==22222222,"drained boundary disables timing");
- refresh::SetEnabled(true);check(refresh::Targeted(),"timing can re-enable in same session");
- refresh::Stop();check(!refresh::SteamVrSession(),"stop clears runtime identity");
- refresh::Start(false);for(bool on:{false,true}){refresh::SetEnabled(on);check(!refresh::Targeted(),"VDXR bypasses live timing changes");}
- refresh::Stop();std::cout<<"PASS: independent settings, legacy migration, restart epoch and dynamic runtime-gated timing\n";
+ check(ParseSetting("xr_framegen_steamvr_optimizations = 0",requested),"disable parses");
+ SetSettings(requested);refresh::Start(true,GetSettings().steamVrOptimizations);
+ check(!refresh::Targeted() && refresh::Resolve(22222222)==22222222,"SteamVR opt-out keeps runtime cadence");
+ requested.steamVrOptimizations=true;SetSettings(requested);
+ check(!refresh::Targeted(),"live enable must not change session routing");
+ refresh::Stop();refresh::Start(true,GetSettings().steamVrOptimizations);
+ check(refresh::Targeted(),"recreated SteamVR uses saved enable");
+ requested.steamVrOptimizations=false;SetSettings(requested);
+ check(refresh::Targeted(),"live disable must not change active queue/timing route");
+ requested.autoPace=false;SetSettings(requested);check(refresh::Targeted(),"adaptive remains independent");
+ refresh::Stop();refresh::Start(true,GetSettings().steamVrOptimizations);
+ check(!refresh::Targeted(),"recreated SteamVR honors saved disable");
+ for(bool package:{false,true}) {
+  requested.steamVrOptimizations=package;SetSettings(requested);refresh::Start(false,package);
+  check(!refresh::Targeted() && refresh::Resolve(22222222)==22222222,"VDXR unaffected in both settings");
+ }
+ refresh::Stop();std::cout<<"PASS: actual settings roundtrip, existing-install default, startup latch, independent adaptive control and VDXR bypass\n";
 }
