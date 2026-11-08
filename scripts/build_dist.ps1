@@ -177,7 +177,7 @@ foreach ($twin in $rtTwins) {
 }
 # The engine-stereo eye twins (tools/asym_tests/stereo_eye_shaders.py): the volumetric clouds (both qualities of the
 # march) look up the fog in front of a cloud in the pixel's own eye, not the dispatch camera's.
-foreach ($hash in @('8a6c46c528ce5160', 'c944329b340f33c2')) {
+foreach ($hash in @('8a6c46c528ce5160', 'c944329b340f33c2', '4145873fbf34bf87')) {
     Add-File (Need (Join-Path $RepoRoot "src\Shaders\stereo_eye\$hash.dxil") "engine-stereo eye twin $hash") "red4ext\plugins\cyberpunkvrport\shaders\stereo_eye\$hash.dxil"
 }
 # First stereo bloom downsample; enabled separately from the other stereo patches.
