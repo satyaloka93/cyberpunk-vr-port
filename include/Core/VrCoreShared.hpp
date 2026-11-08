@@ -92,6 +92,7 @@ extern bool g_isInVehicle;
 // producer (the camera hook) and consumers (the pose hook, the XInput merge) are all this DLL.
 // Atomic because those are three different threads.
 extern std::atomic<bool> g_isDriving;
+extern std::atomic<bool> g_isOnBike;
 
 // A UI POPUP THAT OWNS THE B BUTTON -- the phone, the radio port, the vehicle list. Published by the
 // CET side (VRUiPopup), because none of the three is a menu: they are overlays, so the game's menu-mode

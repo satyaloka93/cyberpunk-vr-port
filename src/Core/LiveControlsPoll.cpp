@@ -675,8 +675,14 @@ void PollLiveControls() {
     int xrVehicleCutsceneSuspendTier = g_liveControls.xrVehicleCutsceneSuspendTier;
     bool vehicleCutsceneTierConfigured = false;
     float xrVehHeadOffsetX = g_liveControls.xrVehHeadOffsetX;
+    float xrBikeHeadOffsetX = g_liveControls.xrBikeHeadOffsetX;
+    bool xrBikeHeadOffsetXConfigured=false;
     float xrVehHeadOffsetY = g_liveControls.xrVehHeadOffsetY;
+    float xrBikeHeadOffsetY = g_liveControls.xrBikeHeadOffsetY;
+    bool xrBikeHeadOffsetYConfigured=false;
     float xrVehHeadOffsetZ = g_liveControls.xrVehHeadOffsetZ;
+    float xrBikeHeadOffsetZ = g_liveControls.xrBikeHeadOffsetZ;
+    bool xrBikeHeadOffsetZConfigured=false;
     int xrWheelGrab = g_liveControls.xrWheelGrab;
     int xrMenuGesture = g_liveControls.xrMenuGesture;
     int xrVrWeaponWheel = g_liveControls.xrVrWeaponWheel;
@@ -1644,6 +1650,21 @@ void PollLiveControls() {
             xrVehHeadOffsetZ = value;
             continue;
         }
+        if (sscanf_s(line, "xr_bike_head_offset_x=%f", &value) == 1 ||
+            sscanf_s(line, "xr_bike_head_offset_x = %f", &value) == 1) {
+            xrBikeHeadOffsetX = value; xrBikeHeadOffsetXConfigured = true;
+            continue;
+        }
+        if (sscanf_s(line, "xr_bike_head_offset_y=%f", &value) == 1 ||
+            sscanf_s(line, "xr_bike_head_offset_y = %f", &value) == 1) {
+            xrBikeHeadOffsetY = value; xrBikeHeadOffsetYConfigured = true;
+            continue;
+        }
+        if (sscanf_s(line, "xr_bike_head_offset_z=%f", &value) == 1 ||
+            sscanf_s(line, "xr_bike_head_offset_z = %f", &value) == 1) {
+            xrBikeHeadOffsetZ = value; xrBikeHeadOffsetZConfigured = true;
+            continue;
+        }
         if (sscanf_s(line, "xr_wheel_grab=%d", &intValue) == 1 ||
             sscanf_s(line, "xr_wheel_grab = %d", &intValue) == 1) {
             xrWheelGrab = intValue;
@@ -1709,6 +1730,11 @@ void PollLiveControls() {
 
     }
     fclose(file);
+    // Old configurations shared the car offsets with bikes. Preserve that fit per axis.
+    if (!xrBikeHeadOffsetXConfigured) xrBikeHeadOffsetX=xrVehHeadOffsetX;
+    if (!xrBikeHeadOffsetYConfigured) xrBikeHeadOffsetY=xrVehHeadOffsetY;
+    if (!xrBikeHeadOffsetZConfigured) xrBikeHeadOffsetZ=xrVehHeadOffsetZ;
+
 
     const int prevXrRecenter = g_liveControls.xrRecenter;
     const int prevXrMonoSubmit = g_liveControls.xrMonoSubmit;
@@ -1844,8 +1870,11 @@ void PollLiveControls() {
     // hand-edited ini, and a metre of head offset is not a setting, it is a typo.
     auto clampVehOff = [](float v) { return (v < -1.0f) ? -1.0f : (v > 1.0f ? 1.0f : v); };
     g_liveControls.xrVehHeadOffsetX = clampVehOff(xrVehHeadOffsetX);
+    g_liveControls.xrBikeHeadOffsetX = clampVehOff(xrBikeHeadOffsetX);
     g_liveControls.xrVehHeadOffsetY = clampVehOff(xrVehHeadOffsetY);
+    g_liveControls.xrBikeHeadOffsetY = clampVehOff(xrBikeHeadOffsetY);
     g_liveControls.xrVehHeadOffsetZ = clampVehOff(xrVehHeadOffsetZ);
+    g_liveControls.xrBikeHeadOffsetZ = clampVehOff(xrBikeHeadOffsetZ);
     g_liveControls.xrWheelGrab = xrWheelGrab != 0 ? 1 : 0;
     g_liveControls.xrMenuGesture = xrMenuGesture != 0 ? 1 : 0;
     g_liveControls.xrVrWeaponWheel = xrVrWeaponWheel != 0 ? 1 : 0;
@@ -2207,8 +2236,11 @@ LiveControlsUiState MakeLiveControlsUiState() {
     state.xrImmersiveHolsters = g_liveControls.xrImmersiveHolsters;
     state.xrBodyHandsOnly = g_liveControls.xrBodyHandsOnly;
     state.xrVehHeadOffsetX = g_liveControls.xrVehHeadOffsetX;
+    state.xrBikeHeadOffsetX = g_liveControls.xrBikeHeadOffsetX;
     state.xrVehHeadOffsetY = g_liveControls.xrVehHeadOffsetY;
+    state.xrBikeHeadOffsetY = g_liveControls.xrBikeHeadOffsetY;
     state.xrVehHeadOffsetZ = g_liveControls.xrVehHeadOffsetZ;
+    state.xrBikeHeadOffsetZ = g_liveControls.xrBikeHeadOffsetZ;
     state.xrWheelGrab = g_liveControls.xrWheelGrab;
     state.xrMenuGesture = g_liveControls.xrMenuGesture;
     state.xrVrWeaponWheel = g_liveControls.xrVrWeaponWheel;
@@ -2583,8 +2615,11 @@ void PersistLiveControlsUiState(const LiveControlsUiState& state) {
     fprintf(file, "xr_immersive_holsters=%d\n", state.xrImmersiveHolsters != 0 ? 1 : 0);
     fprintf(file, "xr_body_hands_only=%d\n", state.xrBodyHandsOnly != 0 ? 1 : 0);
     fprintf(file, "xr_veh_head_offset_x=%.4f\n", state.xrVehHeadOffsetX);
+    fprintf(file, "xr_bike_head_offset_x=%.4f\n", state.xrBikeHeadOffsetX);
     fprintf(file, "xr_veh_head_offset_y=%.4f\n", state.xrVehHeadOffsetY);
+    fprintf(file, "xr_bike_head_offset_y=%.4f\n", state.xrBikeHeadOffsetY);
     fprintf(file, "xr_veh_head_offset_z=%.4f\n", state.xrVehHeadOffsetZ);
+    fprintf(file, "xr_bike_head_offset_z=%.4f\n", state.xrBikeHeadOffsetZ);
     fprintf(file, "xr_wheel_grab=%d\n", state.xrWheelGrab != 0 ? 1 : 0);
     fprintf(file, "xr_menu_gesture=%d\n", state.xrMenuGesture != 0 ? 1 : 0);
     fprintf(file, "xr_vr_weapon_wheel=%d\n", state.xrVrWeaponWheel != 0 ? 1 : 0);
@@ -2742,8 +2777,11 @@ extern "C" void SetLiveControlsUiState(const LiveControlsUiState* state, int per
     {   // In-vehicle head offset: same bound as the ini path, for the same reason.
         auto cl = [](float v) { return (v < -1.0f) ? -1.0f : (v > 1.0f ? 1.0f : v); };
         g_liveControls.xrVehHeadOffsetX = cl(state->xrVehHeadOffsetX);
+        g_liveControls.xrBikeHeadOffsetX = cl(state->xrBikeHeadOffsetX);
         g_liveControls.xrVehHeadOffsetY = cl(state->xrVehHeadOffsetY);
+        g_liveControls.xrBikeHeadOffsetY = cl(state->xrBikeHeadOffsetY);
         g_liveControls.xrVehHeadOffsetZ = cl(state->xrVehHeadOffsetZ);
+        g_liveControls.xrBikeHeadOffsetZ = cl(state->xrBikeHeadOffsetZ);
     }
     // DRIVING. Same clamps as the ini path -- the overlay sliders already bound these, but the two
     // entry points must not be able to disagree about what a valid value is.

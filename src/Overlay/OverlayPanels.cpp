@@ -792,8 +792,11 @@ static bool DrawDrivingControls(LiveControlsUiState& state) {
             g_vehicleState.load(std::memory_order_relaxed));
         UI::BeginDisabled(passengerCombat);
         changed |= widgets::SliderFloat("Car Head X right", &state.xrVehHeadOffsetX, -0.50f, 0.50f, "%.3f m");
+        changed |= widgets::SliderFloat("Bike Head X right", &state.xrBikeHeadOffsetX, -0.50f, 0.50f, "%.3f m");
         changed |= widgets::SliderFloat("Car Head Y forward", &state.xrVehHeadOffsetY, -0.50f, 0.50f, "%.3f m");
+        changed |= widgets::SliderFloat("Bike Head Y forward", &state.xrBikeHeadOffsetY, -0.50f, 0.50f, "%.3f m");
         changed |= widgets::SliderFloat("Car Head Z up", &state.xrVehHeadOffsetZ, -0.50f, 0.50f, "%.3f m");
+        changed |= widgets::SliderFloat("Bike Head Z up", &state.xrBikeHeadOffsetZ, -0.50f, 0.50f, "%.3f m");
         UI::EndDisabled();
         {   // Live, so a slider that is doing nothing says so instead of being blamed.
             UI::TextDisabled(passengerCombat ? "   (window combat: use GENERAL > Head offsets)"

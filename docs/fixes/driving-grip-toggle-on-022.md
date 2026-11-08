@@ -19,3 +19,12 @@ including left-handed weapons, and vehicle exit. Run:
 Suggested independent PR: **Latch driving wheel grabs until the next grip click**.
 No dependency on the haptics or framegen changes. In-game confirmation remains
 necessary for animation feel and steering with the newer 0.2.2 vehicle code.
+
+## Separate bike/car camera offsets restored
+
+The first latch backport omitted RC5's camera controls. Restore its mounted-bike
+classification, independent X/Y/Z settings, F10 controls, persistence and the
+selection at LocateCamera. Upstream passenger-window combat continues to suppress
+vehicle offsets. Older INIs without bike keys inherit the existing shared/car
+values per axis, preserving fit. Tests exercise both camera choices and passenger
+suppression in addition to the production latch blocks.

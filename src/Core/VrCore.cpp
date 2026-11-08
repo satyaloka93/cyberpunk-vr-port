@@ -1592,6 +1592,7 @@ void InitializeMountedVehicleCache() {
 uint64_t g_locateCameraHits = 0;
 bool g_isInVehicle = false;
 std::atomic<bool> g_isDriving{false};
+std::atomic<bool> g_isOnBike{false};
 std::atomic<int> g_vehicleState{-1};
 std::atomic<int> g_sceneTier{0};
 std::atomic<float> g_lookStickX{0.0f};
