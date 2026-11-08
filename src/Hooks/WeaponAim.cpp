@@ -321,8 +321,8 @@ static bool WaPlayerOwnedWeapon(const void* aBlackboard) {
 // NOT BY muzzlePosition: the key is in the shot's shared data, but a hitscan shot leaves it at 0,0,0 (measured
 // 2026-10-27 on Liberty + Nue), so the left barrel was never recognised. The shot names its gun by
 // weaponItemRecord (a handle to the record; its TweakDBID hash) against the two records the reload mod
-// publishes (CyberpunkVR_DualWieldRecords). Two guns of one model look the same that way; then the trigger
-// decides -- each trigger fires only its own hand's gun (vrport_dual_wield.reds) -- and with both squeezed the
+// publishes (CyberpunkVR_DualWieldRecords). The active firing hand wins over a stale primary record;
+// records disambiguate both firing states, with alternation only as a final fallback. With both squeezed the
 // pair's shots go out right, then left. Anything unreadable keeps the right gun, as every shot did before.
 extern "C" volatile uint32_t CyberpunkVR_DualWieldRecords[2];
 static std::atomic<uint32_t> s_waDualAlternate{0};
@@ -330,6 +330,9 @@ static bool WaLeftGunFired(const void* aBlackboard, float* pos, float* fwd) {
     if (!g_pSharedHands) return false;
     if (g_pSharedHands[vrshared::kDualWieldActive] < 0.5f || g_pSharedHands[vrshared::kLeftMuzzleValid] < 0.5f)
         return false;
+    const int hands = static_cast<int>(g_pSharedHands[vrshared::kDualWieldActive]);
+    const bool leftTrigger = (hands & vrshared::kDualWieldLeftFires) != 0;
+    const bool rightTrigger = (hands & vrshared::kDualWieldRightFires) != 0;
     const uint8_t* bb = static_cast<const uint8_t*>(aBlackboard);
     const uint64_t* keys = *reinterpret_cast<const uint64_t* const*>(bb + 0x48);
     const uint32_t count = *reinterpret_cast<const uint32_t*>(bb + 0x54);
@@ -338,7 +341,7 @@ static bool WaLeftGunFired(const void* aBlackboard, float* pos, float* fwd) {
     // The entry holds a handle to the WeaponItem record (instance at +8); the record's TweakDBID is at +0x40
     // (gamedataTweakDBRecord), the hash in its low 32 bits. Called inside the evaluator hook's __try.
     uint32_t record = 0;
-    for (uint32_t i = 0; i < count; ++i) {
+    if (leftTrigger == rightTrigger) for (uint32_t i = 0; i < count; ++i) {
         if (keys[i] != kWaWeaponItemRecordCName) continue;
         const uint8_t* entry = vals + static_cast<size_t>(i) * 24;
         const uintptr_t instance = *reinterpret_cast<const uintptr_t*>(entry + 8);
@@ -347,13 +350,13 @@ static bool WaLeftGunFired(const void* aBlackboard, float* pos, float* fwd) {
         break;
     }
     const uint32_t leftRecord = CyberpunkVR_DualWieldRecords[0], rightRecord = CyberpunkVR_DualWieldRecords[1];
-    const int hands = static_cast<int>(g_pSharedHands[vrshared::kDualWieldActive]);
-    const bool leftTrigger = (hands & vrshared::kDualWieldLeftFires) != 0;
-    const bool rightTrigger = (hands & vrshared::kDualWieldRightFires) != 0;
     bool left = false;
     int path = 0;
-    if (record && leftRecord && rightRecord && leftRecord != rightRecord) {left = record == leftRecord; path = 1;}
-    else if (leftTrigger != rightTrigger) {left = leftTrigger; path = 2;}
+    // The game can leave the primary record on the off-hand attack. The active
+    // shoot state takes precedence; use records only when firing hands are ambiguous.
+    if (leftTrigger != rightTrigger) {left = leftTrigger; path = 2;}
+    else if (record && leftRecord && rightRecord && leftRecord != rightRecord &&
+        (record == leftRecord || record == rightRecord)) {left = record == leftRecord; path = 1;}
     else if (leftTrigger) {left = (s_waDualAlternate.fetch_add(1, std::memory_order_relaxed) & 1u) != 0; path = 3;}
     if (cvr::RuntimeDiagnosticsEnabled()) {
         CyberpunkVR_DebugDualShot[0] = left ? 1.0f : 0.0f; CyberpunkVR_DebugDualShot[1] = static_cast<float>(path);

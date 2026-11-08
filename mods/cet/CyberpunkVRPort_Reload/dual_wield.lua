@@ -496,6 +496,7 @@ local function publishRecords(player, left)
     if type(SetVRDualWieldRecords) ~= 'function' then return end
     local right = left and gunIn(player, 1) or nil
     pcall(SetVRDualWieldRecords, left and recordHash(left) or 0, right and recordHash(right) or 0)
+    if type(SetVRDualWieldEntities) == 'function' then pcall(SetVRDualWieldEntities, left, right) end
 end
 
 -- Once per frame, before the hand-driven reload. Returns true while two guns are in hand.

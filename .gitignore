@@ -275,3 +275,7 @@ tools/cheeky_stage_timing/obj/
 !tools/driving_grip_tests/
 !tools/driving_grip_tests/*.py
 tools/driving_grip_tests/__pycache__/
+
+!tools/dual_aim_tests/
+!tools/dual_aim_tests/*.py
+tools/dual_aim_tests/__pycache__/

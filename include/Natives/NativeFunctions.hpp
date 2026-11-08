@@ -465,3 +465,5 @@ void RegisterTypes();
 void PostRegisterTypes();
 bool AddToGame(RED4ext::CGameApplication*);
 }
+
+void SetVRDualWieldEntities(RED4ext::IScriptable*, RED4ext::CStackFrame*, void*, int64_t);

@@ -1235,6 +1235,10 @@ RED4EXT_C_EXPORT void RED4EXT_CALL PostRegisterTypes() {
     fLeftMuzzle->flags = flags;
     for (const char* n : {"x", "y", "z", "qi", "qj", "qk", "qr"}) fLeftMuzzle->AddParam("Float", n);
     rtti->RegisterFunction(fLeftMuzzle);
+    auto dualEntities = RED4ext::CGlobalFunction::Create("SetVRDualWieldEntities", "SetVRDualWieldEntities", &SetVRDualWieldEntities);
+    dualEntities->flags = flags;
+    AddNative("SetVRDualWieldEntities", dualEntities, nullptr,
+        {{"handle:IScriptable", "left"}, {"handle:IScriptable", "right"}});
     auto fDualRecords = RED4ext::CGlobalFunction::Create("SetVRDualWieldRecords", "SetVRDualWieldRecords", &SetVRDualWieldRecords);
     fDualRecords->flags = flags;
     fDualRecords->AddParam("Int32", "left"); fDualRecords->AddParam("Int32", "right");
