@@ -29,9 +29,13 @@ Source restored in three isolated additions (no release/push):
    physical handedness and camera-miss behavior.
 3. Independent dual-wield firing selection, projectile muzzle/spread and recoil
    restored in the commit adding this checkpoint. Retain 0.2.2 firing-state bits
-   and its existing two-eye dots.
+   with a follow-up restoring RC5's shared per-hand dot renderer.
 
 See `docs/fixes/rc5-haptics-on-022.md`, `driving-grip-toggle-on-022.md`, and
 `dual-wield-aim-on-022.md` for validation and proposed independent PR boundaries.
-The source gaps above are addressed; headset regression testing and user approval
-for publishing are still outstanding. Framegen source/settings are preserved.
+The first checkpoint missed separate bike/car camera settings and kept the
+Toolkit road controls hidden. Follow-up changes restore the camera controls and
+route the existing road envelope through Toolkit as well as OpenXR, with balanced
+channel selection. Headset validation of road balance and the reported below-dot
+impacts remains outstanding; do not describe this as fully validated RC5 parity.
+Framegen source/settings are preserved. No release or push is authorized.
