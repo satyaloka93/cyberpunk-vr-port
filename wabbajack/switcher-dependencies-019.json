@@ -1,0 +1,119 @@
+{
+  "schemaVersion": 1,
+  "name": "Upstream 0.1.9 / game 2.5 dependencies",
+  "requirementsSource": "https://github.com/dariulone/cyberpunk-vr-port/blob/0.1.9/README.md#requirements",
+  "notes": "Framework minimum versions enforced; versionless redscript compiler checked by exact 0.5.32 hash, unknown builds replaced by pinned release. Visible Bullets is optional and left installed if present. Nexus downloads remain manual.",
+  "mods": [
+    {
+      "id": "red4ext",
+      "priority": 10,
+      "name": "RED4ext 1.31.0",
+      "version": "1.31.0",
+      "fileName": "red4ext-1.31.0.zip",
+      "url": "https://github.com/wopss/RED4ext/releases/download/v1.31.0/red4ext-1.31.0.zip",
+      "sha256": "b9ae4351f547f90af58dfbf7445d45c55cd5ba24fbee27fb16fb5d91e9df621e",
+      "minimumVersion": "1.31.0"
+    },
+    {
+      "id": "cet",
+      "priority": 20,
+      "name": "Cyber Engine Tweaks 1.38.0",
+      "version": "1.38.0",
+      "fileName": "cet_1_38_0.zip",
+      "url": "https://github.com/maximegmd/CyberEngineTweaks/releases/download/v1.38.0/cet_1_38_0.zip",
+      "sha256": "6da2e91b07d5ea9dd4aa32145b2c2920a976abee481854976e2ae82169b612e1",
+      "minimumVersion": "1.38.0"
+    },
+    {
+      "id": "redscript",
+      "priority": 30,
+      "name": "redscript 0.5.32",
+      "version": "0.5.32",
+      "fileName": "redscript-v0.5.32-windows.zip",
+      "url": "https://github.com/jac3km4/redscript/releases/download/v0.5.32/redscript-v0.5.32-windows.zip",
+      "sha256": "882c57a80b07e453bc8a34cd8430f460aceed789581de8743638e19dcfb7936f",
+      "minimumVersion": "0.5.32",
+      "binarySha256": "f7bf0a5a0986aec61d360ae79a3e957b8e21c0781309193a2a056c7bde0e90bc"
+    },
+    {
+      "id": "archivexl",
+      "priority": 40,
+      "name": "ArchiveXL 1.28.0",
+      "version": "1.28.0",
+      "fileName": "ArchiveXL-1.28.0.zip",
+      "url": "https://github.com/psiberx/cp2077-archive-xl/releases/download/v1.28.0/ArchiveXL-1.28.0.zip",
+      "sha256": "a4f02416a5f1547f2529de3b2b4a23eddde0f40d511b009fc93635ba2db6e8e1",
+      "minimumVersion": "1.28.0"
+    },
+    {
+      "id": "tweakxl",
+      "priority": 50,
+      "name": "TweakXL 1.12.0",
+      "version": "1.12.0",
+      "fileName": "TweakXL-1.12.0.zip",
+      "url": "https://github.com/psiberx/cp2077-tweak-xl/releases/download/v1.12.0/TweakXL-1.12.0.zip",
+      "sha256": "a7c39b769e6c51d9f27412a101fb87e6a1fb8452f0e37ee0d1d1f3f44e656fa8",
+      "minimumVersion": "1.12.0"
+    },
+    {
+      "id": "codeware",
+      "priority": 60,
+      "name": "Codeware 1.21.0",
+      "version": "1.21.0",
+      "fileName": "Codeware-1.21.0.zip",
+      "url": "https://github.com/psiberx/cp2077-codeware/releases/download/v1.21.0/Codeware-1.21.0.zip",
+      "sha256": "a907110a0c6ac32f095f5178660b56799527cef710f7a88ae6c846e5f00bc8a8",
+      "minimumVersion": "1.21.0"
+    },
+    {
+      "id": "input-loader",
+      "priority": 70,
+      "name": "Input Loader 0.2.3",
+      "version": "0.2.3",
+      "fileName": "input_loader_v0.2.3.zip",
+      "url": "https://github.com/jackhumbert/cyberpunk2077-input-loader/releases/download/v0.2.3/input_loader_v0.2.3.zip",
+      "sha256": "6011515264bfb582591bf2ce66e956ac9c7993dfb5046590ba3ee7625af603ee"
+    },
+    {
+      "id": "equipment-ex",
+      "priority": 80,
+      "name": "Equipment-EX 1.2.9",
+      "version": "1.2.9",
+      "fileName": "EquipmentEx-1.2.9.zip",
+      "url": "https://github.com/psiberx/cp2077-equipment-ex/releases/download/v1.2.9-rc.1/EquipmentEx-1.2.9.zip",
+      "sha256": "0f38728206f0783a039111de3c8d5cd7e92c09a8afcdd11dc8b892e4e211a646"
+    },
+    {
+      "id": "visual-holsters",
+      "priority": 90,
+      "name": "Visual Holsters 1.2",
+      "version": "1.2",
+      "fileName": "Visual Holsters-21936-1-2-1751235859.zip",
+      "nexusGame": "cyberpunk2077",
+      "nexusModId": 21936,
+      "nexusFileId": 112577,
+      "manualUrl": "https://www.nexusmods.com/cyberpunk2077/mods/21936?tab=files&file_id=112577",
+      "prompt": "Download Visual Holsters main file version 1.2.",
+      "localPatterns": [
+        "Visual Holsters-21936-1-2-*.zip"
+      ],
+      "sha256": "8982628dd46524ce1f1b43bb6cec3b8424fe213f062201350e4fc6e92d22c251"
+    },
+    {
+      "id": "nova-optics",
+      "priority": 110,
+      "name": "Nova Optics 1.3.1",
+      "version": "1.3.1",
+      "fileName": "Nova Optics 29190 1.3.1.zip",
+      "nexusGame": "cyberpunk2077",
+      "nexusModId": 29190,
+      "nexusFileId": 155124,
+      "manualUrl": "https://www.nexusmods.com/cyberpunk2077/mods/29190?tab=files&file_id=155124",
+      "prompt": "Download the Nova Optics main file version 1.3.1.",
+      "localPatterns": [
+        "Nova Optics 29190 1.3.1*.zip"
+      ],
+      "sha256": "8f5dcca3d9bbd07f118594cac92693a92379a89d10e04b4345f2eecb3808d17e"
+    }
+  ]
+}

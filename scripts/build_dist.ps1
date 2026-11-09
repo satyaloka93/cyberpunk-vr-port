@@ -10,9 +10,12 @@
 
 param(
     [ValidatePattern('^\d+\.\d+\.\d+(?:-[A-Za-z0-9][A-Za-z0-9.-]*)?$')]
-    [string]$Version = "0.2.2",
+    [string]$Version = "0.2.3-psvr2.1-rc1",
     # The game 2.5 build tree (RED4ext.SDK game-2.5); build\ is the old 2.31 tree and its DLL is stale.
-    [string]$BuildDir = "build\patchday\sdk25-build",
+    [string]$BuildDir = "build-local",
+    [ValidatePattern('^[0-9a-fA-F]{7,40}$')]
+    [string]$SourceCommit = "631a180b65da8c026ce3cf7afe03dfbd48adf484",
+    [string]$DxcDirectory = "",
     [switch]$Zip,
     [switch]$Force
 )
@@ -153,7 +156,7 @@ Get-ChildItem -LiteralPath (Need (Join-Path $RepoRoot "src\Shaders\stereo_light_
     ForEach-Object { Add-File $_.FullName "red4ext\plugins\cyberpunkvrport\shaders\stereo_light_merge\$($_.Name)" }
 # Single-pass stereo rewrites the engine's shaders in process with the DirectX shader compiler
 # (src/Render/ViewTwinCompiler.cpp): dxcompiler.dll and dxil.dll beside the plugin (dxc\), from the Windows SDK.
-$DxcDir = "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64"
+$DxcDir = if ($DxcDirectory) { $DxcDirectory } else { "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64" }
 foreach ($n in @("dxcompiler.dll", "dxil.dll")) {
     Add-File (Need (Join-Path $DxcDir $n) "DirectX shader compiler $n") "red4ext\plugins\cyberpunkvrport\dxc\$n"
 }
@@ -195,6 +198,18 @@ Add-File (Need (Join-Path $RepoRoot "src\Shaders\stereo_probe_cull\355ba40185eea
 # in vrport.ini. FirstLaunch clears it to 0 only after the merge succeeds. A timestamped backup
 # of the original file is kept. See INSTALL.txt.
 Add-File (Need (Join-Path $RepoRoot "mods\config\UserSettings.json") "UserSettings.json") "red4ext\plugins\cyberpunkvrport\config\UserSettings.json"
+
+# Release defaults avoid the first-launch graphics preset and opt in to diagnostic recording only on request.
+Add-File (Need (Join-Path $RepoRoot "mods\config\vrport-release.ini") "RC defaults") "red4ext\plugins\cyberpunkvrport\config\vrport.ini"
+foreach ($license in @('OFXR-LGPL-3.0.txt','OFXR-GPL-3.0.txt','OpenVR-LICENSE')) {
+    Add-File (Need (Join-Path $RepoRoot ("licenses\"+$license)) $license) ("red4ext\plugins\cyberpunkvrport\licenses\"+$license)
+}
+Add-File (Join-Path $RepoRoot 'LICENSE') 'red4ext\plugins\cyberpunkvrport\licenses\PORT-LICENSE.txt'
+Add-File (Join-Path $RepoRoot 'externals\v557-reconstruction\provenance.json') 'red4ext\plugins\cyberpunkvrport\licenses\V557-provenance.json'
+Add-File (Join-Path $RepoRoot 'docs\PSVR2-023-RC1.md') 'red4ext\plugins\cyberpunkvrport\PSVR2-SETUP.md'
+Add-File (Join-Path $RepoRoot 'docs\REBUILD-0.2.3-RC1.md') 'red4ext\plugins\cyberpunkvrport\licenses\SOURCE-AND-REBUILD.md'
+$releaseInfo=[ordered]@{version=$Version;runtimeCommit='631a180b65da8c026ce3cf7afe03dfbd48adf484';dllSha256=(Get-FileHash -LiteralPath $stereoDll).Hash;source='https://github.com/satyaloka93/cyberpunk-vr-port';sdkCommit='5246e659d783e5834cc08a90e56c8932c9ed3449'}
+$releaseInfo | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Out 'red4ext\plugins\cyberpunkvrport\release.json') -Encoding UTF8
 
 # ---- captured grip poses, read from beside the exe -------------------------------------------
 # ENUMERATED, never listed. This was a hardcoded three (both smoke grips and the lighter) while
@@ -270,120 +285,56 @@ if (Test-Path $inputDir) {
 
 # ---- the note a tester actually reads ----------------------------------------------------------
 $readme = @"
-CyberpunkVRPort $Version
-========================
+CyberpunkVRPort $Version - PSVR2 / Quest release candidate
 
-WHAT THIS IS
-    A VR mod for Cyberpunk 2077: stereo rendering through OpenXR, 6DoF head tracking, motion
-    controllers merged into the game's own gamepad input, VRIK arms, and a set of gameplay mods
-    (holsters, physical reload, melee, weapon handling, smoking). HUD placement is handled by
-    the VR port.
+Use CyberpunkVRPort-Switcher.zip from this release for a clean backed-up install.
+Run Switch-CyberpunkVRPort.bat; option4 installs this fork, option1 installs stock
+upstream0.2.3, option5 restores the previous port, option11 inspects loader/log errors.
+Extract the entire switcher outside the game. Never copy only its main script.
 
-BEFORE YOU INSTALL -- READ THIS ONE
-    The first time the plugin starts it MERGES the VR preset into your Cyberpunk settings:
+Requires Cyberpunk2077 2.5, RED4ext1.31.0 and your OpenXR runtime. The switcher
+downloads/verifies RED4ext. CET/ArchiveXL/TweakXL/InputLoader/Codeware/redscript
+are not required for the port, but keep them for other mods that need them.
+More Occluders and HUDitor are NOT required. Cheeky, OFXR and Toolkit are optional.
 
-        %LOCALAPPDATA%\CD Projekt Red\Cyberpunk 2077\UserSettings.json
+This fork uses our tested0.2.2 base with selected0.2.3 backports, not every upstream
+0.2.3 feature. No automatic graphics overwrite: first_launch=0. Personal game
+settings and DLSS replacements are preserved by the switcher.
 
-    Graphics, all input bindings/controls, HUD and comfort values come from the preset. Your
-    language, audio, game difficulty, telemetry, cloud-save preference and gallery favorites
-    are preserved. Groups and settings absent from the preset are retained too.
-    Your original file is backed up as UserSettings.pre-vr-<date>-<time>-<id>.json in the same
-    folder before atomic installation. Invalid JSON or a failed backup leaves it unchanged.
-    It happens exactly once:
-    afterwards the file is yours and nothing here looks at it again. Everything you change in the
-    game's own menus sticks.
+F10 opens the port menu. Framegen starts OFF. To use the improved bike-image
+reconstruction select NVIDIA OFA + V557 (experimental), Medium/50%, then enable FG.
+It works on PSVR2/SteamVR, Quest/SteamLink and Quest/VDXR. The separate SteamVR
+optimization package defaults ON; it also applies to SteamLink, automatically
+bypasses VDXR, and needs a game restart when changed. Adaptive pacing defaults ON.
+Close external OFXR framegen before enabling built-in FG. Diagnostic flight
+recording and the performance overlay default OFF and can be enabled inF10.
 
-    first_launch=1 in bin\x64\vrport.ini means "not installed yet"; the plugin
-    clears it to 0 once the merge has succeeded, and never looks again.
+Standard vibration uses OpenXR. Advanced PSVR2 adaptive triggers/audio require
+our optional PSVR2Toolkit fork bridge; Steam DSX is NOT required. See
+red4ext\plugins\cyberpunkvrport\PSVR2-SETUP.md and
+https://github.com/satyaloka93/PSVR2Toolkit/releases/tag/cyberpunk-dsx-bridge-v0.3.2
+Haptics backend and road/audio settings are inF10. Restart game and bridge after
+changing the haptic route. Quest touch thumbrest shifts the D-pad; left thumbrest
+plus right-stick click opens inventory.
 
-    To SKIP it entirely, including on the very first launch: create bin\x64\vrport.ini yourself,
-    containing the single line first_launch=0, before you start the game. Creating it afterwards
-    is too late -- the plugin writes that file and reads it in the same breath, so a fresh
-    install has already been offered the settings by the time you can edit it.
+Hardware-accelerated GPU scheduling (HAGS) improved some local runs; benefit is
+system/driver dependent, not a guaranteed FPS gain. Reboot after changing HAGS.
 
-    To ask for the settings later, set first_launch=1 and start the game once.
+Do not remove dxgi.dll or version.dll merely because they exist. Cheeky/ReShade/
+ASI loaders may own them. Switcher option11 identifies known files and extracts
+recent errors with recovery context. Unknown hashes need review, not automatic
+deletion. Cheeky diagnostic proxies are not bundled or installed by this package.
 
-REQUIREMENTS
-    Cyberpunk 2077 2.5 (this build's engine offsets are matched to it; 2.31 will not work)
-    The 2.5 releases of the frameworks, or newer:
-        RED4ext 1.31.0
-    An OpenXR runtime, started BEFORE the game
+Manual install: close the game, back up the existing port, remove only its old
+files, then extract the game-root paths. The switcher is strongly preferred for
+upgrades. Config is red4ext\plugins\cyberpunkvrport\config\vrport.ini.
+Logs are under red4ext\plugins\cyberpunkvrport\log and red4ext\logs.
+Do not reinstall RED4ext.SDK headers into the game; the compatible SDK is compiled
+into the supplied DLL. Its pinned source revision is recorded inrelease.json.
 
-    Cyber Engine Tweaks is not needed any more: the plugin runs the port's Lua mods itself, from
-    red4ext\plugins\cyberpunkvrport\lua (the same scripting core, inside the plugin). Keep CET if
-    other mods of yours need it; both run side by side. An earlier release's CyberpunkVRPort_* folders
-    in CET's mods folder are taken out at the first start (your settings in them move into the
-    plugin's copies, anything else is kept in red4ext\plugins\cyberpunkvrport\legacy\cet), and CET's
-    overlay key opens the mods' windows here too.
-
-    ArchiveXL, TweakXL, Input Loader, Codeware and redscript are not needed any more: the plugin
-    mounts the port's archive, writes its TweakDB records, merges its input bindings, has its own
-    natives for what the scripts used Codeware for, and carries redscript's script compiler (built
-    from redscript's sources) for a game without redscript. Keep them if other mods of yours need
-    them (Equipment-EX and Nova Optics do, for themselves); with redscript installed, its compiler
-    compiles the port's scripts too. The port works with or without them.
-
-    Nothing else may proxy dxgi. If another VR mod installed bin\x64\dxgi.dll, move it
-    out of the folder -- two VR paths in one process fight over the same engine hooks.
-
-INSTALL
-    Extract the contents of this folder into your Cyberpunk 2077 game root -- the folder that
-    contains bin\, r6\, red4ext\ and archive\. The paths inside already match.
-
-    Upgrading from 0.1.9 or older: the plugin is red4ext\plugins\cyberpunkvrport\cyberpunkvrport.dll now.
-    Delete CyberpunkVR_Stereo.dll (and CyberpunkVR_Stereo.pdb) in that folder. If you forget, the new
-    plugin renames the old file at the first start, stays off for that one launch and asks for a restart.
-    Also delete engine\config\platform\pc\vrcam_cpu_tweaks.ini: this release does not ship it any more.
-    When upgrading, remove r6\scripts\CyberpunkVRPort_LootUi\vrport_loot_ui.reds.
-    Its old loot scaling and tooltip reparenting are replaced by the texture HUD.
-    Also remove r6\scripts\CyberpunkVRPort_SettingsGuard\vrport_settings_guard.reds
-    to restore the native cascade shadow settings in the game menu.
-    Upgrading from 0.1.9 or older: remove r6\scripts\CyberpunkVRPort_Cyberware\vrport_launcher_tweak.reds
-    (the plugin registers the launcher state itself; the old script needs TweakXL) and the folders
-    r6\tweaks\vrport and r6\tweaks\vrcigarette if the plugin has not already taken them out.
-    The same for archive\pc\mod\cyberpunkvrport.archive and cyberpunkvrport.archive.xl: the archive
-    is in the plugin's folder now and the plugin takes the old copies out at its first start.
-    Upgrading from 0.1.7 or older: delete archive\pc\mod\VRCigarette.archive.xl,
-    archive\pc\mod\vrport_basketball.archive and archive\pc\mod\vrport_mag.archive.
-    Their assets are inside cyberpunkvrport.archive now; the old files would duplicate them.
-    The same for archive\pc\mod\vrport_menu_native.archive and vrport_menu_panels.archive
-    from a development build: the VR menu's assets are inside cyberpunkvrport.archive too.
-    QuickBoot is not included. If you previously installed a development build with it,
-    remove red4ext\plugins\cyberpunkvrport\lua\CyberpunkVRPort_QuickBoot (an older one:
-    bin\x64\plugins\cyber_engine_tweaks\mods\CyberpunkVRPort_QuickBoot) to keep
-    normal startup and save selection. Existing launcher preferences are preserved;
-    show_launcher defaults to 1 only when no saved preference overrides it.
-
-    Install More Occluders (Scripted v0.3) separately from its author's page:
-    https://www.nexusmods.com/cyberpunk2077/mods/33136
-    It is not included in this archive.
-
-    Then start your OpenXR runtime, then the game. A small launcher window appears first: pick
-    your headset and per-eye render resolution there.
-
-WHAT LANDS WHERE
-    red4ext\plugins\cyberpunkvrport\      the VR plugin and its folders: shaders, grips, config, log
-    red4ext\plugins\cyberpunkvrport\grips\        captured hand poses for holding a cigarette and lighter
-    red4ext\plugins\cyberpunkvrport\lua\CyberpunkVRPort_*\   the Lua mods (run by the plugin)
-    r6\scripts\CyberpunkVRPort_*\
-    red4ext\plugins\cyberpunkvrport\archive\      packed assets (mounted by the plugin)
-    red4ext\plugins\cyberpunkvrport\config\archive.yaml   their manifest (applied by the plugin)
-    red4ext\plugins\cyberpunkvrport\config\input\   input bindings (merged by the plugin)
-    red4ext\plugins\cyberpunkvrport\config\tweaks\  TweakDB records (applied by the plugin)
-
-    The player entity assets in cyberpunkvrport.archive carry one render-to-texture camera per
-    supported resolution. The launcher offers exactly the ones that exist.
-
-IF SOMETHING IS WRONG
-    red4ext\plugins\cyberpunkvrport\log\cyberpunkvrport.log   the plugin's own log, start here
-    red4ext\logs\                          script validation errors land here
-    red4ext\plugins\cyberpunkvrport\log\lua\   the Lua host's log; each mod's log is in its lua\<mod>\ folder
-
-    Uninstall: run UNINSTALL.bat, in the same folder as this file. It removes every path this
-    package added and then offers your own settings back. UNINSTALL.txt is the same thing
-    written out by hand, including the two things neither of them can put back for you.
-
-Built from commit $(git -C $RepoRoot rev-parse --short HEAD 2>$null) on $(Get-Date -Format "yyyy-MM-dd").
+V557 includes LGPL-3.0 code; licenses and provenance are in the plugin licenses
+folder. Corresponding source and rebuild instructions accompany this GitHub
+release. No game logs, captures or personal calibration are distributed.
 "@
 Set-Content (Join-Path $Out "INSTALL.txt") $readme -Encoding utf8
 
@@ -478,9 +429,9 @@ $looseLines
 
 5. IF YOU MOVED A dxgi.dll ASIDE FOR THIS MOD
 
-    Some other VR mods install bin\x64\dxgi.dll, and this port cannot share a
-    process with one, so you may have renamed it -- deploy_stereo.ps1 renames it to
-    dxgi.dll.disabled-red4ext. Rename it back if you want that mod again.
+    Identify the file and its owner before changing it. Cheeky/ReShade/ASI loaders
+    are optional independent components. This release does not disable them.
+    Use switcher option11 for read-only identities and recent error inspection.
 
 6. WHAT IS NOT TOUCHED, so you do not go looking for it
 
@@ -493,7 +444,7 @@ $looseLines
     Each has its own uninstall; the lists above remove only what carries the
     CyberpunkVRPort name.
 
-Generated from commit $(git -C $RepoRoot rev-parse --short HEAD 2>$null) on $(Get-Date -Format "yyyy-MM-dd").
+Generated from commit $SourceCommit on $(Get-Date -Format "yyyy-MM-dd").
 "@
 Set-Content (Join-Path $Out "UNINSTALL.txt") $uninstall -Encoding utf8
 

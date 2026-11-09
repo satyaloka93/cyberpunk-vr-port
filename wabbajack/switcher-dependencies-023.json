@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "name": "Upstream 0.2.3 and PSVR2 0.2.3 RC1 / game 2.5",
+  "requirementsSource": "https://github.com/dariulone/cyberpunk-vr-port/releases/tag/0.2.3",
+  "notes": "Port requires RED4ext 1.31.0 only; compiler and native replacement frameworks are bundled. Keep shared frameworks for unrelated mods. Cheeky and Toolkit are optional external components.",
+  "mods": [
+    {
+      "id": "red4ext",
+      "priority": 10,
+      "name": "RED4ext 1.31.0",
+      "version": "1.31.0",
+      "fileName": "red4ext-1.31.0.zip",
+      "url": "https://github.com/wopss/RED4ext/releases/download/v1.31.0/red4ext-1.31.0.zip",
+      "sha256": "b9ae4351f547f90af58dfbf7445d45c55cd5ba24fbee27fb16fb5d91e9df621e",
+      "minimumVersion": "1.31.0"
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "files": [
+    {
+      "path": "bin/x64/dxgi.dll",
+      "identity": "Cheeky standalone loader (local deployed build)",
+      "version": null,
+      "sha256": "9715fc185437c8abef59f0ceeb57d507fb05a21b9f8e9167627f98066e1b53d9",
+      "source": "Local deployed file, 2026-11-08; not bundled in preview 8"
+    },
+    {
+      "path": "bin/x64/version.dll",
+      "identity": "Ultimate ASI Loader x64",
+      "version": "6.0.0",
+      "sha256": "67565dd7f899c0e4ee3903b1cc8078ff20ca80b8100497c6ac813392e431d443",
+      "source": "Local deployed file and version resource, 2026-11-08"
+    },
+    {
+      "path": "bin/x64/winmm.dll",
+      "identity": "RED4ext loader",
+      "version": "1.31.0",
+      "sha256": "c78308921e6697473b6407bf2a4ba1ac4c157b247031fbcdd91af5063a52af7d",
+      "source": "RED4ext 1.31.0 official ZIP; archive SHA256 b9ae4351f547f90af58dfbf7445d45c55cd5ba24fbee27fb16fb5d91e9df621e"
+    },
+    {
+      "path": "red4ext/RED4ext.dll",
+      "identity": "RED4ext framework",
+      "version": "1.31.0",
+      "sha256": "58ddfe43766aa91249d11671b55a8323d5ec017f816d847affe4b6201dcd0709",
+      "source": "RED4ext 1.31.0 official ZIP; archive SHA256 b9ae4351f547f90af58dfbf7445d45c55cd5ba24fbee27fb16fb5d91e9df621e"
+    },
+    {
+      "path": "bin/x64/dxgi.dll",
+      "identity": "Cheeky diagnostic DXGI loader (local bootstrap-log-v1 build, 2026-11-09)",
+      "version": null,
+      "sha256": "9d64c7eb726d43c1502cf27b5d055e264f07992102f2ce028c1d34ad9616cde1",
+      "source": "Local diagnostic package Cheeky-Loader-Diagnostics-20261109.zip; not a complete published Cheeky release"
+    },
+    {
+      "path": "bin/x64/version.dll",
+      "identity": "Cheeky diagnostic VERSION loader (local bootstrap-log-v1 build, 2026-11-09)",
+      "version": null,
+      "sha256": "98162c49a9413ec985fcedf0b0c8d36b6efcf148b4ec9324f93aa5fd60683708",
+      "source": "Local diagnostic package Cheeky-Loader-Diagnostics-20261109.zip; not a complete published Cheeky release"
+    }
+  ]
+}
