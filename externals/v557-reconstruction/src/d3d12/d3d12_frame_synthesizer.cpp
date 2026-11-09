@@ -1116,6 +1116,7 @@ struct D3D12FrameSynthesizer::Impl {
     bool ffx_context_created{};
     bool flow_output_consumed{};
     bool nvidia_gpu_timing_enabled{};
+    bool reconstruction_only{};
 
     ~Impl() {
         // Nothing outside this object waits on the synthesis queue. Its work
@@ -2439,7 +2440,10 @@ struct D3D12FrameSynthesizer::Impl {
         D3D12_RESOURCE_STATES input_release_state,
         D3D12OpticalFlowBackend input_backend,
         D3D12NvidiaOpticalFlowOptions input_nvidia_options,
-        bool enable_nvidia_gpu_timing) {
+        bool enable_nvidia_gpu_timing,
+        bool input_reconstruction_only = false) {
+        if(input_reconstruction_only && (input_backend!=D3D12OpticalFlowBackend::nvidia || input_nvidia_options.hybrid))return E_INVALIDARG;
+        reconstruction_only=input_reconstruction_only;
         if (input_device == nullptr || input_queue == nullptr ||
             input_history == nullptr || !input_history->initialized() ||
             input_current_images.empty() || input_synthetic_images.empty() ||
@@ -2534,7 +2538,7 @@ struct D3D12FrameSynthesizer::Impl {
                 !copy_compatible(description, image->GetDesc()) ||
                 !compatible_view_format(image->GetDesc().Format, input_view_format) ||
                 (image->GetDesc().Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) == 0 ||
-                contains_resource(current_destinations, image) ||
+                (!reconstruction_only && contains_resource(current_destinations, image)) ||
                 contains_resource(synthetic_destinations, image)) {
                 return E_INVALIDARG;
             }
@@ -4931,6 +4935,10 @@ struct D3D12FrameSynthesizer::Impl {
                 D3D12_QUERY_TYPE_TIMESTAMP,
                 slot.timing_query_base + kSpanEnd);
         }
+        if(reconstruction_only){
+            const auto restore=transition_barrier(current_resource,kShaderReadState,D3D12_RESOURCE_STATE_COMMON);
+            synthesis->ResourceBarrier(1,&restore);
+        } else {
         // The copy's own transitions travel with the copy, so the resources
         // are left in their normal states while it waits to be submitted.
         const std::array<D3D12_RESOURCE_BARRIER, 2> before_copy_states{
@@ -5008,6 +5016,7 @@ struct D3D12FrameSynthesizer::Impl {
         slot.current_copy_command_list->ResourceBarrier(
             static_cast<UINT>(after_current_copy.size()),
             after_current_copy.data());
+        }
         if (nvidia_gpu_timing_enabled) {
             synthesis->EndQuery(
                 nvidia_timestamp_heap.Get(),
@@ -6271,7 +6280,12 @@ struct D3D12FrameSynthesizer::Impl {
         // The synthetic's pixels exist once this signals. The current copy
         // is held back so it is not queued ahead of the synthetic frame.
         std::uint64_t completion_value = 0;
-        if (defer_current_copy) {
+        if(reconstruction_only){
+            completion_value=next_fence_value++;
+            last_synthetic_fence_value=completion_value;
+            const auto signal_result=queue->Signal(fence.Get(),completion_value);
+            if(FAILED(signal_result)){synthesis_enabled=false;untracked_source=std::move(*newly_acquired);return signal_result;}
+        } else if (defer_current_copy) {
             // Signal the synthetic first: its pixels exist now, and it goes
             // to the runtime a display period before the current frame.
             const std::uint64_t synthetic_value = next_fence_value;
@@ -6448,6 +6462,7 @@ struct D3D12FrameSynthesizer::Impl {
             current.fence_value == previous.ticket.fence_value &&
             current.slot == previous.ticket.slot &&
             current.source_index == previous.ticket.source_index;
+        if(reconstruction_only && (repeated_capture || motion_vectors || previous.motion_vectors))return E_INVALIDARG;
         const bool advanced_capture =
             previous.active() &&
             previous.ticket.serial != std::numeric_limits<std::uint64_t>::max() &&
@@ -6817,7 +6832,7 @@ HRESULT D3D12FrameSynthesizer::initialize(
     D3D12_RESOURCE_STATES release_state,
     D3D12OpticalFlowBackend backend,
     D3D12NvidiaOpticalFlowOptions nvidia_options,
-    bool enable_nvidia_gpu_timing) noexcept {
+    bool enable_nvidia_gpu_timing, bool reconstruction_only) noexcept {
     try {
         std::scoped_lock lock(mutex_);
         if (impl_ != nullptr) {
@@ -6834,7 +6849,7 @@ HRESULT D3D12FrameSynthesizer::initialize(
             release_state,
             backend,
             nvidia_options,
-            enable_nvidia_gpu_timing);
+            enable_nvidia_gpu_timing, reconstruction_only);
         if (FAILED(result)) {
             return result;
         }
@@ -6860,7 +6875,7 @@ HRESULT D3D12FrameSynthesizer::reconfigure(D3D12OpticalFlowBackend backend,
         auto candidate = std::make_unique<Impl>();
         const HRESULT result = candidate->initialize(impl_->device.Get(), impl_->queue.Get(),
             impl_->history, current, synthetic, impl_->view_format, impl_->release_state,
-            backend, options, impl_->nvidia_gpu_timing_enabled);
+            backend, options, impl_->nvidia_gpu_timing_enabled, impl_->reconstruction_only);
         if (FAILED(result)) return result;
         candidate->continue_fences_of(*impl_);
         impl_ = std::move(candidate);
@@ -6881,7 +6896,7 @@ HRESULT D3D12FrameSynthesizer::reconfigure_gpu_timing(bool enabled) noexcept {
         auto candidate = std::make_unique<Impl>();
         const HRESULT result = candidate->initialize(impl_->device.Get(), impl_->queue.Get(),
             impl_->history, current, synthetic, impl_->view_format, impl_->release_state,
-            impl_->backend, impl_->nvidia_options, enabled);
+            impl_->backend, impl_->nvidia_options, enabled, impl_->reconstruction_only);
         if (FAILED(result)) return result;
         candidate->continue_fences_of(*impl_);
         impl_ = std::move(candidate);

@@ -52,8 +52,8 @@ Port adaptations to the component:
   are not yet implemented for this adapter; do not interpret their absence as
   zero queue latency.
 
-Tradeoffs to measure in the headset: V557 owns three history images and two
-output destinations per eye, plus OFA resources. It therefore has different
+Tradeoffs to measure in the headset: V557 owns three history images and one
+synthetic output destination per eye, plus OFA resources. It therefore has different
 VRAM/copy costs. Its rotational camera correction is depth-unaware for
 translation. Flow-only reconstruction can improve this windscreen while
 performing worse on other effects. No live FPS, memory or overall quality
@@ -85,3 +85,26 @@ reference pixel-for-pixel (all RGB pixels, both eyes). The clearer windscreen
 edge is preserved. GPU adapter checks pass with D3D12 validation on shared and
 private queues; all 16 existing frame-generation regression tests pass.
 Live bike performance and headset quality remain unverified.
+
+## Remove redundant real outputs, November 9
+
+The first headset run fixed ghosting but reported a performance loss. Its long
+Slow segment had about84.2 accepted real+synthetic frames/s but79.4 compositor
+estimate, against81.8 accepted /85.9 estimate in an earlier PSVR2 Slow segment.
+These were natural gameplay runs, not identical workloads; submitted and
+compositor-estimated rates are not unique displayed FPS. The immediately previous
+run was VDXR and is not an appropriate same-runtime baseline.
+
+The initial adapter also copied every real endpoint into a second destination
+that native Presenter never reads. Reconstruction-only mode now omits that copy
+and its destination allocation, restores the current history state in the
+composition list, and signals completion there. Each eye retains one synthetic
+output, used for a priming copy when history resets. The default reference API
+still produces both outputs; the compact mode accepts only pure NVIDIA flow and
+advancing capture tickets. No shader, optical-flow quality, or pacing changes.
+
+Two per-eye3144x3000RGBA8 destinations represent approximately72MiB of image
+storage; two copy payloads per pair are eliminated. GPU lifetime/state tests
+pass on shared/private queues, and saved output pixels remain identical in
+both eyes. Live FPS recovery remains pending; the removed copies are a proven
+inefficiency, not a proven explanation for the entire regression.

@@ -169,7 +169,10 @@ public:
         D3D12OpticalFlowBackend backend =
             D3D12OpticalFlowBackend::fidelity_fx,
         D3D12NvidiaOpticalFlowOptions nvidia_options = {},
-        bool enable_nvidia_gpu_timing = false) noexcept;
+        bool enable_nvidia_gpu_timing = false,
+        // Native Presenter already owns B. NVIDIA flow-only mode can omit its
+        // redundant real output/copy; current and synthetic destinations may alias.
+        bool reconstruction_only = false) noexcept;
 
     [[nodiscard]] HRESULT submit_prime(
         const D3D12HistoryCaptureTicket& current,

@@ -32,7 +32,7 @@ xrfg::D3D12ReprojectionView View(const EyeCamera& c,const D3D12_RESOURCE_DESC& d
 struct V557Generator::Impl {
     // Member order keeps history and destinations alive while synthesizer retires its leases.
     struct Eye {
-        ComPtr<ID3D12Resource> current,output;
+        ComPtr<ID3D12Resource> output;
         std::shared_ptr<xrfg::D3D12SwapchainHistory> history;
         xrfg::D3D12FrameSynthesizer synth;
         D3D12_RESOURCE_DESC desc{};
@@ -111,20 +111,20 @@ bool V557Generator::Create(ID3D12Device* device,ID3D12CommandQueue* queue,ID3D12
         if(eye.desc.Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D || eye.desc.DepthOrArraySize!=1 || eye.desc.MipLevels!=1 || eye.desc.SampleDesc.Count!=1){p.failed=true;return false;}
         auto d=eye.desc;d.Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
         D3D12_HEAP_PROPERTIES heap{};heap.Type=D3D12_HEAP_TYPE_DEFAULT;
-        for(auto* resource:{std::addressof(eye.current),std::addressof(eye.output)})
-            if(!p.Check(device->CreateCommittedResource(&heap,D3D12_HEAP_FLAG_NONE,&d,D3D12_RESOURCE_STATE_COPY_SOURCE,nullptr,IID_PPV_ARGS(resource->GetAddressOf())),"destination"))return false;
+        if(!p.Check(device->CreateCommittedResource(&heap,D3D12_HEAP_FLAG_NONE,&d,D3D12_RESOURCE_STATE_COPY_SOURCE,nullptr,IID_PPV_ARGS(&eye.output)),"destination"))return false;
         // History and destinations; internal reconstruction allocations counted by Bytes().
-        p.bytes+=device->GetResourceAllocationInfo(0,1,&d).SizeInBytes*2;
+        p.bytes+=device->GetResourceAllocationInfo(0,1,&d).SizeInBytes;
         p.bytes+=device->GetResourceAllocationInfo(0,1,&eye.desc).SizeInBytes*3;
         eye.history=std::make_shared<xrfg::D3D12SwapchainHistory>();ID3D12Resource* src[]{colors[e]};
         if(!p.Check(eye.history->initialize(device,p.routing.Queue(),src,D3D12_RESOURCE_STATE_COPY_SOURCE),"history initialize"))return false;
-        ID3D12Resource* cur[]{eye.current.Get()};ID3D12Resource* out[]{eye.output.Get()};
+        // Only the prime writes B here. Steady pairs write S; native Presenter keeps the real endpoint.
+        ID3D12Resource* cur[]{eye.output.Get()};ID3D12Resource* out[]{eye.output.Get()};
         // Initialization can submit OFA registration; on failure retain rather than free unknown GPU work.
         if(!p.Check(eye.synth.initialize(device,p.routing.Queue(),eye.history,cur,out,ViewFormat(d.Format),D3D12_RESOURCE_STATE_COPY_SOURCE,
-            xrfg::D3D12OpticalFlowBackend::nvidia,options,p.timing),"synth initialize")){p.unsafe=true;return false;}
+            xrfg::D3D12OpticalFlowBackend::nvidia,options,p.timing,true),"synth initialize")){p.unsafe=true;return false;}
         p.bytes+=eye.synth.allocated_bytes();
     }
-    Log("[framegen-v557] reconstruction initialized: OFA quality=%d scale=%d; current-camera output; %s queue; no external layer\n",settings.quality,settings.flowScale,p.routing.Private()?"private":"application");
+    Log("[framegen-v557] reconstruction initialized: OFA quality=%d scale=%d; current-camera output; %s queue; real-output-copy=0; no external layer\n",settings.quality,settings.flowScale,p.routing.Private()?"private":"application");
     return p.Signal();
 }
 bool V557Generator::Generate(ID3D12Resource* const colors[2],const EyePair (&cameras)[2],bool reset,bool* interpolated,

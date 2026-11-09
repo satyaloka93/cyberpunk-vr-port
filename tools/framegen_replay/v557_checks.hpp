@@ -28,7 +28,7 @@ void V557Checks(){
   Check(generate(false),"V557 pair");gpu.Wait();Check(interpolated && generator.OutputReady(),"paired output receipt");
   for(unsigned e=0;e<2;++e){const auto pixels=gpu.Read(generator.Output(e));
    Check(e?pixels[2]>pixels[0]+100:pixels[0]>pixels[2]+100,"both eyes retain independent colors");}
-  Check(generator.Bytes()>w*h*4*10,"reconstruction allocation accounting");
+  Check(generator.Bytes()>w*h*4*8,"reconstruction allocation accounting");
   // A consumer receipt must block Reset/backend replacement and preserve resources.
   ComPtr<ID3D12CommandQueue> display;D3D12_COMMAND_QUEUE_DESC desc{};Hr(gpu.device->CreateCommandQueue(&desc,IID_PPV_ARGS(&display)));
   ComPtr<ID3D12Fence> gate,receipt;Hr(gpu.device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&gate)));
