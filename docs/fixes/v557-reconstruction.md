@@ -48,9 +48,9 @@ Port adaptations to the component:
   retains resources instead of freeing live allocations.
 - Report explicit history/output/flow allocation sizes and the component's GPU
   pack+composition time separately from its total generation span. Driver-owned
-  OFA allocation size is not exposed. Native capture-start correlation samples
-  are not yet implemented for this adapter; do not interpret their absence as
-  zero queue latency.
+  OFA allocation size is not exposed. Capture-start correlation reuses the
+  existing capture queries and calibrated reconstruction timestamps; it does
+  not insert new GPU work. Missing calibration stays missing, not zero latency.
 
 Tradeoffs to measure in the headset: V557 owns three history images and one
 synthetic output destination per eye, plus OFA resources. It therefore has different
@@ -108,3 +108,37 @@ storage; two copy payloads per pair are eliminated. GPU lifetime/state tests
 pass on shared/private queues, and saved output pixels remain identical in
 both eyes. Live FPS recovery remains pending; the removed copies are a proven
 inefficiency, not a proven explanation for the entire regression.
+
+## Batch both eye preparations, November 9
+
+The copy-removal run (PID3952, Medium/50%, PSVR2/SteamVR, 3144x3000 per eye)
+retained the confirmed ghosting improvement, but delivery remained uneven.
+340.0 active seconds: 35.70 accepted real + 35.38 accepted synthetic/s,
+17.50 repeated submissions/s, 70.20 SteamVR compositor FPS estimate;
+30-second gameplay windows ranged about57–82 in that estimate. The prior
+Medium segments were75.76 and67.49. Natural gameplay and different segment
+lengths prevent a controlled performance comparison; copy removal did not
+establish a recovery. Accepted frames are not unique displayed frames.
+
+The adapter had serialized the complete left-eye transaction, including its
+previous-display wait, before right-eye history/packing/OFA. Now each mono
+component can defer its composition. The adapter submits both preparations,
+then flushes both output waits/compositions and signals the aggregate receipt.
+It uses the same queue and fences, and does not move or remove ownership waits.
+There are no new images, shaders, quality changes or pacing-policy changes.
+The default vendored API still submits complete transactions. Deferred mode is
+restricted to native mono reconstruction without extra outputs or real copies.
+Known partial failures flush staged work before signaling the aggregate receipt;
+unknown GPU failures retain resources.
+
+GPU validation explicitly blocks the previous display receipt and proves both
+preparations can drain, neither output completes early, both finish after release,
+and repeated flushes are harmless (timing on/off). Production adapter tests cover
+both queue routes, backend changes, resets, input lifetime and capture-to-generation
+correlation. Saved3144x3000 bike images remain bit-identical in RGB, both eyes.
+The generation span now measures earliest eye pack through latest composition,
+rather than summing overlapping per-eye intervals. Therefore compare future span
+values with that definition in mind. Active pack/composition costs remain summed.
+
+Headset delivery benefit of this batching candidate remains unverified until the
+next gameplay run. Keep Medium/50% and existing render/runtime settings for it.

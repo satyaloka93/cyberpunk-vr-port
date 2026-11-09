@@ -799,7 +799,7 @@ bool Generator::Generate(ID3D12Device* device,ID3D12CommandQueue* queue,ID3D12Re
             reset=true;
         }
         if(v557->Failed()){Status("V557 failed; toggle framegen off/on");return false;}
-        bool result=v557->Generate(colors,cameras,reset,interpolated,colorReady,colorReadyValue,std::move(colorLease),inputs);
+        bool result=v557->Generate(colors,cameras,reset,interpolated,colorReady,colorReadyValue,std::move(colorLease),inputs,std::move(captureTiming));
         if(!deferOutputJoin && !v557->JoinOutput(consumer))result=false;
         if(MetricsEnabled())SetVram(Bytes()+InputVram());
         return result;

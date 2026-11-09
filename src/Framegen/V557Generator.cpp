@@ -4,6 +4,7 @@
 #include "Framegen/RefreshCadence.hpp"
 #include "Framegen/FlightRecorder.hpp"
 #include "Framegen/FrameCapture.hpp"
+#include "Framegen/SourceTimeline.hpp"
 #include <xrfg/d3d12_frame_synthesizer.hpp>
 #include <wrl/client.h>
 #include <array>
@@ -43,6 +44,9 @@ struct V557Generator::Impl {
     uint64_t value{},consumerValue{},bytes{};
     std::shared_ptr<void> lease;
     std::shared_ptr<const Inputs> inputs[2];
+    std::shared_ptr<const CaptureTiming> captureTiming;
+    double cpuHz{},enqueueMs{};
+    bool probe{},inputsPending{};
     std::array<Eye,2> eyes;
     Settings settings;
     bool timing{},isolated{},failed{},unsafe{},primed{};
@@ -56,15 +60,50 @@ struct V557Generator::Impl {
         if(!Check(routing.Queue()->Signal(fence.Get(),value+1),"completion Signal")) {unsafe=true;return false;}
         ++value;return true;
     }
+    bool Finish() {
+        // Drain known staged work even if a later eye's capture failed. The
+        // aggregate receipt must cover every retained history/output lease.
+        for(auto& eye:eyes)if(!Check(eye.synth.flush_reconstruction(),"finish pair")){
+            unsafe=true;return false;
+        }
+        return Signal();
+    }
     void Poll() {
         if(!Ready())return;
         lease.reset();inputs[0].reset();inputs[1].reset();
-        double active=0,span=0;bool timed=true;
+        double active=0;bool timed=true;uint64_t begin=UINT64_MAX,end=0;
         for(auto& eye:eyes){xrfg::D3D12NvidiaGpuTiming t{};
-            if(eye.synth.consume_nvidia_gpu_timing(&t)!=S_OK){timed=false;continue;}
+            if(eye.synth.consume_nvidia_gpu_timing(&t)!=S_OK || !t.total_microseconds ||
+               !t.gpu_begin_qpc || t.gpu_end_qpc<t.gpu_begin_qpc){timed=false;continue;}
             active+=double(t.pack_microseconds+t.composition_microseconds)/1000.;
-            span+=double(t.total_microseconds)/1000.;}
-        if(timed && span>0)OnGeneration(active,span);
+            begin=std::min(begin,t.gpu_begin_qpc);end=std::max(end,t.gpu_end_qpc);}
+        // The eyes now overlap: summing their elapsed spans double-counts that
+        // overlap. Use the earliest pack through the last composition instead.
+        if(timed && cpuHz>0 && end>=begin){
+            const double startMs=double(begin)*1000./cpuHz,endMs=double(end)*1000./cpuHz;
+            OnGeneration(active,endMs-startMs);
+            if(probe && enqueueMs>0 && startMs>=enqueueMs && endMs-enqueueMs<1000){
+                flight::Count(flight::Event::GenerationProbe);
+                flight::Time(flight::Timing::GenerationQueue,startMs-enqueueMs);
+                flight::Time(flight::Timing::GenerationTotal,endMs-enqueueMs);
+                flight::Time(inputsPending?flight::Timing::GenerationQueueInputsPending:
+                    flight::Timing::GenerationQueueInputsReady,startMs-enqueueMs);
+                if(captureTiming){
+                    const auto cap=captureTiming->Read();
+                    const auto split=cap?AttributeCaptureStart(cap->endQpcMs,enqueueMs,startMs):std::nullopt;
+                    if(cap && split){
+                        source_timing::Report(captureTiming->source,*cap,enqueueMs,startMs);
+                        flight::Count(flight::Event::CaptureProbePaired);
+                        flight::Time(flight::Timing::CaptureQueue,cap->queueMs);
+                        flight::Time(flight::Timing::CaptureGpu,cap->spanMs);
+                        flight::Time(flight::Timing::CaptureTotal,cap->totalMs);
+                        flight::Time(flight::Timing::GenerationBeforeCaptureReady,split->beforeReadyMs);
+                        flight::Time(flight::Timing::GenerationAfterCaptureReady,split->afterReadyMs);
+                    }else flight::Count(flight::Event::CaptureProbeInvalid);
+                }
+            }else if(probe)flight::Count(flight::Event::GenerationCalibrationInvalid);
+        }
+        captureTiming.reset();probe=false;
     }
 };
 V557Generator::V557Generator():impl(std::make_unique<Impl>()){}
@@ -100,6 +139,7 @@ bool V557Generator::Compatible(ID3D12Device* device,ID3D12CommandQueue* queue,ID
 }
 bool V557Generator::Create(ID3D12Device* device,ID3D12CommandQueue* queue,ID3D12Resource* const colors[2],const Settings& settings) {
     auto& p=*impl;p.device=device;p.settings=settings;p.isolated=refresh::Targeted();p.timing=MetricsEnabled() || flight::Enabled();
+    LARGE_INTEGER hz{};if(QueryPerformanceFrequency(&hz))p.cpuHz=double(hz.QuadPart);
     if(!p.routing.Initialize(device,queue,p.isolated)) {p.failed=true;return false;}
     if(p.isolated && !p.routing.Private())flight::Count(flight::Event::SynthesisQueueFallback);
     if(!p.Check(device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&p.fence)),"CreateFence"))return false;
@@ -124,15 +164,25 @@ bool V557Generator::Create(ID3D12Device* device,ID3D12CommandQueue* queue,ID3D12
             xrfg::D3D12OpticalFlowBackend::nvidia,options,p.timing,true),"synth initialize")){p.unsafe=true;return false;}
         p.bytes+=eye.synth.allocated_bytes();
     }
-    Log("[framegen-v557] reconstruction initialized: OFA quality=%d scale=%d; current-camera output; %s queue; real-output-copy=0; no external layer\n",settings.quality,settings.flowScale,p.routing.Private()?"private":"application");
+    Log("[framegen-v557] reconstruction initialized: OFA quality=%d scale=%d; current-camera output; %s queue; real-output-copy=0; stereo-pack-ahead=1; no external layer\n",settings.quality,settings.flowScale,p.routing.Private()?"private":"application");
     return p.Signal();
 }
 bool V557Generator::Generate(ID3D12Resource* const colors[2],const EyePair (&cameras)[2],bool reset,bool* interpolated,
-                            ID3D12Fence* ready,uint64_t readyValue,std::shared_ptr<void> lease,const std::shared_ptr<const Inputs> (&inputs)[2]) {
+                            ID3D12Fence* ready,uint64_t readyValue,std::shared_ptr<void> lease,const std::shared_ptr<const Inputs> (&inputs)[2],std::shared_ptr<const CaptureTiming> captureTiming) {
     auto& p=*impl;if(interpolated)*interpolated=false;
     if(p.failed)return false;
     if(!p.Ready()){flight::Count(flight::Event::GeneratorBusy);return false;}
     p.Poll();
+    p.probe=p.timing && flight::Enabled() && p.cpuHz>0;p.captureTiming=p.probe?std::move(captureTiming):nullptr;
+    if(p.probe){
+        LARGE_INTEGER now{};QueryPerformanceCounter(&now);p.enqueueMs=double(now.QuadPart)*1000./p.cpuHz;
+        const bool capturePending=!Done(ready,readyValue);
+        const bool guidesPending=std::any_of(std::begin(inputs),std::end(inputs),[](const auto& in){return !Done(in->readyFence.Get(),in->fenceValue);});
+        p.inputsPending=capturePending || guidesPending;
+        if(capturePending)flight::Count(flight::Event::GenerationCapturePending);
+        if(guidesPending)flight::Count(flight::Event::GenerationGuidesPending);
+        if(!Done(p.consumer.Get(),p.consumerValue))flight::Count(flight::Event::GenerationConsumerPending);
+    }
     if(!p.routing.Begin(ready,readyValue,nullptr,0)){p.failed=p.unsafe=true;return false;}
     p.lease=std::move(lease);p.inputs[0]=inputs[0];p.inputs[1]=inputs[1];
     for(const auto& in:inputs)if(in->readyFence && in->fenceValue && !p.routing.WaitInput(in->readyFence.Get(),in->fenceValue)){p.failed=p.unsafe=true;return false;}
@@ -145,19 +195,22 @@ bool V557Generator::Generate(ID3D12Resource* const colors[2],const EyePair (&cam
     reset=reset || !p.primed;
     for(unsigned e=0;e<2;++e){auto& eye=p.eyes[e];
         eye.synth.output_consumer(p.consumer.Get(),p.consumerValue);
-        if(reset && !p.Check(eye.synth.retire_previous(),"retire history")){p.Signal();return false;}
+        if(reset && !p.Check(eye.synth.retire_previous(),"retire history")){p.Finish();return false;}
         xrfg::D3D12HistoryCaptureTicket capture{};xrfg::D3D12FrameSynthesisTicket generated{};
         const auto view=View(cameras[e].current,eye.desc);
         if(!p.Check(eye.history->capture_source(colors[e],&capture),"capture") ||
-           !p.Check(eye.history->commit(capture),"commit")){p.Signal();return false;}
+           !p.Check(eye.history->commit(capture),"commit")){p.Finish();return false;}
         const auto hr=reset?eye.synth.submit_prime(capture,{&view,1},0,&generated):
-            eye.synth.submit_pair(capture,{&view,1},{&view,1},0,0,&generated);
+            eye.synth.submit_pair(capture,{&view,1},{&view,1},0,0,&generated,
+                std::nullopt,{},false,.5f,std::nullopt,true);
         if(!p.Check(hr,reset?"prime":"pair")){
             // A failed OFA call may have submitted work outside the direct queue.
             p.unsafe=true;return false;
         }
     }
-    if(!p.Signal())return false;
+    // Both histories and OFA inputs are now queued. Only now enqueue output
+    // waits/composition, so the left eye cannot block preparation of the right.
+    if(!p.Finish())return false;
     p.primed=true;if(interpolated)*interpolated=!reset;return true;
 }
 }

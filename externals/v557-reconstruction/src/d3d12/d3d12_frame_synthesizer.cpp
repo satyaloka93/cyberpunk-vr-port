@@ -1098,6 +1098,8 @@ struct D3D12FrameSynthesizer::Impl {
         std::numeric_limits<std::uint32_t>::max();
     std::uint32_t pending_copy_slot{kNoPendingCopy};
     std::uint64_t pending_copy_fence_value{};
+    std::uint32_t pending_reconstruction_slot{kNoPendingCopy};
+    std::uint64_t pending_reconstruction_value{};
     // The value the most recent submission signalled once the synthetic's
     // pixels existed, as opposed to the value the whole pair completes at.
     std::uint64_t last_synthetic_fence_value{};
@@ -6097,7 +6099,33 @@ struct D3D12FrameSynthesizer::Impl {
 
     // Submits a copy left pending by execute_and_signal and signals the value
     // the rest of the pipeline is already tracking against it.
+    // Finish a native mono pair only after the caller has queued packing/OFA
+    // for every eye. Waiting on a previous display here must never hold up the
+    // other eye's independent packing or optical-flow submission.
+    [[nodiscard]] HRESULT flush_pending_reconstruction() noexcept {
+        if(pending_reconstruction_slot==kNoPendingCopy)return S_OK;
+        if(pending_reconstruction_slot>=work_slots.size() || !synthesis_enabled)return E_FAIL;
+        auto& slot=work_slots[pending_reconstruction_slot];
+        HRESULT result=queue->Wait(nvidia_fence.Get(),last_nvidia_fence_value);
+        if(SUCCEEDED(result) && nvidia_gpu_timing_enabled){
+            ID3D12CommandList* lists[]{slot.timing_marker_command_list.Get()};
+            queue->ExecuteCommandLists(1,lists);
+        }
+        if(SUCCEEDED(result) && output_consumer_fence && output_consumer_value)
+            result=queue->Wait(output_consumer_fence.Get(),output_consumer_value);
+        if(SUCCEEDED(result)){
+            ID3D12CommandList* lists[]{slot.synthesis_command_list.Get()};
+            queue->ExecuteCommandLists(1,lists);
+            result=queue->Signal(fence.Get(),pending_reconstruction_value);
+        }
+        if(FAILED(result)){synthesis_enabled=false;completion_unknown=true;return result;}
+        pending_reconstruction_slot=kNoPendingCopy;pending_reconstruction_value=0;
+        return S_OK;
+    }
+
     [[nodiscard]] HRESULT flush_pending_copy() noexcept {
+        const auto reconstruction_result=flush_pending_reconstruction();
+        if(FAILED(reconstruction_result))return reconstruction_result;
         if (pending_copy_slot == kNoPendingCopy) {
             return S_OK;
         }
@@ -6123,7 +6151,7 @@ struct D3D12FrameSynthesizer::Impl {
         std::uint32_t slot_index,
         RollingSource* newly_acquired,
         std::uint64_t* output_fence_value,
-        bool defer_current_copy) noexcept {
+        bool defer_current_copy, bool defer_reconstruction) noexcept {
         if (newly_acquired == nullptr || output_fence_value == nullptr ||
             slot.synthesis_command_list == nullptr ||
             slot.current_copy_command_list == nullptr ||
@@ -6247,7 +6275,7 @@ struct D3D12FrameSynthesizer::Impl {
             preceding_eye_value = next_nvidia_fence_value;
             if (eye_index == 0) {
                 eye0_fence_value = next_nvidia_fence_value;
-                if (nvidia_gpu_timing_enabled) {
+                if (nvidia_gpu_timing_enabled && !defer_reconstruction) {
                     result = queue->Wait(
                         nvidia_fence.Get(), eye0_fence_value);
                     if (FAILED(result)) {
@@ -6262,6 +6290,20 @@ struct D3D12FrameSynthesizer::Impl {
             }
             last_nvidia_fence_value = next_nvidia_fence_value;
             ++next_nvidia_fence_value;
+        }
+        if(defer_reconstruction){
+            // Reserve the final receipt now; publishing it does not make output
+            // ready. flush_reconstruction submits the work that signals it.
+            const auto completion_value=next_fence_value++;
+            pending_reconstruction_slot=slot_index;
+            pending_reconstruction_value=completion_value;
+            last_synthetic_fence_value=completion_value;
+            last_submitted_fence_value=completion_value;
+            slot.fence_value=completion_value;
+            slot.timing_pending=nvidia_gpu_timing_enabled;
+            *output_fence_value=completion_value;
+            completion_unknown=false;
+            return S_OK;
         }
         result = queue->Wait(nvidia_fence.Get(), last_nvidia_fence_value);
         if (FAILED(result)) {
@@ -6436,7 +6478,11 @@ struct D3D12FrameSynthesizer::Impl {
         std::shared_ptr<const DlssMotionVectorSet> motion_vectors,
         bool defer_current_copy,
         float interpolation_fraction,
-        const std::optional<D3D12ExtraSynthetic>& extra_synthetic) noexcept {
+        const std::optional<D3D12ExtraSynthetic>& extra_synthetic,
+        bool defer_reconstruction) noexcept {
+        if(defer_reconstruction && (!reconstruction_only ||
+           image_description.DepthOrArraySize!=1 || current_source_views.size()!=1 ||
+           defer_current_copy || extra_synthetic))return E_INVALIDARG;
         // A degenerate interval says the pairing is not in a steady cadence;
         // half is the safe answer there, not an extrapolation.
         const auto usable_fraction = [](float fraction) noexcept {
@@ -6692,7 +6738,7 @@ struct D3D12FrameSynthesizer::Impl {
         result = backend == D3D12OpticalFlowBackend::nvidia && !used_game_motion
                      ? execute_nvidia_and_signal(
                            slot, work_slot_index, &next, &fence_value,
-                           defer_current_copy)
+                           defer_current_copy, defer_reconstruction)
                      : execute_and_signal(
                            slot, work_slot_index, &next, &fence_value,
                            defer_current_copy);
@@ -6953,7 +6999,8 @@ HRESULT D3D12FrameSynthesizer::submit_pair(
     std::shared_ptr<const DlssMotionVectorSet> motion_vectors,
     bool defer_current_copy,
     float interpolation_fraction,
-    std::optional<D3D12ExtraSynthetic> extra_synthetic) noexcept {
+    std::optional<D3D12ExtraSynthetic> extra_synthetic,
+    bool defer_reconstruction) noexcept {
     try {
         std::scoped_lock lock(mutex_);
         if (impl_ == nullptr) {
@@ -6974,13 +7021,20 @@ HRESULT D3D12FrameSynthesizer::submit_pair(
             std::move(motion_vectors),
             defer_current_copy,
             interpolation_fraction,
-            extra_synthetic);
+            extra_synthetic, defer_reconstruction);
     } catch (...) {
         if (ticket != nullptr) {
             *ticket = {};
         }
         return E_FAIL;
     }
+}
+
+HRESULT D3D12FrameSynthesizer::flush_reconstruction() noexcept {
+    try {
+        std::scoped_lock lock(mutex_);
+        return impl_?impl_->flush_pending_reconstruction():E_UNEXPECTED;
+    } catch (...) { return E_FAIL; }
 }
 
 void D3D12FrameSynthesizer::set_flat_panel(bool flat_panel) noexcept {

@@ -206,7 +206,13 @@ public:
         // submission and complete at the same fence value. Its destination
         // is another image of the synthetic set and must differ from
         // synthetic_destination_index.
-        std::optional<D3D12ExtraSynthetic> extra_synthetic = std::nullopt) noexcept;
+        std::optional<D3D12ExtraSynthetic> extra_synthetic = std::nullopt,
+        // Native mono reconstruction only: enqueue packing/OFA now, then call
+        // flush_reconstruction after BOTH eyes have prepared. No completion
+        // receipt may be joined onto this queue before both flushes.
+        bool defer_reconstruction = false) noexcept;
+
+    [[nodiscard]] HRESULT flush_reconstruction() noexcept;
 
     // Executes the current output's copy, which submit_pair records but
     // deliberately leaves unsubmitted. The synthetic frame is handed to the

@@ -10,7 +10,7 @@ public:
     bool Compatible(ID3D12Device*,ID3D12CommandQueue*,ID3D12Resource* const[2],const Settings&) const;
     bool Create(ID3D12Device*,ID3D12CommandQueue*,ID3D12Resource* const[2],const Settings&);
     bool Generate(ID3D12Resource* const[2],const EyePair (&)[2],bool reset,bool* interpolated,
-                  ID3D12Fence*,uint64_t,std::shared_ptr<void>,const std::shared_ptr<const Inputs> (&)[2]);
+                  ID3D12Fence*,uint64_t,std::shared_ptr<void>,const std::shared_ptr<const Inputs> (&)[2],std::shared_ptr<const CaptureTiming>);
     bool CanPrepare() const;
     bool OutputReady() const;
     bool Idle() const;

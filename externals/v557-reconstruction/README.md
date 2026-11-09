@@ -7,3 +7,8 @@ Port adaptations: history accepts already-captured COPY_SOURCE resources and a c
 The port-owned NVIDIA output path additionally supports COPY_SOURCE destinations with transitions inside composition and a deferred display-consumer fence. Allocation reporting excludes opaque driver memory. See ../../docs/fixes/v557-reconstruction.md for tests, contracts and tradeoffs.
 
 The native reconstruction-only mode omits unused real endpoint copies and permits the priming destination to alias synthetic output. It is restricted to NVIDIA flow with advancing capture tickets and no game guides; the default/reference API retains the original two-output behavior.
+
+Native mono callers may defer reconstruction until both eyes have submitted
+packing/OFA, then call `flush_reconstruction` before joining any completion
+receipt. This avoids parking the other eye behind a prior display-consumer wait.
+The default/reference call still submits the full transaction. No shader change.
