@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 #include "Framegen/FlightRecorder.hpp"
+#include "Framegen/FrameCapture.hpp"
 #include "Framegen/RefreshCadence.hpp"
 // OverlayPanels -- every control the headset overlay draws, and the small widgets they are made of.
 //
@@ -1001,6 +1002,17 @@ bool DrawLiveControls(LiveControlsUiState& state,int section,bool* foveatedEditi
                 UI::TextWrapped("Logs: cyberpunkvrport/log/framegen-flight-*.jsonl");
                 if(UI::Button("Mark performance problem"))cvr::framegen::flight::Count(cvr::framegen::flight::Event::Marker);
                 UI::TextWrapped("Submitted frames are not displayed FPS. SteamVR delivery is an estimate; unavailable on VDXR.");
+            }
+            {
+                char captureStatus[192]{};bool capturing=false;
+                cvr::framegen::FrameCaptureStatus(captureStatus,sizeof(captureStatus),&capturing);
+                UI::BeginDisabled(capturing || !fg.enabled);
+                if(UI::Button("Capture ghosting images (10s delay)"))cvr::framegen::ScheduleFrameCapture(10);
+                UI::EndDisabled();
+                UI::TextWrapped("Image capture: %s",captureStatus);
+                if(capturing && UI::Button("Cancel image capture"))cvr::framegen::CancelFrameCapture();
+                if(UI::IsItemHovered())UI::SetTooltip("A capture already saving will finish safely.");
+                UI::TextWrapped("Saves 3 stereo images with depth/motion for analysis. Close F10 and ride; capture may briefly hitch. It does not fix ghosting.");
             }
             changed|=UI::Checkbox("Enable frame generation",&fg.enabled);
             if(UI::IsItemHovered())UI::SetTooltip("While frame generation is enabled, hand smoothing runs at its rate times xr_hand_lerp_framegen_scale (1.25; 0 turns it off).");

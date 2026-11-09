@@ -27,6 +27,9 @@
 #include <string>
 #include <vector>
 
+#ifdef CVR_V557_REFERENCE
+#include "xrfg/d3d12_frame_synthesizer.hpp"
+#endif
 using Microsoft::WRL::ComPtr;
 using namespace cvr::framegen;
 void Check(bool value,const char* text);
@@ -187,12 +190,66 @@ struct ReplayGpu {
     std::function<void(ID3D12Fence*,uint64_t*)> fence;
 };
 
+
+#ifdef CVR_V557_REFERENCE
+// The original V557 synthesizer/library, not a reimplementation. Its NVIDIA-only
+// path takes no game vectors and outputs in B's camera. Reproject that output
+// into the measured middle frame's eye for the same comparison as the native path.
+void ReplayV557(ReplayGpu& gpu,replay::EyeFrame (&frames)[3][2],int quality,
+                std::vector<uint8_t> (&result)[2]) {
+    for(unsigned e=0;e<2;++e){
+        auto& a=frames[0][e];auto& b=frames[2][e];
+        ComPtr<ID3D12Resource> source[2],current,synthetic;ID3D12Resource* sources[2];
+        for(unsigned k=0;k<2;++k){auto& f=k?b:a;
+            source[k]=gpu.texture(f.width,f.height,DXGI_FORMAT_R8G8B8A8_UNORM,D3D12_RESOURCE_STATE_COPY_DEST);
+            gpu.upload(source[k].Get(),f.color.data(),4,D3D12_RESOURCE_STATE_COMMON);sources[k]=source[k].Get();}
+        // V557 destinations require render-target capability.
+        auto desc=source[0]->GetDesc();desc.Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        D3D12_HEAP_PROPERTIES heap{};heap.Type=D3D12_HEAP_TYPE_DEFAULT;
+        Hr(gpu.device->CreateCommittedResource(&heap,D3D12_HEAP_FLAG_NONE,&desc,D3D12_RESOURCE_STATE_RENDER_TARGET,nullptr,IID_PPV_ARGS(&current)));
+        Hr(gpu.device->CreateCommittedResource(&heap,D3D12_HEAP_FLAG_NONE,&desc,D3D12_RESOURCE_STATE_RENDER_TARGET,nullptr,IID_PPV_ARGS(&synthetic)));
+        auto history=std::make_shared<xrfg::D3D12SwapchainHistory>();
+        Hr(history->initialize(gpu.device,gpu.queue,sources,D3D12_RESOURCE_STATE_COMMON));
+        xrfg::D3D12FrameSynthesizer synth;xrfg::D3D12NvidiaOpticalFlowOptions opts;
+        opts.preset=quality==0?xrfg::D3D12NvidiaPerformancePreset::fast:quality==1?xrfg::D3D12NvidiaPerformancePreset::medium:xrfg::D3D12NvidiaPerformancePreset::slow;
+        opts.input_scale=xrfg::D3D12OpticalFlowInputScale::half;opts.hybrid=false;opts.bidirectional=false;
+        ID3D12Resource* cur[]{current.Get()};ID3D12Resource* out[]{synthetic.Get()};
+        Hr(synth.initialize(gpu.device,gpu.queue,history,cur,out,DXGI_FORMAT_R8G8B8A8_UNORM,D3D12_RESOURCE_STATE_RENDER_TARGET,xrfg::D3D12OpticalFlowBackend::nvidia,opts));
+        auto view=[](const replay::EyeFrame& f){xrfg::D3D12ReprojectionView v;
+            const auto& q=f.eye.orientation;v.pose.orientation={q[0],q[1],q[2],q[3]};
+            const auto& t=f.eye.fov;v.fov={t[0],t[1],t[2],t[3]};v.image_rect={0,0,f.width,f.height};v.array_slice=0;return v;};
+        auto av=view(a),bv=view(b);xrfg::D3D12HistoryCaptureTicket ticket;xrfg::D3D12FrameSynthesisTicket generated;
+        Hr(history->capture(0,&ticket));Hr(history->commit(ticket));Hr(synth.submit_prime(ticket,{&av,1},0,&generated));Hr(synth.wait_for_previous_submission(5000));
+        Hr(history->capture(1,&ticket));Hr(history->commit(ticket));Hr(synth.submit_pair(ticket,{&bv,1},{&bv,1},0,0,&generated));Hr(synth.wait_for_idle());
+        // Read via the fixture after a small state-transition list.
+        ComPtr<ID3D12CommandAllocator> allocator;ComPtr<ID3D12GraphicsCommandList> list;
+        Hr(gpu.device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,IID_PPV_ARGS(&allocator)));
+        Hr(gpu.device->CreateCommandList(0,D3D12_COMMAND_LIST_TYPE_DIRECT,allocator.Get(),nullptr,IID_PPV_ARGS(&list)));
+        D3D12_RESOURCE_BARRIER barrier{};barrier.Type=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Transition={synthetic.Get(),0,D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_COPY_SOURCE};list->ResourceBarrier(1,&barrier);Hr(list->Close());
+        ID3D12CommandList* lists[]{list.Get()};gpu.queue->ExecuteCommandLists(1,lists);gpu.wait();
+        result[e]=replay::Reproject(gpu.read(synthetic.Get()),b.width,b.height,b.eye,frames[1][e].eye,nullptr);
+    }
+}
+#endif
+
 int Replay(ReplayGpu& gpu,const std::filesystem::path& dir,const std::filesystem::path& out) {
     using namespace replay;
     const auto text=ReadFile(dir/"capture.json");const std::string json(text.begin(),text.end());
     Parser parser{json};const auto root=parser.Parse();const auto& frames=root["frames"];Check(frames.items.size()==3,"three frames expected");
     EyeFrame f[3][2];
     for(size_t k=0;k<3;++k)for(unsigned e=0;e<2;++e)f[k][e]=LoadEye(dir,frames[int(k)]["eyes"][int(e)],k,e);
+    for(unsigned k=0;k<3;++k)for(unsigned e=0;e<2;++e){
+        const auto& v=f[k][e];const auto& first=f[0][e];
+        Check(v.width==first.width && v.height==first.height && v.motionWidth && v.motionHeight,"capture dimensions changed or motion absent");
+        if(k)Check(frames[int(k)]["frame"].number==frames[int(k-1)]["frame"].number+1,"nonconsecutive capture");
+    }
+    const auto field=[&](const char* key,double fallback){auto it=root.fields.find(key);return it==root.fields.end()?fallback:it->second.number;};
+    const int quality=std::clamp(int(field("quality",2)),0,2);
+    double frameMs=44.4;
+    if(field("qpcFrequency",0)>0)frameMs=(frames[2]["eyes"][0]["qpc"].number-frames[0]["eyes"][0]["qpc"].number)*1000/field("qpcFrequency",0);
+    Check(frameMs>0 && frameMs<1000,"invalid captured frame interval");
+    std::printf("quality=%d source interval=%.3fms; reference uses midpoint (unequal capture spacing limits accuracy)\n",quality,frameMs);
     std::filesystem::create_directories(out);
     CoInitializeEx(nullptr,COINIT_MULTITHREADED);
     struct Variant {Backend backend;int flowScale;const char* name;};
@@ -227,7 +284,7 @@ int Replay(ReplayGpu& gpu,const std::filesystem::path& dir,const std::filesystem
     for(const auto& variant:variants) {
         const Backend backend=variant.backend;
         if(backend==Backend::DlssG && !dlssg::Available(gpu.device)) {std::printf("  %-26s unavailable: %s\n","DLSS-G",dlssg::Reason());continue;}
-        Generator generator;Settings settings;settings.enabled=true;settings.backend=backend;settings.quality=2;settings.flowScale=variant.flowScale;SetSettings(settings);
+        Generator generator;Settings settings;settings.enabled=true;settings.backend=backend;settings.quality=quality;settings.flowScale=variant.flowScale;SetSettings(settings);
         std::vector<uint8_t> results[2];bool ok=true;
         for(int step=0;step<2 && ok;++step) {
             const size_t k=step?2:0;
@@ -248,7 +305,7 @@ int Replay(ReplayGpu& gpu,const std::filesystem::path& dir,const std::filesystem
                 cameras[e].previous=f[0][e].eye;cameras[e].current=f[k][e].eye;
             }
             bool interpolated=false;
-            ok=generator.Generate(gpu.device,gpu.queue,colors,inputs,cameras,settings,44.4,step==0,uint64_t(step+1),&interpolated);
+            ok=generator.Generate(gpu.device,gpu.queue,colors,inputs,cameras,settings,frameMs,step==0,uint64_t(step+1),&interpolated);
             gpu.wait();
             if(ok && step) {
                 ok=interpolated && ActiveBackend()==backend;
@@ -262,7 +319,7 @@ int Replay(ReplayGpu& gpu,const std::filesystem::path& dir,const std::filesystem
         if(!ok) {std::printf("  %-26s FAILED (active %s)\n",variant.name,BackendName(ActiveBackend()));continue;}
         report(variant.name,results);
         std::string name=variant.name;for(auto& c:name)if(!std::isalnum(uint8_t(c)))c='_';
-        SavePng(out/(name+"_e0.png"),results[0],w,h,cx,cy,cw,ch);
+        for(unsigned e=0;e<2;++e)SavePng(out/(name+"_e"+std::to_string(e)+".png"),results[e],w,h,0,0,w,h);
         // error map: |output - truth| x4, red where the pixel is in the moving region
         std::vector<uint8_t> errors(results[0].size());
         for(size_t i=0;i<valid[0].size();++i) {
@@ -272,5 +329,12 @@ int Replay(ReplayGpu& gpu,const std::filesystem::path& dir,const std::filesystem
         SavePng(out/(name+"_error_e0.png"),errors,w,h,cx,cy,cw,ch);
         while(!generator.Reset())gpu.wait();
     }
+#ifdef CVR_V557_REFERENCE
+    std::vector<uint8_t> reference[2];ReplayV557(gpu,f,quality,reference);report("V557 NVIDIA reference",reference);
+    for(unsigned e=0;e<2;++e){
+        SavePng(out/("V557_e"+std::to_string(e)+".png"),reference[e],w,h,0,0,w,h);
+        SavePng(out/("truth_full_e"+std::to_string(e)+".png"),f[1][e].color,w,h,0,0,w,h);
+    }
+#endif
     return 0;
 }
