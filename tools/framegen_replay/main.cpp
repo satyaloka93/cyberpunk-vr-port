@@ -5,7 +5,9 @@
 #include "Framegen/DlssFrameGen.hpp"
 namespace cvr::framegen { const char* BackendName(Backend b){return b==Backend::Nvidia?"NVIDIA":b==Backend::DlssG?"DLSS-G":"FidelityFX";} }
 #include "../framegen_tests/replay.cpp"
+#include "v557_checks.hpp"
 int main(int argc,char** argv)try{
+    if(argc==2 && std::string(argv[1])=="--v557-test"){V557Checks();return 0;}
     Check(argc==3,"framegen_replay <capture directory> <output directory>");
     targeted=false;Gpu gpu(true);ReplayGpu r;
     r.device=gpu.device.Get();r.queue=gpu.queue.Get();

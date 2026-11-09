@@ -55,8 +55,8 @@ void Presenter::Remember(const Frame& current){
 }
 bool Presenter::Prepare(ID3D12Device* device,ID3D12CommandQueue* queue,Frame current,ID3D12CommandQueue* consumer){
     const auto settings=GetSettings();
-    if(!refresh::Targeted() || !settings.enabled || !settings.autoPace || settings.backend!=Backend::Nvidia ||
-       ActiveBackend()!=Backend::Nvidia || !consumer || consumer==queue || ExternalBridgeLoaded() ||
+    if(!refresh::Targeted() || !settings.enabled || !settings.autoPace || !UsesNvidiaOFA(settings.backend) ||
+       !UsesNvidiaOFA(ActiveBackend()) || !consumer || consumer==queue || ExternalBridgeLoaded() ||
        !WantsPrepare(current.identity.serial) || !current.lease || !CanInterpolate(previous.identity,current.identity) ||
        !SameProjection(previous,current) || !generator.CanPrepare(device,queue,current.color,current.inputs,settings))return false;
     generator.Poll();
@@ -73,7 +73,7 @@ bool Presenter::Prepare(ID3D12Device* device,ID3D12CommandQueue* queue,Frame cur
     if(generated){
         prepared.frame.identity.capturedMs=(previous.identity.capturedMs+current.identity.capturedMs)*.5;
         for(unsigned eye=0;eye<2;++eye){prepared.frame.color[eye]=generator.Output(eye);
-            prepared.frame.pose[eye]=Middle(previous.pose[eye],current.pose[eye]);prepared.frame.identity.pose[eye]=0;}
+            prepared.frame.pose[eye]=ActiveBackend()==Backend::NvidiaV557?current.pose[eye]:Middle(previous.pose[eye],current.pose[eye]);prepared.frame.identity.pose[eye]=0;}
         flight::Count(flight::Event::GeneratedQueued);
     }
     Remember(current);flight::Count(flight::Event::PrepareAheadQueued);return true;
@@ -105,7 +105,7 @@ Selection Presenter::Select(ID3D12Device* device,ID3D12CommandQueue* queue,Frame
             flight::Count(generator.OutputReady()?flight::Event::PrepareAheadReady:flight::Event::PrepareAheadPending);
             flight::Time(flight::Timing::PrepareAheadLead,NowMs()-preparedAt);
             flight::Count(flight::Event::PrepareAheadUsed);preparedAt=0;
-            PacingReady(true);Status("Generating with engine motion vectors and depth",result.synthetic);return result;
+            PacingReady(true);Status(ActiveBackend()==Backend::NvidiaV557?"Generating with V557 optical reconstruction":"Generating with engine motion vectors and depth",result.synthetic);return result;
         }
     }
     Selection result{current,cadence.Select(current.identity.serial,false,false),{},false};
@@ -165,11 +165,11 @@ Selection Presenter::Select(ID3D12Device* device,ID3D12CommandQueue* queue,Frame
         result.frame.identity.capturedMs=(previous.identity.capturedMs+current.identity.capturedMs)*.5;
         for(unsigned eye=0;eye<2;++eye) {
             result.frame.color[eye]=generator.Output(eye);
-            result.frame.pose[eye]=Middle(previous.pose[eye],current.pose[eye]);
-            result.frame.identity.pose[eye]=0; // synthetic pixels have a blended pose, not B's receipt
+            result.frame.pose[eye]=ActiveBackend()==Backend::NvidiaV557?current.pose[eye]:Middle(previous.pose[eye],current.pose[eye]);
+            result.frame.identity.pose[eye]=0; // synthetic content is not the original real-frame receipt
         }
         pending=current;
-        Status("Generating with engine motion vectors and depth",true);
+        Status(ActiveBackend()==Backend::NvidiaV557?"Generating with V557 optical reconstruction":"Generating with engine motion vectors and depth",true);
     } else {
         result.generatedFrom=current.lease;
         flight::Count(flight::Event::Primed);

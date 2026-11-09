@@ -2875,7 +2875,7 @@ DWORD OpenXRManager::FrameThreadMain() {
                                 (pacingSettings.enabled && pacingSettings.autoPace))?cvr::xrqueue::Mark():0;
                             const bool prepareAhead=fgSelected && !menuRectActive && !fgSelection.synthetic &&
                                 cvr::xrqueue::Private() && pacingSettings.enabled && pacingSettings.autoPace &&
-                                pacingSettings.backend==cvr::framegen::Backend::Nvidia;
+                                cvr::framegen::UsesNvidiaOFA(pacingSettings.backend);
                             m_submitPacer.BeforeSubmit(handoffKind,presentationMark,&cvr::xrqueue::Ready,deadlineProbe,
                                 prepareAhead?m_monoPresentEvent:nullptr,
                                 prepareAhead?+[](void* owner){return static_cast<OpenXRManager*>(owner)->PrepareFramegenAhead();}:nullptr,this);

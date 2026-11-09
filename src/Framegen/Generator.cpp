@@ -1,3 +1,6 @@
+#ifdef CVR_V557_RECONSTRUCTION
+#include "Framegen/V557Generator.hpp"
+#endif
 #include "Framegen/SourceTimeline.hpp"
 #include "Framegen/CaptureTiming.hpp"
 #include "Framegen/FlightRecorder.hpp"
@@ -698,6 +701,9 @@ Generator::~Generator() {
     if(impl && !impl->Idle()) {Log("[framegen] retaining in-flight resources through shutdown\n");impl.release();}
 }
 void Generator::Shutdown() {
+#ifdef CVR_V557_RECONSTRUCTION
+    if(v557){v557->Shutdown();v557.reset();}
+#endif
     if(!impl || !impl->routing.Private())return;
     // Capture leases call back into the manager. Retire them while that owner
     // and its lease table still exist, never during member destruction later.
@@ -708,17 +714,43 @@ void Generator::Shutdown() {
         impl.release(); // GPU/device failure: no unsafe free and no late owner callback
     }
 }
-bool Generator::Idle() const {return !impl || impl->Idle();}
-void Generator::Poll() {if(impl)impl->Poll();}
-bool Generator::Reset() {if(!Idle())return false;impl.reset();return true;}
-uint64_t Generator::Bytes() const {uint64_t result=0;if(impl)for(const auto& eye:impl->eyes)if(eye)result+=eye->Bytes();return result;}
-ID3D12Resource* Generator::Output(unsigned eye) const {return impl && eye<2 && impl->eyes[eye] ? impl->eyes[eye]->output.resource.Get() : nullptr;}
+bool Generator::Idle() const {
+#ifdef CVR_V557_RECONSTRUCTION
+    if(v557 && !v557->Idle())return false;
+#endif
+    return !impl || impl->Idle();
+}
+void Generator::Poll() {
+#ifdef CVR_V557_RECONSTRUCTION
+    if(v557)v557->Poll();
+#endif
+    if(impl)impl->Poll();
+}
+bool Generator::Reset() {if(!Idle())return false;
+#ifdef CVR_V557_RECONSTRUCTION
+    v557.reset();
+#endif
+    impl.reset();return true;
+}
+uint64_t Generator::Bytes() const {
+#ifdef CVR_V557_RECONSTRUCTION
+    if(v557)return v557->Bytes();
+#endif
+    uint64_t result=0;if(impl)for(const auto& eye:impl->eyes)if(eye)result+=eye->Bytes();return result;}
+ID3D12Resource* Generator::Output(unsigned eye) const {
+#ifdef CVR_V557_RECONSTRUCTION
+    if(v557)return v557->Output(eye);
+#endif
+    return impl && eye<2 && impl->eyes[eye] ? impl->eyes[eye]->output.resource.Get() : nullptr;}
 #ifdef CVR_FRAMEGEN_TEST_RECEIPTS
 bool Generator::TestPackedReady() const {return impl && impl->testPackedValue && impl->fence->GetCompletedValue()>=impl->testPackedValue;}
 bool Generator::TestOutputReady() const {return impl && impl->signaledValue && impl->fence->GetCompletedValue()>=impl->signaledValue;}
 #endif
 bool Generator::CanPrepare(ID3D12Device* device,ID3D12CommandQueue* queue,ID3D12Resource* const colors[2],
     const std::shared_ptr<const Inputs> (&inputs)[2],const Settings& settings) const {
+#ifdef CVR_V557_RECONSTRUCTION
+    if(v557)return settings.backend==Backend::NvidiaV557 && v557->Compatible(device,queue,colors,settings) && v557->CanPrepare();
+#endif
     if(!impl || impl->failed || !impl->routing.Private() || impl->mode!=Backend::Nvidia ||
        impl->device.Get()!=device || impl->routing.Producer()!=queue || !colors[0] || !colors[1] || !inputs[0] || !inputs[1])return false;
     ID3D12Resource* pair[]{colors[0],colors[1]};
@@ -727,15 +759,25 @@ bool Generator::CanPrepare(ID3D12Device* device,ID3D12CommandQueue* queue,ID3D12
     return !next.fence || (impl->fence->GetCompletedValue()!=UINT64_MAX && impl->fence->GetCompletedValue()>=next.fence);
 }
 bool Generator::OutputReady() const {
+#ifdef CVR_V557_RECONSTRUCTION
+    if(v557)return v557->OutputReady();
+#endif
     if(!impl || !impl->fence || !impl->signaledValue)return false;
     const auto done=impl->fence->GetCompletedValue();return done!=UINT64_MAX && done>=impl->signaledValue;
 }
 bool Generator::JoinOutput(ID3D12CommandQueue* consumer){
+#ifdef CVR_V557_RECONSTRUCTION
+    if(v557)return v557->JoinOutput(consumer);
+#endif
     if(!impl || !impl->signaledValue)return false;
     if(impl->routing.JoinOutput(impl->fence.Get(),impl->signaledValue,consumer))return true;
     impl->failed=true;impl->untrackedGpuWork=true;flight::Count(flight::Event::SynthesisSyncFailed);return false;
 }
-void Generator::ConsumerFence(ID3D12Fence* fence,uint64_t value) {if(impl) {impl->consumerFence=fence;impl->consumerValue=value;}}
+void Generator::ConsumerFence(ID3D12Fence* fence,uint64_t value) {
+#ifdef CVR_V557_RECONSTRUCTION
+    if(v557)v557->ConsumerFence(fence,value);
+#endif
+    if(impl) {impl->consumerFence=fence;impl->consumerValue=value;}}
 bool Generator::Generate(ID3D12Device* device,ID3D12CommandQueue* queue,ID3D12Resource* colors[2],
     const std::shared_ptr<const Inputs> (&inputs)[2],const EyePair (&cameras)[2],const Settings& settings,double frameMs,bool reset,
     uint64_t frameId,bool* interpolated,ID3D12Fence* colorReady,uint64_t colorReadyValue,std::shared_ptr<void> colorLease,ID3D12CommandQueue* consumer,std::shared_ptr<const CaptureTiming> captureTiming,bool deferOutputJoin) {
@@ -744,8 +786,26 @@ bool Generator::Generate(ID3D12Device* device,ID3D12CommandQueue* queue,ID3D12Re
     Settings effective=settings;
     // DLSS-G needs an RTX 40/50 and the SDK in this build; FidelityFX runs anywhere.
     if(effective.backend==Backend::DlssG && !dlssg::Available(device))effective.backend=Backend::FidelityFX;
-    if(effective.backend==Backend::Nvidia && (!effective.flowScale || !NvidiaOpticalFlow(device)))effective.backend=Backend::FidelityFX;
+    if(UsesNvidiaOFA(effective.backend) && (!effective.flowScale || !NvidiaOpticalFlow(device)))effective.backend=Backend::FidelityFX;
+#ifndef CVR_V557_RECONSTRUCTION
+    if(effective.backend==Backend::NvidiaV557)effective.backend=Backend::Nvidia;
+#endif
     PublishActiveBackend(effective.backend);
+#ifdef CVR_V557_RECONSTRUCTION
+    if(effective.backend==Backend::NvidiaV557){
+        if(impl || (v557 && !v557->Compatible(device,queue,colors,effective))){if(!Reset())return false;reset=true;}
+        if(!v557){v557=std::make_unique<V557Generator>();
+            if(!v557->Create(device,queue,colors,effective)){Status("V557 reconstruction initialization failed");return false;}
+            reset=true;
+        }
+        if(v557->Failed()){Status("V557 failed; toggle framegen off/on");return false;}
+        bool result=v557->Generate(colors,cameras,reset,interpolated,colorReady,colorReadyValue,std::move(colorLease),inputs);
+        if(!deferOutputJoin && !v557->JoinOutput(consumer))result=false;
+        if(MetricsEnabled())SetVram(Bytes()+InputVram());
+        return result;
+    }
+    if(v557){if(!Reset())return false;reset=true;}
+#endif
     if(impl && (impl->device.Get()!=device || impl->routing.Producer()!=queue || impl->isolatedRequested!=(refresh::Targeted() && effective.backend!=Backend::DlssG) || !impl->Compatible(colors,inputs,effective))) {if(!Reset())return false;reset=true;}
     if(impl)impl->RetireTiming();
     if(impl && impl->failed) {Status("Backend failed; toggle generation off/on or change the backend");return false;}

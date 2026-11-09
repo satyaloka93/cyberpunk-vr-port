@@ -5,13 +5,14 @@
 
 namespace cvr::framegen {
 struct CaptureTiming;
+class V557Generator;
 // The eye camera a real frame was rendered and submitted with: orientation (x,y,z,w) in the XR
 // space and the field of view's angles in radians (left, right, up, down). Recorded with a frame
 // capture (FrameCapture.hpp) so a replay can show each output the way the headset runtime does.
 struct EyeCamera {float orientation[4]{0,0,0,1};float fov[4]{};};
 struct EyePair {EyeCamera previous,current;};
 // Consumes the port's existing color snapshots. No private XR swapchains,
-// duplicate color-capture ring, readback, or second presenter is created.
+// readback or second presenter is created. V557 owns a reconstruction history ring.
 class Generator {
 public:
     Generator();
@@ -41,5 +42,8 @@ public:
 private:
     struct Impl;
     std::unique_ptr<Impl> impl;
+#ifdef CVR_V557_RECONSTRUCTION
+    std::unique_ptr<V557Generator> v557;
+#endif
 };
 }

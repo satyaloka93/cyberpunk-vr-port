@@ -63,5 +63,10 @@ int main(){
   requested.steamVrOptimizations=package;SetSettings(requested);refresh::Start(false,package);
   check(!refresh::Targeted() && refresh::Resolve(22222222)==22222222,"VDXR unaffected in both settings");
  }
+ for(auto b:{Backend::FidelityFX,Backend::Nvidia,Backend::DlssG,Backend::NvidiaV557}){
+  requested.backend=b;SetSettings(requested);check(roundtrip(GetSettings()).backend==b,"backend enum roundtrip");
+ }
+ requested.backend=Backend::NvidiaV557;requested.flowScale=0;SetSettings(requested);
+ check(GetSettings().flowScale==50,"V557 requires optical flow");
  refresh::Stop();std::cout<<"PASS: actual settings roundtrip, existing-install default, startup latch, independent adaptive control and VDXR bypass\n";
 }

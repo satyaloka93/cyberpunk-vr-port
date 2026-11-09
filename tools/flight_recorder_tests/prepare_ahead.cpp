@@ -3,6 +3,7 @@
 #include "Framegen/RefreshCadence.hpp"
 #include <iostream>
 #include <cstdlib>
+#include <cmath>
 using namespace cvr::framegen;
 extern "C" int CyberpunkVR_RuntimeDiagnostics=0;
 void Log(const char*,...){}
@@ -66,5 +67,20 @@ int main(){
  check(p.Prepare(device,queue,frame(11),consumer),"new history after toggle");
  auto changed=frame(11);changed.identity.origin=2;real=p.Select(device,queue,changed,true,consumer);
  check(!real.synthetic,"recenter cancels prepared pair");
- p.Shutdown();std::cout<<"PASS: production Presenter prepares without consumer join, ordered midpoint/endpoint, lease lifetime, toggle/recenter and backend/config gating\n";
+ p.Shutdown();
+ for(auto backend:{Backend::Nvidia,Backend::NvidiaV557})for(bool prepare:{false,true}){
+  settings.backend=backend;Presenter cameraTest;
+  auto first=frame(20),second=frame(21);
+  for(unsigned e=0;e<2;++e){second.pose[e].position.x=0.2f;second.pose[e].orientation={0,.1f,0,.994987f};}
+  auto initial=cameraTest.Select(device,queue,first,true,consumer);cameraTest.Submitted(initial,nullptr,0,true);
+  if(prepare)check(cameraTest.Prepare(device,queue,second,consumer),"OFA backend supports idle preparation");
+  auto generated=cameraTest.Select(device,queue,second,true,consumer);check(generated.synthetic,"camera test synthesized");
+  for(unsigned e=0;e<2;++e){
+   const auto& pose=generated.frame.pose[e];
+   check(std::abs(pose.position.x-(backend==Backend::NvidiaV557?.2f:.1f))<.0001f,"reconstruction camera position contract");
+   check(std::abs(pose.orientation.y-(backend==Backend::NvidiaV557?.1f:.050063f))<.0001f,"reconstruction camera orientation contract");
+  }
+  cameraTest.Shutdown();
+ }
+ std::cout<<"PASS: production Presenter prepares without consumer join, ordered midpoint/endpoint, lease lifetime, toggle/recenter and backend/config gating\n";
 }

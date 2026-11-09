@@ -254,7 +254,7 @@ int Replay(ReplayGpu& gpu,const std::filesystem::path& dir,const std::filesystem
     CoInitializeEx(nullptr,COINIT_MULTITHREADED);
     struct Variant {Backend backend;int flowScale;const char* name;};
     const Variant variants[]={{Backend::FidelityFX,50,"FidelityFX"},{Backend::FidelityFX,0,"FidelityFX no flow"},
-        {Backend::Nvidia,50,"NVIDIA OFA + FidelityFX"},{Backend::DlssG,50,"NVIDIA DLSS-G"}};
+        {Backend::Nvidia,50,"NVIDIA OFA + FidelityFX"},{Backend::NvidiaV557,50,"NVIDIA V557 native adapter"},{Backend::DlssG,50,"NVIDIA DLSS-G"}};
     const uint32_t w=f[1][0].width,h=f[1][0].height;
     // motion region: where frame 1 differs from frame 2 shown with the runtime's rotation
     std::vector<uint8_t> motion[2],valid[2],baseline[2],baselineA[2];
@@ -312,11 +312,13 @@ int Replay(ReplayGpu& gpu,const std::filesystem::path& dir,const std::filesystem
             bool interpolated=false;
             ok=generator.Generate(gpu.device,gpu.queue,colors,inputs,cameras,settings,frameMs,step==0,uint64_t(step+1),&interpolated);
             gpu.wait();
+            // V557 context registration is asynchronous; retry its first submission after the receipt.
+            if(!ok && step==0 && backend==Backend::NvidiaV557){ok=generator.Generate(gpu.device,gpu.queue,colors,inputs,cameras,settings,frameMs,true,1,&interpolated);gpu.wait();}
             if(ok && evaluate) {
                 ok=interpolated && ActiveBackend()==backend;
                 for(unsigned e=0;e<2 && ok;++e) {
                     auto pixels=gpu.read(generator.Output(e));
-                    const EyeCamera shown=Middle(f[0][e].eye,f[2][e].eye);   // what the presenter submits
+                    const EyeCamera shown=backend==Backend::NvidiaV557?f[2][e].eye:Middle(f[0][e].eye,f[2][e].eye);   // what the presenter submits
                     results[e]=Reproject(pixels,w,h,shown,f[1][e].eye,nullptr);
                 }
             }

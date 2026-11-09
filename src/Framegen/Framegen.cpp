@@ -89,6 +89,7 @@ Settings GetSettings() {std::lock_guard lock(mutex);return settings;}
 namespace {std::atomic<int> activeBackend{-1};}
 const char* BackendName(Backend value) {
     switch(value) {
+        case Backend::NvidiaV557:return "NVIDIA OFA + V557 reconstruction";
         case Backend::Nvidia:return "NVIDIA OFA + FidelityFX";
         case Backend::DlssG:return "NVIDIA DLSS-G";
         default:return "FidelityFX";
@@ -107,8 +108,9 @@ void SetDepthCaptureEnabled(bool value) {depthCapture.store(value,std::memory_or
 bool MetricsEnabled() {return metrics.load(std::memory_order_relaxed);}
 void SetSettings(Settings value) {
     std::lock_guard settingsLock(settingsWriteMutex);
-    value.backend=Backend(std::clamp(int(value.backend),0,2));
+    value.backend=Backend(std::clamp(int(value.backend),0,3));
     value.quality=std::clamp(value.quality,0,2);
+    if(value.backend==Backend::NvidiaV557 && !value.flowScale)value.flowScale=50;
     // 0 = no optical flow: frame interpolation on the engine's vectors alone.
     value.flowScale=value.flowScale==100 || value.flowScale==75 || value.flowScale==0 ? value.flowScale : 50;
     value.overlayCorner=std::clamp(value.overlayCorner,0,8);
@@ -307,7 +309,7 @@ void PaceRenderedFrame() {
     // Publication/notification and DXGI Present have finished. No XR or queue
     // submission lock is held here. Bound additional producer lead by its own
     // capture receipt, without waiting for interpolation or runtime consumption.
-    if(refresh::Targeted() && ActiveBackend()==Backend::Nvidia) {
+    if(refresh::Targeted() && UsesNvidiaOFA(ActiveBackend())) {
         const auto budget=ProducerGateBudgetMs(refresh::Read().periodNs);
         const auto guard=GateProducer(receipt,budget,[] {return NowMs();},[&](double ms) {
             return WaitProducerSlice(timer.handle,ms);
@@ -338,7 +340,7 @@ bool ParseSetting(const char* line,Settings& value) {
     else if(sscanf_s(line,"xr_framegen_steamvr_presentation_isolation = %d",&n)==1)return true;
     else if(sscanf_s(line,"xr_framegen_overlay = %d",&n)==1)value.overlay=n!=0;
     else if(sscanf_s(line,"xr_framegen_pace = %d",&n)==1)value.autoPace=n!=0;
-    else if(sscanf_s(line,"xr_framegen_backend = %d",&n)==1)value.backend=Backend(std::clamp(n,0,2));
+    else if(sscanf_s(line,"xr_framegen_backend = %d",&n)==1)value.backend=Backend(std::clamp(n,0,3));
     else if(sscanf_s(line,"xr_framegen_quality = %d",&n)==1)value.quality=n;
     else if(sscanf_s(line,"xr_framegen_flow_scale = %d",&n)==1)value.flowScale=n;
     else if(sscanf_s(line,"xr_framegen_overlay_corner = %d",&n)==1)value.overlayCorner=n;

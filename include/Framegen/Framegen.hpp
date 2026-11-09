@@ -8,7 +8,9 @@ namespace cvr::framegen {
 // FidelityFX: FidelityFX frame interpolation, with FidelityFX optical flow unless flowScale is 0 (any GPU).
 // Nvidia: NVIDIA optical flow (OFA) + FidelityFX frame interpolation.
 // DlssG: native NVIDIA DLSS Frame Generation through NGX (RTX 40/50).
-enum class Backend:int { FidelityFX=0,Nvidia=1,DlssG=2 };
+enum class Backend:int { FidelityFX=0,Nvidia=1,DlssG=2,NvidiaV557=3 };
+// V557 reconstructs in the current camera, with no game-vector/depth interpolation.
+inline bool UsesNvidiaOFA(Backend b){return b==Backend::Nvidia || b==Backend::NvidiaV557;}
 const char* BackendName(Backend);
 struct Settings {
     bool enabled=false,overlay=false,autoPace=true;

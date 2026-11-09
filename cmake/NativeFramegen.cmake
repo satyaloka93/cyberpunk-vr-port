@@ -65,3 +65,10 @@ if(EXISTS "${CVR_DLSS_SDK_ROOT}/include/nvsdk_ngx_helpers_dlssg_d3d.h" AND
 else()
     message(WARNING "NVIDIA DLSS SDK not found: native DLSS Frame Generation is left out of this build")
 endif()
+
+# Reconstruction-only V557 component, built from attributed source with our SDKs.
+set(CVR_V557_FFX_INCLUDE "${CVR_FIDELITYFX_ROOT}/sdk/include")
+set(CVR_V557_FFX_LIBS ${cvr_ffx_libs})
+add_subdirectory(externals/v557-reconstruction)
+target_link_libraries(cyberpunkvrport_stereo PRIVATE cvr_v557)
+target_compile_definitions(cyberpunkvrport_stereo PRIVATE CVR_V557_RECONSTRUCTION)

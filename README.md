@@ -552,7 +552,10 @@ possible — nobody is forcing you to do it.
 - **[Ajson44](https://github.com/Ajson44/cyberpunk-vr-port)** — extensive work
   on story progression, scripted cameras and quest interaction research.
 - **[tig3rmast3r / OFXR Bridge](https://github.com/tig3rmast3r/OFXR-Bridge)** —
-  open VR frame-generation research used as a reference for the native implementation.
+  open VR frame-generation research and the LGPL-3.0 reconstruction component
+  used by the optional [V557 backend](docs/fixes/v557-reconstruction.md).
+  Source and provenance are included in `externals/v557-reconstruction`; license
+  texts are in `licenses/OFXR-LGPL-3.0.txt` and `licenses/OFXR-GPL-3.0.txt`.
 - **[satyaloka93](https://github.com/satyaloka93)** — PlayStation VR2 support (controls,
   haptics, Sense input), frame generation and stereo DLSS work, the aiming dot in both
   eyes under engine stereo.
