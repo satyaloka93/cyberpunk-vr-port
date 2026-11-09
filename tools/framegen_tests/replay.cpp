@@ -286,8 +286,13 @@ int Replay(ReplayGpu& gpu,const std::filesystem::path& dir,const std::filesystem
         if(backend==Backend::DlssG && !dlssg::Available(gpu.device)) {std::printf("  %-26s unavailable: %s\n","DLSS-G",dlssg::Reason());continue;}
         Generator generator;Settings settings;settings.enabled=true;settings.backend=backend;settings.quality=quality;settings.flowScale=variant.flowScale;SetSettings(settings);
         std::vector<uint8_t> results[2];bool ok=true;
-        for(int step=0;step<2 && ok;++step) {
-            const size_t k=step?2:0;
+        // FFX ignores optical-flow blending for the first ten frames after reset.
+        // Prime with stationary copies of A and zero vectors, then evaluate A->B.
+        // This removes the startup gate; it does not recreate real prior history.
+        constexpr int warmup=11;
+        for(int step=0;step<=warmup && ok;++step) {
+            const bool evaluate=step==warmup;
+            const size_t k=evaluate?2:0;
             ComPtr<ID3D12Resource> color[2];ID3D12Resource* colors[2]{};std::shared_ptr<const Inputs> inputs[2];EyePair cameras[2];
             for(unsigned e=0;e<2;++e) {
                 const auto& src=f[k][e];auto in=std::make_shared<Inputs>();
@@ -297,8 +302,8 @@ int Replay(ReplayGpu& gpu,const std::filesystem::path& dir,const std::filesystem
                 gpu.upload(color[e].Get(),src.color.data(),4,D3D12_RESOURCE_STATE_COPY_SOURCE);
                 auto depth=gpu.texture(src.depthWidth,src.depthHeight,DXGI_FORMAT_R32_FLOAT,D3D12_RESOURCE_STATE_COPY_DEST);
                 gpu.upload(depth.Get(),src.depth.data(),4,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-                std::vector<float> vectors=step?Compose(src,f[1][e]):src.motion;
-                if(step)in->camera.motionScale[0]=in->camera.motionScale[1]=1;
+                std::vector<float> vectors=evaluate?Compose(src,f[1][e]):std::vector<float>(src.motion.size(),0.0f);
+                in->camera.motionScale[0]=in->camera.motionScale[1]=1;
                 auto mv=gpu.texture(src.motionWidth,src.motionHeight,DXGI_FORMAT_R32G32_FLOAT,D3D12_RESOURCE_STATE_COPY_DEST);
                 gpu.upload(mv.Get(),vectors.data(),8,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
                 in->depth=depth;in->motion=mv;colors[e]=color[e].Get();inputs[e]=in;
@@ -307,7 +312,7 @@ int Replay(ReplayGpu& gpu,const std::filesystem::path& dir,const std::filesystem
             bool interpolated=false;
             ok=generator.Generate(gpu.device,gpu.queue,colors,inputs,cameras,settings,frameMs,step==0,uint64_t(step+1),&interpolated);
             gpu.wait();
-            if(ok && step) {
+            if(ok && evaluate) {
                 ok=interpolated && ActiveBackend()==backend;
                 for(unsigned e=0;e<2 && ok;++e) {
                     auto pixels=gpu.read(generator.Output(e));

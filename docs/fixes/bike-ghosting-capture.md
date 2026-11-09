@@ -65,3 +65,15 @@ a windscreen result and no algorithm change was chosen from it. Native tool
 checks run under D3D12 validation. Local reference provenance hashes are archived
 in integration-notes/bike-ghosting-20261109/reference-provenance.json. V557 source
 HEAD is e750741 with later local capture-readiness instrumentation.
+
+## November9 real bike capture and replay correction
+
+The first captured bike comparison reproduced a doubled windscreen edge in both
+eyes with the current reconstruction and a cleaner edge with V557. Aggregate
+image error does not favour V557 everywhere. Initial replay was biased by FFX's
+first10frames forcing game-vector blending; the replay now primes11 stationary
+A frames with zero vectors before evaluating A->B. The edge difference remains.
+This fabricated warmup is not historical context from the game. Capture intervals
+72.2/32.5ms were unequal, so reference frame1 is not an exact midpoint. Do not
+report whole-image/ROI metrics as a measured percentage quality improvement.
+No production synthesis algorithm changes follow from this harness correction.
