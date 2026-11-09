@@ -1,3 +1,4 @@
+#include "Framegen/CapturedColor.hpp"
 #ifdef CVR_V557_RECONSTRUCTION
 #include "Framegen/V557Generator.hpp"
 #include "Framegen/SynthesisQueue.hpp"
@@ -37,6 +38,7 @@ struct V557Generator::Impl {
         std::shared_ptr<xrfg::D3D12SwapchainHistory> history;
         xrfg::D3D12FrameSynthesizer synth;
         D3D12_RESOURCE_DESC desc{};
+        bool sharedRead{};
     };
     ComPtr<ID3D12Device> device;
     SynthesisQueue routing;
@@ -49,7 +51,7 @@ struct V557Generator::Impl {
     bool probe{},inputsPending{};
     std::array<Eye,2> eyes;
     Settings settings;
-    bool timing{},isolated{},failed{},unsafe{},primed{};
+    bool timing{},isolated{},failed{},unsafe{},primed{},borrowed{};
     bool Ready() const {return !unsafe && Done(fence.Get(),value);}
     bool Idle() const {return Ready() && Done(consumer.Get(),consumerValue);}
     bool Check(HRESULT hr,const char* stage) {
@@ -71,6 +73,7 @@ struct V557Generator::Impl {
     void Poll() {
         if(!Ready())return;
         lease.reset();inputs[0].reset();inputs[1].reset();
+        for(auto& eye:eyes)if(eye.history)eye.history->release_completed();
         double active=0;bool timed=true;uint64_t begin=UINT64_MAX,end=0;
         for(auto& eye:eyes){xrfg::D3D12NvidiaGpuTiming t{};
             if(eye.synth.consume_nvidia_gpu_timing(&t)!=S_OK || !t.total_microseconds ||
@@ -130,8 +133,9 @@ void V557Generator::Shutdown(){
 }
 bool V557Generator::Compatible(ID3D12Device* device,ID3D12CommandQueue* queue,ID3D12Resource* const colors[2],const Settings& settings) const {
     if(!impl || impl->device.Get()!=device || impl->routing.Producer()!=queue ||
+       impl->borrowed!=(captured_color::Shared(colors[0]) && captured_color::Shared(colors[1])) ||
        impl->isolated!=refresh::Targeted() || impl->timing!=(MetricsEnabled() || flight::Enabled()) || impl->settings.quality!=settings.quality || impl->settings.flowScale!=settings.flowScale)return false;
-    for(unsigned e=0;e<2;++e){if(!colors[e])return false;const auto d=colors[e]->GetDesc();const auto& old=impl->eyes[e].desc;
+    for(unsigned e=0;e<2;++e){if(!colors[e] || impl->eyes[e].sharedRead!=captured_color::Shared(colors[e]))return false;const auto d=colors[e]->GetDesc();const auto& old=impl->eyes[e].desc;
         if(d.Width!=old.Width || d.Height!=old.Height || d.Format!=old.Format || d.Flags!=old.Flags ||
            d.Dimension!=old.Dimension || d.MipLevels!=old.MipLevels || d.DepthOrArraySize!=old.DepthOrArraySize ||
            d.SampleDesc.Count!=old.SampleDesc.Count || d.SampleDesc.Quality!=old.SampleDesc.Quality || d.Layout!=old.Layout || d.Alignment!=old.Alignment)return false;}
@@ -139,6 +143,7 @@ bool V557Generator::Compatible(ID3D12Device* device,ID3D12CommandQueue* queue,ID
 }
 bool V557Generator::Create(ID3D12Device* device,ID3D12CommandQueue* queue,ID3D12Resource* const colors[2],const Settings& settings) {
     auto& p=*impl;p.device=device;p.settings=settings;p.isolated=refresh::Targeted();p.timing=MetricsEnabled() || flight::Enabled();
+    p.borrowed=captured_color::Shared(colors[0]) && captured_color::Shared(colors[1]);
     LARGE_INTEGER hz{};if(QueryPerformanceFrequency(&hz))p.cpuHz=double(hz.QuadPart);
     if(!p.routing.Initialize(device,queue,p.isolated)) {p.failed=true;return false;}
     if(p.isolated && !p.routing.Private())flight::Count(flight::Event::SynthesisQueueFallback);
@@ -147,16 +152,16 @@ bool V557Generator::Create(ID3D12Device* device,ID3D12CommandQueue* queue,ID3D12
     options.preset=settings.quality==0?xrfg::D3D12NvidiaPerformancePreset::fast:settings.quality==1?xrfg::D3D12NvidiaPerformancePreset::medium:xrfg::D3D12NvidiaPerformancePreset::slow;
     options.input_scale=settings.flowScale==100?xrfg::D3D12OpticalFlowInputScale::full:settings.flowScale==75?xrfg::D3D12OpticalFlowInputScale::three_quarter:xrfg::D3D12OpticalFlowInputScale::half;
     options.hybrid=false;options.bidirectional=false;
-    for(unsigned e=0;e<2;++e){auto& eye=p.eyes[e];eye.desc=colors[e]->GetDesc();
+    for(unsigned e=0;e<2;++e){auto& eye=p.eyes[e];eye.desc=colors[e]->GetDesc();eye.sharedRead=captured_color::Shared(colors[e]);
         if(eye.desc.Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D || eye.desc.DepthOrArraySize!=1 || eye.desc.MipLevels!=1 || eye.desc.SampleDesc.Count!=1){p.failed=true;return false;}
         auto d=eye.desc;d.Flags=D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
         D3D12_HEAP_PROPERTIES heap{};heap.Type=D3D12_HEAP_TYPE_DEFAULT;
         if(!p.Check(device->CreateCommittedResource(&heap,D3D12_HEAP_FLAG_NONE,&d,D3D12_RESOURCE_STATE_COPY_SOURCE,nullptr,IID_PPV_ARGS(&eye.output)),"destination"))return false;
         // History and destinations; internal reconstruction allocations counted by Bytes().
         p.bytes+=device->GetResourceAllocationInfo(0,1,&d).SizeInBytes;
-        p.bytes+=device->GetResourceAllocationInfo(0,1,&eye.desc).SizeInBytes*3;
+        if(!p.borrowed)p.bytes+=device->GetResourceAllocationInfo(0,1,&eye.desc).SizeInBytes*3;
         eye.history=std::make_shared<xrfg::D3D12SwapchainHistory>();ID3D12Resource* src[]{colors[e]};
-        if(!p.Check(eye.history->initialize(device,p.routing.Queue(),src,D3D12_RESOURCE_STATE_COPY_SOURCE),"history initialize"))return false;
+        if(!p.Check(eye.history->initialize(device,p.routing.Queue(),src,captured_color::ReadState(colors[e]),nullptr,p.borrowed),"history initialize"))return false;
         // Only the prime writes B here. Steady pairs write S; native Presenter keeps the real endpoint.
         ID3D12Resource* cur[]{eye.output.Get()};ID3D12Resource* out[]{eye.output.Get()};
         // Initialization can submit OFA registration; on failure retain rather than free unknown GPU work.
@@ -164,13 +169,14 @@ bool V557Generator::Create(ID3D12Device* device,ID3D12CommandQueue* queue,ID3D12
             xrfg::D3D12OpticalFlowBackend::nvidia,options,p.timing,true),"synth initialize")){p.unsafe=true;return false;}
         p.bytes+=eye.synth.allocated_bytes();
     }
-    Log("[framegen-v557] reconstruction initialized: OFA quality=%d scale=%d; current-camera output; %s queue; real-output-copy=0; stereo-pack-ahead=1; no external layer\n",settings.quality,settings.flowScale,p.routing.Private()?"private":"application");
+    Log("[framegen-v557] reconstruction initialized: OFA quality=%d scale=%d; current-camera output; %s queue; real-output-copy=0; stereo-pack-ahead=1; history-copy=%d; no external layer\n",settings.quality,settings.flowScale,p.routing.Private()?"private":"application",p.borrowed?0:1);
     return p.Signal();
 }
 bool V557Generator::Generate(ID3D12Resource* const colors[2],const EyePair (&cameras)[2],bool reset,bool* interpolated,
                             ID3D12Fence* ready,uint64_t readyValue,std::shared_ptr<void> lease,const std::shared_ptr<const Inputs> (&inputs)[2],std::shared_ptr<const CaptureTiming> captureTiming) {
     auto& p=*impl;if(interpolated)*interpolated=false;
     if(p.failed)return false;
+    if(p.borrowed && (!lease || !ready || !readyValue))return false;
     if(!p.Ready()){flight::Count(flight::Event::GeneratorBusy);return false;}
     p.Poll();
     p.probe=p.timing && flight::Enabled() && p.cpuHz>0;p.captureTiming=p.probe?std::move(captureTiming):nullptr;
@@ -198,7 +204,9 @@ bool V557Generator::Generate(ID3D12Resource* const colors[2],const EyePair (&cam
         if(reset && !p.Check(eye.synth.retire_previous(),"retire history")){p.Finish();return false;}
         xrfg::D3D12HistoryCaptureTicket capture{};xrfg::D3D12FrameSynthesisTicket generated{};
         const auto view=View(cameras[e].current,eye.desc);
-        if(!p.Check(eye.history->capture_source(colors[e],&capture),"capture") ||
+        const auto captured=p.borrowed?eye.history->capture_borrowed(colors[e],ready,readyValue,p.lease,&capture):
+            eye.history->capture_source(colors[e],&capture);
+        if(!p.Check(captured,"capture") ||
            !p.Check(eye.history->commit(capture),"commit")){p.Finish();return false;}
         const auto hr=reset?eye.synth.submit_prime(capture,{&view,1},0,&generated):
             eye.synth.submit_pair(capture,{&view,1},{&view,1},0,0,&generated,

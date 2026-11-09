@@ -1,3 +1,4 @@
+#include "Framegen/CapturedColor.hpp"
 #include "Framegen/SourceTimeline.hpp"
 #include "Framegen/ProducerGate.hpp"
 #include "Framegen/FlightRecorder.hpp"
@@ -138,7 +139,7 @@ void CopyEyeHalf(ID3D12GraphicsCommandList* list, ID3D12Resource* dst, ID3D12Res
 }
 
 // Our private right-eye target: the eye swapchain's exact format and size, so the submit can
-// copy it with the same plain CopyResource it uses for MAIN. Kept in COPY_SOURCE between
+// copy it with the same plain CopyResource it uses for MAIN. Kept copy-readable between
 // frames -- that is where the blit's own barriers leave it and where the submit wants it.
 bool OpenXRManager::EnsureVrcamEyeTexture(uint32_t width, uint32_t height, DXGI_FORMAT format) {
     if (!m_d3dDevice || !width || !height || format == DXGI_FORMAT_UNKNOWN) return false;
@@ -165,10 +166,13 @@ bool OpenXRManager::EnsureVrcamEyeTexture(uint32_t width, uint32_t height, DXGI_
     d.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;   // ColorBlit draws into it
     D3D12_HEAP_PROPERTIES hp{};
     hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+    const bool sharedRead=!cvr::afw::Launch() && cvr::framegen::GetSettings().backend==cvr::framegen::Backend::NvidiaV557;
+    const auto readState=sharedRead?D3D12_RESOURCE_STATE_GENERIC_READ:D3D12_RESOURCE_STATE_COPY_SOURCE;
     for (int i = 0; i < kVrcamEyeSlots; ++i) {
         if (FAILED(m_d3dDevice->CreateCommittedResource(
-                &hp, D3D12_HEAP_FLAG_NONE, &d, D3D12_RESOURCE_STATE_COPY_SOURCE, nullptr,
-                IID_PPV_ARGS(&m_vrcamEyePool[i])))) {
+                &hp, D3D12_HEAP_FLAG_NONE, &d, readState, nullptr,
+                IID_PPV_ARGS(&m_vrcamEyePool[i]))) ||
+            (sharedRead && FAILED(cvr::framegen::captured_color::MarkShared(m_vrcamEyePool[i])))) {
             for (int k = 0; k <= i; ++k) {
                 if (m_vrcamEyePool[k]) { m_vrcamEyePool[k]->Release(); m_vrcamEyePool[k] = nullptr; }
             }
@@ -293,18 +297,21 @@ bool OpenXRManager::EnsureMonoCaptureResource(const D3D12_RESOURCE_DESC& sourceD
     D3D12_HEAP_PROPERTIES heapProps{};
     heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
     ID3D12Resource* created[3] = {};
+    const bool sharedRead=!cvr::afw::Launch() && cvr::framegen::GetSettings().backend==cvr::framegen::Backend::NvidiaV557;
     auto captureDesc = sourceDesc;
     captureDesc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    if(sharedRead)captureDesc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
     for (int i = 0; i < 3; ++i) {
         if (FAILED(m_d3dDevice->CreateCommittedResource(
                 &heapProps,
                 D3D12_HEAP_FLAG_NONE,
                 &captureDesc,
-                D3D12_RESOURCE_STATE_COPY_DEST,
+                sharedRead?D3D12_RESOURCE_STATE_GENERIC_READ:D3D12_RESOURCE_STATE_COPY_DEST,
                 nullptr,
-                IID_PPV_ARGS(&created[i])))) {
+                IID_PPV_ARGS(&created[i]))) ||
+            (sharedRead && FAILED(cvr::framegen::captured_color::MarkShared(created[i])))) {
             Log("OpenXRManager: Failed to create mono captured texture %d\n", i);
-            for (int k = 0; k < i; ++k) created[k]->Release();
+            for (int k = 0; k <= i; ++k) if(created[k])created[k]->Release();
             return false;
         }
         SetD3DNamef(created[i], L"OpenXR_mono_snapshot_color%d", i);
@@ -1102,10 +1109,10 @@ bool OpenXRManager::CaptureMonoPresentedFrame(ID3D12Resource* backBuffer, const 
     barriers[barrierCount].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     ++barrierCount;
 
-    if (previousSerial != 0) {
+    if (previousSerial != 0 || cvr::framegen::captured_color::Shared(snapshot)) {
         barriers[barrierCount].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         barriers[barrierCount].Transition.pResource = snapshot;
-        barriers[barrierCount].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        barriers[barrierCount].Transition.StateBefore = cvr::framegen::captured_color::ReadState(snapshot);
         barriers[barrierCount].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
         barriers[barrierCount].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         ++barrierCount;
@@ -1156,7 +1163,7 @@ bool OpenXRManager::CaptureMonoPresentedFrame(ID3D12Resource* backBuffer, const 
     afterCopy[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     afterCopy[0].Transition.pResource = snapshot;
     afterCopy[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    afterCopy[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    afterCopy[0].Transition.StateAfter = cvr::framegen::captured_color::ReadState(snapshot);
     afterCopy[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     afterCopy[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     afterCopy[1].Transition.pResource = backBuffer;
@@ -1274,7 +1281,7 @@ bool OpenXRManager::CaptureMonoPresentedFrame(ID3D12Resource* backBuffer, const 
             b[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
             b[0].Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
             b[1].Transition.pResource = eyeSlotTex;
-            b[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+            b[1].Transition.StateBefore = cvr::framegen::captured_color::ReadState(eyeSlotTex);
             b[1].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
             m_captureCmdList->ResourceBarrier(2, b);
             vrcamEyeCaptured = m_loadingScreen.Record(m_d3dDevice, m_captureCmdList, eyeSlotTex,
@@ -1310,7 +1317,7 @@ bool OpenXRManager::CaptureMonoPresentedFrame(ID3D12Resource* backBuffer, const 
             b[0].Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
             b[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
             b[1].Transition.pResource = eyeSlotTex;
-            b[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+            b[1].Transition.StateBefore = cvr::framegen::captured_color::ReadState(eyeSlotTex);
             b[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
             m_captureCmdList->ResourceBarrier(2, b);
             CopyEyeHalf(m_captureCmdList, eyeSlotTex, backBuffer, halfX(mainEyeIndex ^ 1u), eyeW, eyeH);
@@ -1413,7 +1420,7 @@ bool OpenXRManager::CaptureMonoPresentedFrame(ID3D12Resource* backBuffer, const 
                     D3D12_RESOURCE_BARRIER toRt{};
                     toRt.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
                     toRt.Transition.pResource = eyeSlotTex;   // ours
-                    toRt.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+                    toRt.Transition.StateBefore = cvr::framegen::captured_color::ReadState(eyeSlotTex);
                     toRt.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
                     toRt.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
                     m_captureCmdList->ResourceBarrier(1, &toRt);

@@ -1,3 +1,4 @@
+#include "Framegen/CapturedColor.hpp"
 #ifdef CVR_V557_RECONSTRUCTION
 #include "Framegen/V557Generator.hpp"
 #endif
@@ -265,7 +266,7 @@ struct Eye {
         std::memcpy(&p.cameraRight,inputs.camera.right,12);std::memcpy(&p.cameraForward,inputs.camera.forward,12);
         if(!Ffx(ffxFrameInterpolationPrepare(&fi,&p),"Frame interpolation prepare"))return false;
         FfxFrameInterpolationDispatchDescription d{};d.commandList=p.commandList;d.displaySize={width,height};d.renderSize=p.renderSize;
-        d.currentBackBuffer=Resource(color,FFX_RESOURCE_STATE_COPY_SRC,DXGI_FORMAT_R8G8B8A8_UNORM);
+        d.currentBackBuffer=Resource(color,captured_color::Shared(color)?FFX_RESOURCE_STATE_GENERIC_READ:FFX_RESOURCE_STATE_COPY_SRC,DXGI_FORMAT_R8G8B8A8_UNORM);
         d.output=Resource(output,FFX_RESOURCE_STATE_COPY_SRC);d.interpolationRect={0,0,int32_t(width),int32_t(height)};
         d.opticalFlowVector=Resource(flow);d.opticalFlowSceneChangeDetection=Resource(scd);d.opticalFlowBufferSize={flow.width,flow.height};
         const float units=nvidia?32.0f:1.0f;
@@ -384,7 +385,7 @@ struct Generator::Impl {
         if(eye.backbuffer.resource) {
             eye.backbuffer.To(list,D3D12_RESOURCE_STATE_COPY_DEST);list->CopyResource(eye.backbuffer.resource.Get(),color);
             eye.backbuffer.To(list,kRead);backbuffer=eye.backbuffer.resource.Get();
-        } else Barrier(list,color,kCopy,kRead);
+        } else if(!captured_color::Shared(color))Barrier(list,color,kCopy,kRead);
         eye.output.To(list,kUav);
         // Every real frame is evaluated, resets included: NGX keeps the previous backbuffer itself.
         dlssg::Evaluation e{};e.backbuffer=backbuffer;e.depth=inputs.depth.Get();e.motion=inputs.motion.Get();e.output=eye.output.resource.Get();
@@ -393,7 +394,7 @@ struct Generator::Impl {
         e.reset=reset || !eye.hasPreviousCamera;e.previous=e.reset?nullptr:&eye.previousCamera;
         const bool evaluated=dlssg::Evaluate(*eye.dlss,list,e);
         eye.output.To(list,kCopy);
-        if(!eye.backbuffer.resource)Barrier(list,color,kRead,kCopy);
+        if(!eye.backbuffer.resource && !captured_color::Shared(color))Barrier(list,color,kRead,kCopy);
         eye.previousCamera=inputs.camera;eye.hasPreviousCamera=true;
         return evaluated;
     }
@@ -602,10 +603,10 @@ struct Generator::Impl {
         const bool nvidia=settings.backend==Backend::Nvidia;
         for(unsigned i=0;i<2 && eyes[0]->opticalFlow;++i) {
             auto& eye=*eyes[i];auto& packed=eye.packed[eye.current];
-            Barrier(list,colors[i],kCopy,kRead);packed.To(list,kUav);
+            if(!captured_color::Shared(colors[i]))Barrier(list,colors[i],kCopy,kRead);packed.To(list,kUav);
             Dispatch(w,list,0,colors[i],DXGI_FORMAT_R8G8B8A8_UNORM,nullptr,nullptr,&packed,nullptr,nullptr,
                 eye.width,eye.height,eye.flowWidth,eye.flowHeight,reset);
-            packed.To(list,D3D12_RESOURCE_STATE_COMMON);Barrier(list,colors[i],kRead,kCopy);
+            packed.To(list,D3D12_RESOURCE_STATE_COMMON);if(!captured_color::Shared(colors[i]))Barrier(list,colors[i],kRead,kCopy);
             if(!nvidia) {
                 FfxOpticalflowDispatchDescription d{};d.commandList=ffxGetCommandListDX12(list);
                 d.color=Resource(packed,FFX_RESOURCE_STATE_COMMON);d.opticalFlowVector=Resource(eye.rawFlow);

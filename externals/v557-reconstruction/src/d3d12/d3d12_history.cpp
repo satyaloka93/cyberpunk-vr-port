@@ -95,6 +95,9 @@ void dred_marker(ID3D12GraphicsCommandList* command_list, const char* label) noe
 struct D3D12SwapchainHistory::Impl {
     struct HistorySlot {
         ComPtr<ID3D12Resource> resource;
+        ComPtr<ID3D12Fence> borrowed_producer;
+        std::shared_ptr<void> owner;
+        bool retired{};
         ComPtr<ID3D12CommandAllocator> capture_allocator;
         ComPtr<ID3D12GraphicsCommandList> capture_list;
         D3D12HistoryCaptureTicket ticket{};
@@ -135,6 +138,39 @@ struct D3D12SwapchainHistory::Impl {
     bool has_pending_capture{};
     bool capture_enabled{};
     bool completion_unknown{};
+    bool borrow_sources{};
+    D3D12_RESOURCE_DESC borrowed_description{};
+
+    void release_completed() noexcept {
+        if(!borrow_sources)return;
+        for(auto& slot:slots)if(slot.retired && !slot.active_lease_serial &&
+            fence_status(slot.borrowed_producer.Get(),slot.capture_fence_value)==S_OK &&
+            fence_status(slot.consumer_fence.Get(),slot.consumer_fence_value)==S_OK){
+            slot.owner.reset();slot.resource.Reset();slot.borrowed_producer.Reset();
+            slot.consumer_fence.Reset();slot.consumer_fence_value=0;
+            slot.capture_fence_value=0;slot.valid=false;slot.retired=false;slot.ticket={};
+        }
+    }
+
+    HRESULT capture_borrowed(ID3D12Resource* source,ID3D12Fence* ready,std::uint64_t value,
+        std::shared_ptr<void> owner,D3D12HistoryCaptureTicket* ticket) noexcept {
+        if(ticket)*ticket={};
+        if(!ticket || !borrow_sources || !capture_enabled || has_pending_capture ||
+           !source || !ready || !value || !owner ||
+           !same_device(device.Get(),source) || !same_device(device.Get(),ready) ||
+           !matching_description(borrowed_description,source->GetDesc()) ||
+           next_serial==std::numeric_limits<std::uint64_t>::max())return E_INVALIDARG;
+        release_completed();
+        auto& slot=slots[next_slot];
+        if(slot.owner || slot.active_lease_serial || slot.valid)return HRESULT_FROM_WIN32(ERROR_BUSY);
+        // One mutable pool image cannot be both old A and new B. The owner's
+        // producer pin is required even though this object also AddRefs it.
+        for(const auto& old:slots)if(old.resource.Get()==source)return HRESULT_FROM_WIN32(ERROR_BUSY);
+        slot.resource=source;slot.borrowed_producer=ready;slot.owner=std::move(owner);
+        slot.capture_fence_value=value;slot.retired=false;
+        pending_ticket={next_serial,value,next_slot,0};has_pending_capture=true;
+        *ticket=pending_ticket;return S_OK;
+    }
 
     // One query per history slot, consumed only after the EXISTING capture
     // fence completes. No added signals, queue waits, threads or pixel readback.
@@ -271,7 +307,7 @@ struct D3D12SwapchainHistory::Impl {
         ID3D12CommandQueue* input_queue,
         std::span<ID3D12Resource* const> inputs,
         D3D12_RESOURCE_STATES input_release_state,
-        D3D12HistoryInitializationStage* failure_stage) {
+        D3D12HistoryInitializationStage* failure_stage, bool borrow) {
         if (failure_stage != nullptr) {
             *failure_stage = D3D12HistoryInitializationStage::complete;
         }
@@ -279,7 +315,8 @@ struct D3D12SwapchainHistory::Impl {
             (input_release_state != D3D12_RESOURCE_STATE_RENDER_TARGET &&
              input_release_state != D3D12_RESOURCE_STATE_DEPTH_WRITE &&
              input_release_state != D3D12_RESOURCE_STATE_COMMON &&
-             input_release_state != D3D12_RESOURCE_STATE_COPY_SOURCE) ||
+             input_release_state != D3D12_RESOURCE_STATE_COPY_SOURCE &&
+             input_release_state != D3D12_RESOURCE_STATE_GENERIC_READ) ||
             input_queue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT ||
             !same_device(input_device, input_queue)) {
             if (failure_stage != nullptr) {
@@ -308,6 +345,9 @@ struct D3D12SwapchainHistory::Impl {
             return E_INVALIDARG;
         }
 
+        if(borrow && (input_release_state!=D3D12_RESOURCE_STATE_GENERIC_READ ||
+           (source_description.Flags&D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE)))return E_INVALIDARG;
+        borrow_sources=borrow;borrowed_description=source_description;
         source_images.reserve(inputs.size());
         for (ID3D12Resource* source : inputs) {
             if (source == nullptr || !same_adapter(input_device, source) ||
@@ -339,6 +379,7 @@ struct D3D12SwapchainHistory::Impl {
         history_description.Flags = static_cast<D3D12_RESOURCE_FLAGS>(
             history_description.Flags & ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE);
         for (HistorySlot& slot : slots) {
+            if(borrow_sources)continue;
             HRESULT result = device->CreateCommittedResource(
                 &heap_properties,
                 D3D12_HEAP_FLAG_NONE,
@@ -550,6 +591,7 @@ struct D3D12SwapchainHistory::Impl {
         std::uint32_t source_index,
         D3D12HistoryCaptureTicket* output_ticket,
         D3D12HistoryCaptureWait* wait) noexcept {
+        if(borrow_sources)return E_INVALIDARG;
         if (output_ticket == nullptr) {
             return E_POINTER;
         }
@@ -610,8 +652,8 @@ struct D3D12SwapchainHistory::Impl {
                 D3D12_RESOURCE_STATE_COPY_DEST),
         };
         slot.capture_list->ResourceBarrier(
-            static_cast<UINT>(before_copy.size()) - (release_state == D3D12_RESOURCE_STATE_COPY_SOURCE ? 1U : 0U),
-            before_copy.data() + (release_state == D3D12_RESOURCE_STATE_COPY_SOURCE ? 1U : 0U));
+            static_cast<UINT>(before_copy.size()) - ((release_state & D3D12_RESOURCE_STATE_COPY_SOURCE) != 0 ? 1U : 0U),
+            before_copy.data() + ((release_state & D3D12_RESOURCE_STATE_COPY_SOURCE) != 0 ? 1U : 0U));
         dred_marker(slot.capture_list.Get(), "OFXR history copy");
         slot.capture_list->CopyResource(slot.resource.Get(), source);
 
@@ -623,8 +665,8 @@ struct D3D12SwapchainHistory::Impl {
                 D3D12_RESOURCE_STATE_COMMON),
         };
         slot.capture_list->ResourceBarrier(
-            static_cast<UINT>(after_copy.size()) - (release_state == D3D12_RESOURCE_STATE_COPY_SOURCE ? 1U : 0U),
-            after_copy.data() + (release_state == D3D12_RESOURCE_STATE_COPY_SOURCE ? 1U : 0U));
+            static_cast<UINT>(after_copy.size()) - ((release_state & D3D12_RESOURCE_STATE_COPY_SOURCE) != 0 ? 1U : 0U),
+            after_copy.data() + ((release_state & D3D12_RESOURCE_STATE_COPY_SOURCE) != 0 ? 1U : 0U));
         dred_marker(slot.capture_list.Get(), "OFXR history complete");
         const bool capture_timing = prepare_capture_timing();
         if (capture_timing) {
@@ -684,6 +726,7 @@ struct D3D12SwapchainHistory::Impl {
         HistorySlot& slot = slots[requested_ticket.slot];
         slot.ticket = {};
         slot.valid = false;
+        if(borrow_sources){slot.retired=true;release_completed();}
         pending_ticket = {};
         has_pending_capture = false;
     }
@@ -715,7 +758,7 @@ struct D3D12SwapchainHistory::Impl {
 
         HistorySlot& slot = slots[requested_ticket.slot];
         if (!slot.valid || !matching_ticket(slot.ticket, requested_ticket) ||
-            slot.active_lease_serial != 0 || slot.resource == nullptr || producer_fence == nullptr) {
+            slot.active_lease_serial != 0 || slot.resource == nullptr || (borrow_sources?slot.borrowed_producer.Get():producer_fence.Get()) == nullptr) {
             return HRESULT_FROM_WIN32(ERROR_BUSY);
         }
         if (slot.consumer_fence_value != 0) {
@@ -734,9 +777,10 @@ struct D3D12SwapchainHistory::Impl {
         const std::uint64_t lease_serial = next_lease_serial++;
         slot.active_lease_serial = lease_serial;
         slot.resource->AddRef();
-        producer_fence->AddRef();
+        auto* source_fence=borrow_sources?slot.borrowed_producer.Get():producer_fence.Get();
+        source_fence->AddRef();
         *output_resource = slot.resource.Get();
-        *output_producer_fence = producer_fence.Get();
+        *output_producer_fence = source_fence;
         output_lease->capture_serial = requested_ticket.serial;
         output_lease->lease_serial = lease_serial;
         output_lease->slot = requested_ticket.slot;
@@ -758,6 +802,7 @@ struct D3D12SwapchainHistory::Impl {
         slot.consumer_fence = completion_fence;
         slot.consumer_fence_value = completion_value;
         slot.active_lease_serial = 0;
+        if(borrow_sources)slot.retired=true;
         return S_OK;
     }
 
@@ -768,6 +813,7 @@ struct D3D12SwapchainHistory::Impl {
         HistorySlot& slot = slots[lease.slot];
         if (matching_lease(lease, slot, lease.slot)) {
             slot.active_lease_serial = 0;
+            if(borrow_sources)slot.retired=true;
         }
     }
 
@@ -788,12 +834,14 @@ struct D3D12SwapchainHistory::Impl {
             return result;
         }
         for (const HistorySlot& slot : slots) {
+            if(borrow_sources){result=wait_for_fence(slot.borrowed_producer.Get(),slot.capture_fence_value);if(FAILED(result))return result;}
             result = wait_for_fence(slot.consumer_fence.Get(), slot.consumer_fence_value);
             if (FAILED(result)) {
                 capture_enabled = false;
                 return result;
             }
         }
+        release_completed();
         return S_OK;
     }
 
@@ -803,6 +851,7 @@ struct D3D12SwapchainHistory::Impl {
             return result;
         }
         for (HistorySlot& slot : slots) {
+            if(borrow_sources){slot.owner.reset();slot.resource.Reset();slot.borrowed_producer.Reset();slot.retired=false;}
             slot.ticket = {};
             slot.valid = false;
             slot.capture_fence_value = 0;
@@ -838,7 +887,7 @@ HRESULT D3D12SwapchainHistory::initialize(
     ID3D12CommandQueue* queue,
     std::span<ID3D12Resource* const> source_images,
     D3D12_RESOURCE_STATES release_state,
-    D3D12HistoryInitializationStage* failure_stage) noexcept {
+    D3D12HistoryInitializationStage* failure_stage, bool borrow_sources) noexcept {
     try {
         std::scoped_lock lock(mutex_);
         if (impl_ != nullptr) {
@@ -846,7 +895,7 @@ HRESULT D3D12SwapchainHistory::initialize(
         }
         auto candidate = std::make_unique<Impl>();
         const HRESULT result = candidate->initialize(
-            device, queue, source_images, release_state, failure_stage);
+            device, queue, source_images, release_state, failure_stage, borrow_sources);
         if (FAILED(result)) {
             return result;
         }
@@ -857,6 +906,19 @@ HRESULT D3D12SwapchainHistory::initialize(
     } catch (...) {
         return E_FAIL;
     }
+}
+
+HRESULT D3D12SwapchainHistory::capture_borrowed(ID3D12Resource* source,ID3D12Fence* ready,
+    std::uint64_t value,std::shared_ptr<void> owner,D3D12HistoryCaptureTicket* ticket) noexcept {
+    std::scoped_lock lock(mutex_);
+    if(!impl_)return E_UNEXPECTED;
+    return impl_->capture_borrowed(source,ready,value,std::move(owner),ticket);
+}
+void D3D12SwapchainHistory::release_completed() noexcept {
+    std::scoped_lock lock(mutex_);if(impl_)impl_->release_completed();
+}
+bool D3D12SwapchainHistory::borrowed() const noexcept {
+    std::scoped_lock lock(mutex_);return impl_ && impl_->borrow_sources;
 }
 
 HRESULT D3D12SwapchainHistory::capture_source(ID3D12Resource* source, D3D12HistoryCaptureTicket* ticket) noexcept {

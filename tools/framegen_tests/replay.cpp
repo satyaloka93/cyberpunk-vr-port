@@ -1,3 +1,4 @@
+#include "Framegen/CapturedColor.hpp"
 // Replays a capture written by the plugin (CyberpunkVR_FramegenCapture) through every generator.
 // Frames 0 and 2 are the real pair; frame 1, rendered between them, is the truth. Frame 2's vectors
 // reach frame 0 by composing its own (2 -> 1) with frame 1's (1 -> 0). Each output is rotated from
@@ -252,9 +253,9 @@ int Replay(ReplayGpu& gpu,const std::filesystem::path& dir,const std::filesystem
     std::printf("quality=%d source interval=%.3fms; reference uses midpoint (unequal capture spacing limits accuracy)\n",quality,frameMs);
     std::filesystem::create_directories(out);
     CoInitializeEx(nullptr,COINIT_MULTITHREADED);
-    struct Variant {Backend backend;int flowScale;const char* name;};
+    struct Variant {Backend backend;int flowScale;const char* name;bool borrowed{};};
     const Variant variants[]={{Backend::FidelityFX,50,"FidelityFX"},{Backend::FidelityFX,0,"FidelityFX no flow"},
-        {Backend::Nvidia,50,"NVIDIA OFA + FidelityFX"},{Backend::NvidiaV557,50,"NVIDIA V557 native adapter"},{Backend::DlssG,50,"NVIDIA DLSS-G"}};
+        {Backend::Nvidia,50,"NVIDIA OFA + FidelityFX"},{Backend::NvidiaV557,50,"NVIDIA V557 native adapter"},{Backend::NvidiaV557,50,"NVIDIA V557 borrowed",true},{Backend::DlssG,50,"NVIDIA DLSS-G"}};
     const uint32_t w=f[1][0].width,h=f[1][0].height;
     // motion region: where frame 1 differs from frame 2 shown with the runtime's rotation
     std::vector<uint8_t> motion[2],valid[2],baseline[2],baselineA[2];
@@ -286,6 +287,7 @@ int Replay(ReplayGpu& gpu,const std::filesystem::path& dir,const std::filesystem
         if(backend==Backend::DlssG && !dlssg::Available(gpu.device)) {std::printf("  %-26s unavailable: %s\n","DLSS-G",dlssg::Reason());continue;}
         Generator generator;Settings settings;settings.enabled=true;settings.backend=backend;settings.quality=quality;settings.flowScale=variant.flowScale;SetSettings(settings);
         std::vector<uint8_t> results[2];bool ok=true;
+        ComPtr<ID3D12Fence> captureReady;Hr(gpu.device->CreateFence(0,D3D12_FENCE_FLAG_NONE,IID_PPV_ARGS(&captureReady)));
         // FFX ignores optical-flow blending for the first ten frames after reset.
         // Prime with stationary copies of A and zero vectors, then evaluate A->B.
         // This removes the startup gate; it does not recreate real prior history.
@@ -299,7 +301,8 @@ int Replay(ReplayGpu& gpu,const std::filesystem::path& dir,const std::filesystem
                 in->width=src.depthWidth;in->height=src.depthHeight;in->motionWidth=src.motionWidth;in->motionHeight=src.motionHeight;
                 in->camera=src.camera;in->hasDepth=in->hasMotion=true;in->frameId=uint32_t(frames[int(k)]["frame"].number);
                 color[e]=gpu.texture(src.width,src.height,DXGI_FORMAT_R8G8B8A8_UNORM,D3D12_RESOURCE_STATE_COPY_DEST);
-                gpu.upload(color[e].Get(),src.color.data(),4,D3D12_RESOURCE_STATE_COPY_SOURCE);
+                if(variant.borrowed)Hr(captured_color::MarkShared(color[e].Get()));
+                gpu.upload(color[e].Get(),src.color.data(),4,captured_color::ReadState(color[e].Get()));
                 auto depth=gpu.texture(src.depthWidth,src.depthHeight,DXGI_FORMAT_R32_FLOAT,D3D12_RESOURCE_STATE_COPY_DEST);
                 gpu.upload(depth.Get(),src.depth.data(),4,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
                 std::vector<float> vectors=evaluate?Compose(src,f[1][e]):std::vector<float>(src.motion.size(),0.0f);
@@ -310,10 +313,12 @@ int Replay(ReplayGpu& gpu,const std::filesystem::path& dir,const std::filesystem
                 cameras[e].previous=f[0][e].eye;cameras[e].current=f[k][e].eye;
             }
             bool interpolated=false;
-            ok=generator.Generate(gpu.device,gpu.queue,colors,inputs,cameras,settings,frameMs,step==0,uint64_t(step+1),&interpolated);
+            auto lease=std::make_shared<std::array<ComPtr<ID3D12Resource>,2>>(std::array<ComPtr<ID3D12Resource>,2>{color[0],color[1]});
+            Hr(gpu.queue->Signal(captureReady.Get(),uint64_t(step+1)));
+            ok=generator.Generate(gpu.device,gpu.queue,colors,inputs,cameras,settings,frameMs,step==0,uint64_t(step+1),&interpolated,captureReady.Get(),uint64_t(step+1),lease);
             gpu.wait();
             // V557 context registration is asynchronous; retry its first submission after the receipt.
-            if(!ok && step==0 && backend==Backend::NvidiaV557){ok=generator.Generate(gpu.device,gpu.queue,colors,inputs,cameras,settings,frameMs,true,1,&interpolated);gpu.wait();}
+            if(!ok && step==0 && backend==Backend::NvidiaV557){ok=generator.Generate(gpu.device,gpu.queue,colors,inputs,cameras,settings,frameMs,true,1,&interpolated,captureReady.Get(),uint64_t(step+1),lease);gpu.wait();}
             if(ok && evaluate) {
                 ok=interpolated && ActiveBackend()==backend;
                 for(unsigned e=0;e<2 && ok;++e) {
@@ -324,6 +329,7 @@ int Replay(ReplayGpu& gpu,const std::filesystem::path& dir,const std::filesystem
             }
         }
         if(!ok) {std::printf("  %-26s FAILED (active %s)\n",variant.name,BackendName(ActiveBackend()));continue;}
+        std::printf("  %s explicit allocation bytes: %llu\n",variant.name,static_cast<unsigned long long>(generator.Bytes()));
         report(variant.name,results);
         std::string name=variant.name;for(auto& c:name)if(!std::isalnum(uint8_t(c)))c='_';
         for(unsigned e=0;e<2;++e)SavePng(out/(name+"_e"+std::to_string(e)+".png"),results[e],w,h,0,0,w,h);

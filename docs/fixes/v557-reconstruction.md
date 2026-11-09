@@ -52,9 +52,10 @@ Port adaptations to the component:
   existing capture queries and calibrated reconstruction timestamps; it does
   not insert new GPU work. Missing calibration stays missing, not zero latency.
 
-Tradeoffs to measure in the headset: V557 owns three history images and one
-synthetic output destination per eye, plus OFA resources. It therefore has different
-VRAM/copy costs. Its rotational camera correction is depth-unaware for
+Tradeoffs to measure in the headset: V557 uses pinned native captures when they
+are published for shared reading; older/incompatible pools use three copied history
+images per eye. Both routes own one synthetic output per eye plus OFA resources.
+Their memory and capture-availability costs differ. Its rotational camera correction is depth-unaware for
 translation. Flow-only reconstruction can improve this windscreen while
 performing worse on other effects. No live FPS, memory or overall quality
 improvement is claimed from the offline image comparison.
@@ -142,3 +143,46 @@ values with that definition in mind. Active pack/composition costs remain summed
 
 Headset delivery benefit of this batching candidate remains unverified until the
 next gameplay run. Keep Medium/50% and existing render/runtime settings for it.
+
+
+## Borrow native capture history, November 9
+
+The batched build's next natural gameplay run (PID22476) retained clean bike
+edges. Its compositor estimate improved from70.20 to83.48FPS, while fresh
+accepted submissions stayed approximately71/s. That supports better delivery,
+not a controlled throughput increase or proof of83.5 unique displayed frames/s.
+Capture readiness still accounts for most generation queue delay.
+
+The next candidate removes the duplicate history ring for V557. Port-owned
+capture textures allocated while this backend is selected are marked with an
+immutable private-data tag and published in GENERIC_READ. Synthesis and display
+can read them without changing their resource state. Writers restore that state
+before the capture receipt and cannot reuse a texture until its pool pins retire.
+The adapter imports the original texture, capture fence/value and owner lease.
+The previous endpoint is released only after its last synthesis GPU receipt;
+the current endpoint stays pinned for the next pair. COM references alone are
+insufficient because a live capture texture can otherwise be overwritten.
+
+This removes six history textures and two full-eye CopyResource payloads per
+stereo pair. At3144x3000, replay allocation accounting falls from346,030,080 to
+113,639,424bytes: 221.625MiB saved (driver-private memory excluded). Native capture-pool size, synthetic outputs, batching, optical flow,
+shaders, pacing and submission policy are unchanged. The priming output copy
+remains. AFW launches and existing untagged pools retain the copy path; switching
+to V557 mid-session does not force pool reallocation. Initialization logs expose
+`history-copy=0` or `1`. Tagged pools remain readable by the other backends after
+a dynamic switch. Game-owned textures are never tagged or changed by this API.
+
+Validation: D3D12 debug tests pass for both queue routes, actual three-slot
+reservation/recycling, retained current/released previous pins, pending GPU
+retirement, duplicate-import rejection, reset and V557/native NVIDIA/FFX switches.
+Both copied and borrowed histories preserve the two-eye preparation behavior
+while the display receipt is deliberately blocked, with timing on and off.
+Full3144x3000 saved bike outputs match the copied adapter pixel-for-pixel in RGB
+for both eyes. DLSS-G is not exercised by the replay build (no NGX in that target);
+its production build succeeds and its tagged-input state handling was reviewed.
+
+Live performance is pending. Holding native buffers longer can reduce available
+capture slots even though it saves copies and allocations. Use the existing
+CaptureNoSlot counter, source age, capture wait and compositor delivery alongside
+fresh/repeated submission rates on the next same-settings natural bike run.
+Retain the prior batched DLL as the rollback baseline. No FPS gain is promised.

@@ -12,3 +12,10 @@ Native mono callers may defer reconstruction until both eyes have submitted
 packing/OFA, then call `flush_reconstruction` before joining any completion
 receipt. This avoids parking the other eye behind a prior display-consumer wait.
 The default/reference call still submits the full transaction. No shader change.
+
+The native adapter can also borrow immutable-for-the-lease capture textures in
+GENERIC_READ. This opt-in history mode imports the original producer fence and a
+mandatory owner pin instead of allocating/copying a history ring. Previous images
+retire only after their GPU consumer receipt; current images remain pinned for
+the next pair. Only NVIDIA reconstruction-only mode accepts borrowed history.
+The reference API defaults to owned history and retains its original behavior.

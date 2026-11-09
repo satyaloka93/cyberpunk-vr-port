@@ -12,7 +12,7 @@ class V557Generator;
 struct EyeCamera {float orientation[4]{0,0,0,1};float fov[4]{};};
 struct EyePair {EyeCamera previous,current;};
 // Consumes the port's existing color snapshots. No private XR swapchains,
-// readback or second presenter is created. V557 owns a reconstruction history ring.
+// readback or second presenter is created. V557 pins shared-read capture history, or copies incompatible inputs.
 class Generator {
 public:
     Generator();

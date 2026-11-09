@@ -1,3 +1,4 @@
+#include "Framegen/CapturedColor.hpp"
 #include "Runtimes/HapticRouting.hpp"
 #include "Runtimes/PresentationQueue.hpp"
 #include "Framegen/RefreshCadence.hpp"
@@ -2356,14 +2357,14 @@ DWORD OpenXRManager::FrameThreadMain() {
                             D3D12_RESOURCE_BARRIER toRead{};
                             toRead.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
                             toRead.Transition.pResource = eyeSource;
-                            toRead.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+                            toRead.Transition.StateBefore = cvr::framegen::captured_color::ReadState(eyeSource);
                             toRead.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
                             toRead.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                            m_cmdList->ResourceBarrier(1, &toRead);
+                            if(!cvr::framegen::captured_color::Shared(eyeSource))m_cmdList->ResourceBarrier(1, &toRead);
                             const bool decoded = m_srgbToLinearPass->Record(
                                 m_cmdList, eyeSource, texture, m_cmdAllocatorIndex * 2 + eye);
                             std::swap(toRead.Transition.StateBefore, toRead.Transition.StateAfter);
-                            m_cmdList->ResourceBarrier(1, &toRead);
+                            if(!cvr::framegen::captured_color::Shared(eyeSource))m_cmdList->ResourceBarrier(1, &toRead);
                             if (!decoded) {
                                 Log("OpenXRManager: sRGB decode into the swapchain failed for eye %u\n", eye);
                                 copyReady = false;

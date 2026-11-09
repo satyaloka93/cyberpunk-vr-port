@@ -1119,6 +1119,7 @@ struct D3D12FrameSynthesizer::Impl {
     bool flow_output_consumed{};
     bool nvidia_gpu_timing_enabled{};
     bool reconstruction_only{};
+    bool borrowed_history{};
 
     ~Impl() {
         // Nothing outside this object waits on the synthesis queue. Its work
@@ -2446,6 +2447,8 @@ struct D3D12FrameSynthesizer::Impl {
         bool input_reconstruction_only = false) {
         if(input_reconstruction_only && (input_backend!=D3D12OpticalFlowBackend::nvidia || input_nvidia_options.hybrid))return E_INVALIDARG;
         reconstruction_only=input_reconstruction_only;
+        borrowed_history=input_history && input_history->borrowed();
+        if(borrowed_history && !reconstruction_only)return E_INVALIDARG;
         if (input_device == nullptr || input_queue == nullptr ||
             input_history == nullptr || !input_history->initialized() ||
             input_current_images.empty() || input_synthetic_images.empty() ||
@@ -4401,8 +4404,8 @@ struct D3D12FrameSynthesizer::Impl {
                     D3D12_RESOURCE_STATE_COPY_DEST),
             };
             slot.command_list->ResourceBarrier(
-                static_cast<UINT>(before_copy.size()),
-                before_copy.data());
+                static_cast<UINT>(before_copy.size())-(borrowed_history?1U:0U),
+                before_copy.data()+(borrowed_history?1U:0U));
             slot.command_list->CopyResource(destination, source.resource.Get());
             const std::array<D3D12_RESOURCE_BARRIER, 2> after_copy{
                 transition_barrier(
@@ -4415,8 +4418,8 @@ struct D3D12FrameSynthesizer::Impl {
                     release_state),
             };
             slot.command_list->ResourceBarrier(
-                static_cast<UINT>(after_copy.size()),
-                after_copy.data());
+                static_cast<UINT>(after_copy.size())-(borrowed_history?1U:0U),
+                after_copy.data()+(borrowed_history?1U:0U));
             dred_marker(slot.command_list.Get(), "OFXR NVIDIA prime complete");
             return slot.synthesis_command_list->Close();
         }
@@ -4608,6 +4611,7 @@ struct D3D12FrameSynthesizer::Impl {
         std::array<D3D12_RESOURCE_BARRIER,
                    2U + 2U * kMaxReprojectionViews> before_pack{};
         UINT before_pack_count = 0;
+        if(!borrowed_history){
         before_pack[before_pack_count++] = transition_barrier(
             previous_resource,
             D3D12_RESOURCE_STATE_COMMON,
@@ -4616,6 +4620,7 @@ struct D3D12FrameSynthesizer::Impl {
             current_resource,
             D3D12_RESOURCE_STATE_COMMON,
             kShaderReadState);
+        }
         for (UINT eye_index = 0;
              eye_index < image_description.DepthOrArraySize;
              ++eye_index) {
@@ -4709,6 +4714,7 @@ struct D3D12FrameSynthesizer::Impl {
         std::array<D3D12_RESOURCE_BARRIER,
                    2U + 2U * kMaxReprojectionViews> after_pack{};
         UINT after_pack_count = 0;
+        if(!borrowed_history){
         after_pack[after_pack_count++] = transition_barrier(
             previous_resource,
             kShaderReadState,
@@ -4717,6 +4723,7 @@ struct D3D12FrameSynthesizer::Impl {
             current_resource,
             kShaderReadState,
             D3D12_RESOURCE_STATE_COMMON);
+        }
         for (UINT eye_index = 0;
              eye_index < image_description.DepthOrArraySize;
              ++eye_index) {
@@ -4753,6 +4760,7 @@ struct D3D12FrameSynthesizer::Impl {
         std::array<D3D12_RESOURCE_BARRIER,
                    2U + 4U * kMaxReprojectionViews> before_synthesis{};
         UINT before_synthesis_count = 0;
+        if(!borrowed_history){
         before_synthesis[before_synthesis_count++] = transition_barrier(
             previous_resource,
             D3D12_RESOURCE_STATE_COMMON,
@@ -4761,6 +4769,7 @@ struct D3D12FrameSynthesizer::Impl {
             current_resource,
             D3D12_RESOURCE_STATE_COMMON,
             kShaderReadState);
+        }
         for (UINT eye_index = 0;
              eye_index < image_description.DepthOrArraySize;
              ++eye_index) {
@@ -4915,7 +4924,7 @@ struct D3D12FrameSynthesizer::Impl {
                         D3D12_RESOURCE_STATE_COMMON);
             }
         }
-        before_current_copy[before_current_copy_count++] = transition_barrier(
+        if(!borrowed_history)before_current_copy[before_current_copy_count++] = transition_barrier(
             previous_resource,
             kShaderReadState,
             D3D12_RESOURCE_STATE_COMMON);
@@ -4938,8 +4947,10 @@ struct D3D12FrameSynthesizer::Impl {
                 slot.timing_query_base + kSpanEnd);
         }
         if(reconstruction_only){
-            const auto restore=transition_barrier(current_resource,kShaderReadState,D3D12_RESOURCE_STATE_COMMON);
-            synthesis->ResourceBarrier(1,&restore);
+            if(!borrowed_history){
+                const auto restore=transition_barrier(current_resource,kShaderReadState,D3D12_RESOURCE_STATE_COMMON);
+                synthesis->ResourceBarrier(1,&restore);
+            }
         } else {
         // The copy's own transitions travel with the copy, so the resources
         // are left in their normal states while it waits to be submitted.

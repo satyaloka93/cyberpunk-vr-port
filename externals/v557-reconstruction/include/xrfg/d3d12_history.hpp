@@ -70,7 +70,8 @@ public:
         // Native OpenXR resources use their attachment state. Same-adapter
         // D3D11 interop mirrors use COMMON at both API ownership boundaries.
         D3D12_RESOURCE_STATES release_state,
-        D3D12HistoryInitializationStage* failure_stage = nullptr) noexcept;
+        D3D12HistoryInitializationStage* failure_stage = nullptr,
+        bool borrow_sources = false) noexcept;
 
     // Queues the source-to-history copy and returns after signaling its fence;
     // it never waits for the copy itself. If the next ring slot is still read
@@ -85,6 +86,13 @@ public:
 
     // Port adapter: previous capture must be complete; source retained until next capture.
     [[nodiscard]] HRESULT capture_source(ID3D12Resource* source, D3D12HistoryCaptureTicket* ticket) noexcept;
+
+    // No copy/transition: caller provides immutable GENERIC_READ texture,
+    // capture completion and an owner that prevents producer pool reuse.
+    [[nodiscard]] HRESULT capture_borrowed(ID3D12Resource*, ID3D12Fence*, std::uint64_t,
+        std::shared_ptr<void> owner, D3D12HistoryCaptureTicket*) noexcept;
+    void release_completed() noexcept;
+    [[nodiscard]] bool borrowed() const noexcept;
 
     [[nodiscard]] HRESULT commit(const D3D12HistoryCaptureTicket& ticket) noexcept;
 
