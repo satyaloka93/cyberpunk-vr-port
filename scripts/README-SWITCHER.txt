@@ -1,7 +1,7 @@
-CyberpunkVR Port - game 2.5 / PSVR2 0.2.3 RC1 or official upstream 0.2.3
+CyberpunkVR Port - game 2.5 / PSVR2 0.2.3 RC1 or official upstream 0.2.45
 
 Extract the whole ZIP outside the game. Run Switch-CyberpunkVRPort.bat.
-1 Install official upstream 0.2.3
+1 Install official upstream 0.2.45
 2 Download/check official upstream without installing
 3 Download/check our PSVR2 0.2.3 RC1 without installing
 4 Install our PSVR2 0.2.3 RC1 (also supports Quest/OpenXR)
@@ -9,7 +9,7 @@ Extract the whole ZIP outside the game. Run Switch-CyberpunkVRPort.bat.
 11 Check installation and recent errors (read-only), including Cheeky
 
 Install-PSVR2-Fork.bat opens the RC1 install directly.
-Install-Upstream-023.bat opens the official install directly.
+Install-Upstream-0245.bat opens the official install directly.
 Download/check stages a preview; it does not change your game.
 Install verifies downloads, backs up the old port, removes it cleanly and installs
 new files. Personal fit/input settings migrate; render/FG/debug tuning resets.
@@ -32,3 +32,7 @@ See docs/CHEEKY-DIAGNOSTICS.md. Unknown hashes are not automatically a fault.
 Options 9/10 retain the game-2.5 VRCAM 0.1.8 comparison, with its older dependencies.
 Option 8 can patch a recognized optional More Occluders script; modern ports do
 not require it. Use option 4 to return to RC1; option 5 restores your exact backup.
+
+Upstream 0.2.45 scanner: left hand at left ear + left stick click (L3), click again to close.
+Our fork uses its own controls. See docs/UPSTREAM-0245-INSTALL.md.
+Option 5 restores your exact pre-test build, including local scanner fixes; option 4 downloads published RC1.

@@ -1,4 +1,7 @@
-# Upstream 0.2.3 switcher
+# Upstream 0.2.3 switcher (historical)
+
+The current switcher targets [upstream 0.2.45](UPSTREAM-0245-INSTALL.md).
+The numbered upstream choices described below now install that release.
 
 Extract the whole switcher ZIP outside the game, close Cyberpunk and mod managers,
 then run **Switch-CyberpunkVRPort.bat**:

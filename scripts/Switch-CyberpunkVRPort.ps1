@@ -31,12 +31,12 @@ $CacheRoot = [IO.Path]::GetFullPath($CacheRoot)
 $BackupRoot = [IO.Path]::GetFullPath($BackupRoot)
 $interactiveMenu = $Action -eq 'Menu'
 $release = [pscustomobject]@{
-    name='CyberpunkVRPort upstream 0.2.3'; fileName='CyberpunkVRPort-0.2.3.zip'
-    url='https://github.com/dariulone/cyberpunk-vr-port/releases/download/0.2.3/CyberpunkVRPort-0.2.3.zip'
-    sha256='2269fa6d5f21b34ab6bb72f86a7e3a4c710d5a5c370e992eb1032a862ba4cddc'
+    name='CyberpunkVRPort upstream 0.2.45'; fileName='CyberpunkVRPort-0.2.45.zip'
+    url='https://github.com/dariulone/cyberpunk-vr-port/releases/download/0.2.45/CyberpunkVRPort-0.2.45.zip'
+    sha256='64b23fb8f211cb5c3df896676a7d9c8ebf6e70d3affaa4f280ffd39d9cfab6cf'
 }
 function Get-EditionDependencies {
-    $manifest = if ($Edition -ne 'Vrcam') { 'switcher-dependencies-023.json' } else { 'switcher-dependencies-019.json' }
+    $manifest = switch ($Edition) { 'Upstream' { 'switcher-dependencies-0245.json' } 'Fork' { 'switcher-dependencies-023.json' } 'Vrcam' { 'switcher-dependencies-019.json' } }
     return @((Get-Content -LiteralPath (Join-Path $repo ("wabbajack\" + $manifest)) -Raw | ConvertFrom-Json).mods | Sort-Object priority)
 }
 function Set-EditionRelease {
@@ -85,7 +85,7 @@ function Show-PSVR2ToolkitGuidance {
     if ($detected) { Write-Host "`nPSVR2/Sense hardware detected." -ForegroundColor Green }
     if ($detected -or $Edition -in @('Fork','Vrcam')) {
         if ($Edition -eq 'Upstream') {
-            Write-Host 'Official 0.2.3 uses upstream controls and haptics; our fork-specific options may differ. Toolkit remains optional external setup.' -ForegroundColor Yellow
+            Write-Host 'Official 0.2.45 uses upstream controls and haptics; our fork-specific options may differ. Toolkit remains optional external setup.' -ForegroundColor Yellow
             Write-Host 'Toolkit setup: https://github.com/satyaloka93/PSVR2Toolkit/releases/tag/cyberpunk-dsx-bridge-v0.3.2'
             Write-Host 'The switcher does not start/stop a bridge or change Toolkit drivers or OpenXR layers.'
             return
@@ -255,7 +255,7 @@ function New-ReleaseStage([string]$Root) {
     if (-not (Test-Path -LiteralPath (Get-SafePath $stage $plugin))) { throw "Release payload is incomplete: $plugin" }
     if ($Edition -ne 'Vrcam') {
         foreach ($required in @('archive\cyberpunkvrport.archive','redscript\scc_lib.dll','dxc\dxcompiler.dll','dxc\dxil.dll')) {
-            if (-not (Test-Path -LiteralPath (Get-SafePath $stage ("red4ext\plugins\cyberpunkvrport\" + $required)))) { throw "0.2.3 bundled component missing: $required" }
+            if (-not (Test-Path -LiteralPath (Get-SafePath $stage ("red4ext\plugins\cyberpunkvrport\" + $required)))) { throw "$($release.name) bundled component missing: $required" }
         }
     }
     Set-MigratedSettings $Root $stage
@@ -337,8 +337,8 @@ try {
 
     $settingsFile = Join-Path $env:LOCALAPPDATA 'CD Projekt Red\Cyberpunk 2077\UserSettings.json'
     if ($Action -eq 'Menu') {
-        Write-Host "CyberpunkVR Port switcher -- official upstream 0.2.3 or PSVR2 0.2.3 RC1 / game-2.5 VRCAM 0.1.8`nGame: $root"
-        Write-Host "1  Install official upstream 0.2.3`n2  Download/check upstream 0.2.3 (no install)`n3  Download/check PSVR2 0.2.3 RC1 (no install)`n4  Install PSVR2 0.2.3 RC1`n5  Restore previous port`n6  Installed dependency status`n7  Open required Nexus download pages`n8  Patch / install optional More Occluders for game 2.5`n9  Download/check game-2.5 VRCAM 0.1.8 comparison`n10 Install game-2.5 VRCAM 0.1.8 comparison`n11 Check installation and recent errors (read-only)`nQ  Quit"
+        Write-Host "CyberpunkVR Port switcher -- official upstream 0.2.45 or PSVR2 0.2.3 RC1 / game-2.5 VRCAM 0.1.8`nGame: $root"
+        Write-Host "1  Install official upstream 0.2.45`n2  Download/check upstream 0.2.45 (no install)`n3  Download/check PSVR2 0.2.3 RC1 (no install)`n4  Install PSVR2 0.2.3 RC1`n5  Restore previous port`n6  Installed dependency status`n7  Open required Nexus download pages`n8  Patch / install optional More Occluders for game 2.5`n9  Download/check game-2.5 VRCAM 0.1.8 comparison`n10 Install game-2.5 VRCAM 0.1.8 comparison`n11 Check installation and recent errors (read-only)`nQ  Quit"
         $choice = Read-Host 'Choose'
         $Action = switch ($choice) { '1' { 'Install' }; '2' { 'Prepare' }; '3' { $Edition='Fork'; 'Prepare' }; '4' { $Edition='Fork'; 'Install' }; '5' { 'Restore' }; '6' { 'Status' }; '7' { 'Nexus' }; '8' { 'PatchOccluders' }; '9' { $Edition='Vrcam'; 'Prepare' }; '10' { $Edition='Vrcam'; 'Install' }; '11' { 'Diagnose' }; default { return } }
         if ($Edition -eq 'Fork' -and -not $ForkArchive) { $ForkArchive = (Read-Host 'Optional path to local fork ZIP (Enter downloads pinned release)').Trim('"') }
