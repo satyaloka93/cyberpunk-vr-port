@@ -3065,6 +3065,7 @@ DWORD OpenXRManager::FrameThreadMain() {
                                 // against this cycle's display time, and those points do not lie
                                 // on the line -- they are the same x with a later y, which drags
                                 // the slope toward zero.
+                                cvr::framegen::OnDelivery(XrDiagNowMs(),monoCaptureMs,fgSelected ? fgSelection.kind==cvr::framegen::Cadence::Next::Repeat : presentSerial==m_lastSubmittedSerial);
                                 const bool realSubmission = !fgSelected || !fgSelection.synthetic;
                                 if (realSubmission && presentSerial != m_lastSubmittedSerial) {
                                     FitAddDisplayTime(presentSerial, frameState.predictedDisplayTime);
@@ -3117,6 +3118,8 @@ DWORD OpenXRManager::FrameThreadMain() {
         // apart from the real submit so the two never average together into a number that says nothing.
         if (frameState.shouldRender && ResubmitLastFrame(frameState.predictedDisplayTime)) {
             cvr::framegen::flight::Count(cvr::framegen::flight::Event::FallbackRepeat);
+            cvr::framegen::OnDelivery(XrDiagNowMs(),0,true);
+            cvr::framegen::OnSubmitted(m_lastSubmittedSerial,false,true,cvr::framegen::NowMs());
             CyberpunkVR_XrResubmits.fetch_add(1, std::memory_order_relaxed);
             CVR_DIAGNOSTIC(CyberpunkVR_DebugXrEnds.fetch_add(1, std::memory_order_relaxed));
             XrMark('E');

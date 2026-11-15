@@ -84,7 +84,18 @@ std::string Number(double value,bool known=true,unsigned precision=1) {
 }
 void Draw(Canvas c,const Settings& settings,const Statistics& stats) {
     constexpr double gb=1024.0*1024*1024;const auto& hardware=stats.hardware;
-    c.Panel();char row[128]{};
+    char row[128]{};
+    if(settings.overlayLayout==3) {
+        // Three legible lines, no hardware table or backend footer. RGBA8 little endian green.
+        std::fill(c.pixels,c.pixels+size_t(c.width)*c.height,0u);
+        c.Rect(0,0,c.width,c.height,0xA0000000u);
+        constexpr uint32_t green=0xFF40FF40u;
+        std::snprintf(row,sizeof(row),"OUT    %.1f",stats.outputFps);c.Text(12,12,row,green,4);
+        std::snprintf(row,sizeof(row),"REPEAT %s%%",Number(stats.recentRepeatPercent,stats.recentRepeatPercent>=0,0).c_str());c.Text(12,56,row,green,4);
+        std::snprintf(row,sizeof(row),"AGE    %s MS",Number(stats.deliveryAgeMs,stats.deliveryAgeMs>=0,0).c_str());c.Text(12,100,row,green,4);
+        return;
+    }
+    c.Panel();
     const auto low1=Number(stats.low1Fps,stats.low1Fps>0),low01=Number(stats.low01Fps,stats.low01Fps>0);
     const auto gpu=Number(hardware.gpuUsage),cpu=Number(hardware.cpuUsage),temperature=Number(hardware.gpuTemperature,true,0);
     const auto ram=Number(hardware.ramUsed/gb,hardware.ramTotal!=0),ramTotal=Number(hardware.ramTotal/gb,hardware.ramTotal!=0);
@@ -148,8 +159,8 @@ const XrCompositionLayerBaseHeader* StatsOverlay::Prepare(XrSession session,XrSp
     }
     if(!device || !queue || !session || !view)return nullptr;
     ConfigureHardwareTelemetry(device);
-    const uint32_t wantedWidth=settings.overlayLayout==0 ? 720u : (settings.overlayLayout==1 ? 420u : 360u);
-    const uint32_t wantedHeight=settings.overlayLayout==0 ? 452u : (settings.overlayLayout==1 ? 404u : 222u);
+    const uint32_t wantedWidth=settings.overlayLayout==0 ? 720u : (settings.overlayLayout==1 ? 420u : (settings.overlayLayout==3 ? 420u : 360u));
+    const uint32_t wantedHeight=settings.overlayLayout==0 ? 452u : (settings.overlayLayout==1 ? 404u : (settings.overlayLayout==3 ? 144u : 222u));
     if(swapchain && (width!=wantedWidth || height!=wantedHeight) && fence->GetCompletedValue()>=fenceValue)Shutdown();
     if(!swapchain) {
         width=wantedWidth;height=wantedHeight;rowPitch=(width*4+255)&~255u;pixels.resize(size_t(width)*height);
@@ -219,7 +230,7 @@ const XrCompositionLayerBaseHeader* StatsOverlay::Prepare(XrSession session,XrSp
         if(!follow.valid)return nullptr;layer.pose=anchor;layer.space=local;
     }
     followMode=settings.overlayFollow;
-    const float angle=settings.overlayLayout==0 ? 36.0f : (settings.overlayLayout==1 ? 25.0f : 22.0f);
+    const float angle=settings.overlayLayout==0 ? 36.0f : (settings.overlayLayout==1 ? 25.0f : (settings.overlayLayout==3 ? 26.0f : 22.0f));
     const float w=2*distance*std::tan(angle*radians*.5f)*settings.overlayScale;
     layer.size={w,w*height/width};return reinterpret_cast<const XrCompositionLayerBaseHeader*>(&layer);
 }

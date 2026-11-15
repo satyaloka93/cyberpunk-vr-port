@@ -811,7 +811,11 @@ static bool DrawDrivingControls(LiveControlsUiState& state) {
 bool DrawFpsOverlayControls(LiveControlsUiState& state) {
     bool changed=false;auto& fg=state.framegen;
             changed|=UI::Checkbox("FPS overlay",&fg.overlay);
-            changed|=widgets::Combo("Overlay layout",&fg.overlayLayout,"Detailed\0Compact\0Minimal\0");
+            if(widgets::Combo("Overlay layout",&fg.overlayLayout,"Detailed\0Compact\0Minimal\0Delivery (large green)\0")) {
+                changed=true;
+                if(fg.overlayLayout==3) {fg.overlayCorner=1;fg.overlayScale=1;fg.overlayX=0;fg.overlayY=0;}
+            }
+            if(fg.overlayLayout==3)UI::TextWrapped("OUT: fresh real + generated XR submissions/s (repeats excluded). REPEAT: reused submissions over the last 2 seconds. AGE: mean capture-to-submit age over 2 seconds, not headset latency. Position and size are adjustable below.");
             changed|=widgets::Combo("Overlay position",&fg.overlayCorner,"Top left\0Top right\0Bottom left\0Bottom right\0Top center\0Bottom center\0Left center\0Right center\0Center\0");
             changed|=widgets::SliderFloat("Overlay size",&fg.overlayScale,.5f,2,"%.2fx");
             changed|=widgets::SliderFloat("Overlay distance",&fg.overlayDistance,.5f,5,"%.2f m");

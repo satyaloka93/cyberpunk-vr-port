@@ -31,6 +31,7 @@ struct Statistics {
     double cpuMs{},cpuPeakMs{},gpuMs{},gpuPeakMs{},generationMs{},generationSpanMs{};
     double averageFps{},minimumFps{},maximumFps{},low1Fps{},low01Fps{},cpuAverageMs{},gpuAverageMs{},cpuP99Ms{},cpuP999Ms{},gpuP99Ms{},gpuP999Ms{};
     double elapsedSeconds{},budgetMs{},repeatPercent{};
+    double deliveryAgeMs=-1, recentRepeatPercent=-1;
     uint32_t historySamples{};
     std::array<float,GraphPoints> cpuGraph{},gpuGraph{};
     HardwareStatistics hardware;
@@ -61,6 +62,8 @@ void ResetStatistics();
 void Status(const char* text,bool active=false);
 void OnRealFrame(uint64_t serial,double nowMs);
 void OnSubmitted(uint64_t serial,bool generated,bool repeat,double nowMs);
+// Successful XR submissions only; captureMs=0 reuses the last accepted image timestamp.
+void OnDelivery(double nowMs,double captureMs,bool repeat);
 void OnGpuFrame(double milliseconds);
 void OnGeneration(double milliseconds,double spanMilliseconds);
 void OnInput(unsigned eye,uint32_t width,uint32_t height);

@@ -2,6 +2,7 @@
 #include "Framegen/RefreshCadence.hpp"
 #include "Framegen/FlightRecorder.hpp"
 #include "Framegen/Framegen.hpp"
+#include "Framegen/DeliveryWindow.hpp"
 #include "Framegen/FramePolicy.hpp"
 #include "Render/Afw.hpp"
 #include "Utils/DebugGate.hpp"
@@ -69,13 +70,14 @@ template<size_t N> struct Window {
     }
 };
 Window<512> real,generated,output,repeats,cpu,gpu;
+DeliveryWindow delivery;
 FrameHistory<> cpuHistory,gpuHistory;
 Statistics cached;
 double nextRefresh{},nextSummary{},started{};
 HistorySummary cpuSummary,gpuSummary;
 uint64_t lastReal{};double lastRealTime{};
 void ClearMetricsLocked() {
-    real={};generated={};output={};repeats={};cpu={};gpu={};cpuHistory.Clear();gpuHistory.Clear();
+    real={};generated={};output={};repeats={};cpu={};gpu={};delivery={};cpuHistory.Clear();gpuHistory.Clear();
     cpuSummary={};gpuSummary={};nextRefresh=nextSummary=0;started=0;lastReal=0;lastRealTime=0;
     const bool active=stats.active;char status[sizeof(stats.status)]{};std::memcpy(status,stats.status,sizeof(status));
     stats={};stats.active=active;std::memcpy(stats.status,status,sizeof(status));cached={};
@@ -114,7 +116,7 @@ void SetSettings(Settings value) {
     // 0 = no optical flow: frame interpolation on the engine's vectors alone.
     value.flowScale=value.flowScale==100 || value.flowScale==75 || value.flowScale==0 ? value.flowScale : 50;
     value.overlayCorner=std::clamp(value.overlayCorner,0,8);
-    value.overlayLayout=std::clamp(value.overlayLayout,0,2);value.overlayFollow=value.overlayFollow!=0;
+    value.overlayLayout=std::clamp(value.overlayLayout,0,3);value.overlayFollow=value.overlayFollow!=0;
     value.historySeconds=value.historySeconds==10 || value.historySeconds==60 || value.historySeconds==120 ? value.historySeconds : 30;
     const auto bounded=[](float v,float lo,float hi,float fallback) {return std::isfinite(v) ? std::clamp(v,lo,hi) : fallback;};
     value.overlayCone=bounded(value.overlayCone,5,90,60);value.overlayScale=bounded(value.overlayScale,.5f,2,1);
@@ -155,6 +157,8 @@ Statistics GetStatistics() {
     nextRefresh=now+250;auto result=stats;
     result.realFps=real.Rate(now);result.generatedFps=generated.Rate(now);
     result.outputFps=output.Rate(now);result.repeatFps=repeats.Rate(now);
+    const auto recent=delivery.Read(now);
+    result.recentRepeatPercent=recent.repeatPercent;result.deliveryAgeMs=recent.ageMs;
     result.cpuPeakMs=cpu.Peak(now);result.gpuPeakMs=gpu.Peak(now);
     if(now>=nextSummary) {cpuSummary=cpuHistory.Summarize(now,settings.historySeconds);gpuSummary=gpuHistory.Summarize(now,settings.historySeconds);nextSummary=now+1000;}
     result.historySamples=cpuSummary.samples;result.cpuAverageMs=cpuSummary.average;result.gpuAverageMs=gpuSummary.average;
@@ -206,6 +210,11 @@ void OnSubmitted(uint64_t,bool synth,bool repeat,double now) {
     if(!MetricsEnabled())return;std::lock_guard lock(mutex);if(!settings.overlay)return;
     if(repeat) {repeats.Add(now);++stats.repeatedFrames;return;}
     output.Add(now);if(synth) {generated.Add(now);++stats.generatedFrames;}else ++stats.realSubmissions;
+}
+void OnDelivery(double now,double captureMs,bool repeat) {
+    if(!MetricsEnabled())return;
+    std::lock_guard lock(mutex);
+    if(settings.overlay)delivery.Add(now,captureMs,repeat);
 }
 void OnGpuFrame(double ms) {
     if(!MetricsEnabled() || !std::isfinite(ms) || ms<0 || ms>10000)return;
