@@ -64,6 +64,15 @@ int main(){
     Check(squeeze.Update(true,false)); // leaving keeps the squeeze; the zone's own exit timer decides
     squeeze.Update(false,false);Check(!squeeze.Update(true,false));
     Check(!zone.Contains(std::numeric_limits<float>::quiet_NaN(),0,0,false));
+    // Scripted scene-pad and normal gameplay may both evaluate the gesture;
+    // each actual input owner independently excludes it.
+    using cvr::input::ScannerGestureAllowed;
+    Check(ScannerGestureAllowed(true,false,false,false,false,false,false));
+    Check(!ScannerGestureAllowed(false,false,false,false,false,false,false));
+    for(int owner=0;owner<6;++owner) {
+        bool blocked[6]{};blocked[owner]=true;
+        Check(!ScannerGestureAllowed(true,blocked[0],blocked[1],blocked[2],blocked[3],blocked[4],blocked[5]));
+    }
     cvr::input::ScannerRequest request;bool held=true;
     request.Update(held,0,1000);Check(held);
     request.Update(held,0,1749);Check(held);

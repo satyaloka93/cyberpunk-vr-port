@@ -6,6 +6,13 @@ namespace cvr::input {
 void PublishScannerVision(int state);
 int ScannerVision(); // -1 means no recent game-state sample
 
+// Scene cameras are not menus or braindances. They retain the ear gesture,
+// while actual UI/BD owns the grips for its native shoulder actions.
+inline bool ScannerGestureAllowed(bool enabled, bool menu, bool keypad, bool braindance,
+                                  bool lobby, bool captured, bool wireOwnsGrip) {
+    return enabled && !menu && !keypad && !braindance && !lobby && !captured && !wireOwnsGrip;
+}
+
 class ScannerRequest {
     uint64_t started{};
     bool pending{},accepted{};

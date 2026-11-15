@@ -493,6 +493,135 @@ DWORD WINAPI HookedXInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState) {
     // no weapon, no holster, and the VR menu's swipe is off in a braindance (Natives/VrMenu.cpp). The braindance
     // itself (InBraindance), not g_bdActive, which any scene that owns the camera raises.
     const bool inBraindance = InBraindance();
+    const bool scenePad = g_bdActive.load(std::memory_order_relaxed) != 0;
+    // The scanner must run before the vanilla scene-pad return. Panam's drone
+    // survey can use that path, where raw controllers have no LB button.
+    // ---- SCANNER: left hand to the left ear + left grip -----------------------------------------
+    //
+    // The game's own scanner is a HOLD on LB (Vision_Hold_Button = IK_Tab + IK_Pad_LeftShoulder), so
+    // The gesture flips a latch which keeps LB asserted after the grip is released.
+    // Navigation is enabled only after the game confirms Vision=Focus.
+    //
+    // The hand arms the zone on its own and the grip gates the output, so a squeeze with the hand
+    // already at the ear takes effect on the same frame.
+    const int cyberwareKind=cvr::cyberware::SelectedKind();
+    const bool physicalCyberware=((cyberwareKind>=1 && cyberwareKind<=3) || cyberwareKind==5) && g_menuModeValue==0 && !cvr::anim::IsHeadAimWeaponActive();
+    const bool wireOwnsGrip=physicalCyberware && cyberwareKind==3 && !onLadder;
+    bool scannerHold = false;
+    const int scannerVision=cvr::input::ScannerVision();
+    const bool scannerActive=scannerVision==1 && g_menuModeValue==0;
+    {
+        static bool   s_earArmed = false;
+        static bool   s_gesture = false;      // the raw gesture this frame: hand at the ear + grip
+        static bool   s_pressUsed = false;   // tracking dropouts cannot toggle twice during one squeeze
+        static bool   s_latch = false;        // the toggled state the port asserts LB from
+        static cvr::input::ScannerSqueeze s_squeeze;   // only a squeeze begun AT the ear counts
+        static double s_inMs = 0.0;    // continuous time INSIDE the zone
+        static double s_outMs = 0.0;   // continuous time OUTSIDE it
+        static LARGE_INTEGER s_qpc = {};
+
+        LARGE_INTEGER now, freq;
+        QueryPerformanceCounter(&now);
+        QueryPerformanceFrequency(&freq);
+        double dtMs = 0.0;
+        if (s_qpc.QuadPart != 0 && freq.QuadPart > 0) {
+            dtMs = static_cast<double>(now.QuadPart - s_qpc.QuadPart) * 1000.0
+                 / static_cast<double>(freq.QuadPart);
+        }
+        s_qpc = now;
+        if (dtMs < 0.0) dtMs = 0.0;
+        if (dtMs > 100.0) dtMs = 100.0;   // a hitch must not satisfy a whole window by itself
+
+        // Not in the lobby: an engram goes in at the neck under the left ear, held in the left grip -- the gesture's
+        // own pose -- and the lobby has nothing to scan.
+        if (cvr::input::ScannerGestureAllowed(CyberpunkVR_ScannerGesture != 0,
+            g_menuModeValue != 0, keypadInput, inBraindance, cvr::lobby::WorldShown(),
+            menuCapture || cvr::vrui::CapturesInput(), wireOwnsGrip)) {
+            // Coherent raw grip pose, before the visual hand filter. The filter can
+            // keep the hand below the zone until after a short squeeze has ended.
+            // An INVALID sample counts as absence --
+            // it feeds the exit timer rather than dropping the scan, because a dropout is exactly what
+            // that timer exists to ride out.
+            bool inZone = false;
+            OpenXRHeadPose scanHead{},scanHands[2]{};uint64_t sequence{},stamp{};
+            // The support hand at its own ear: the zone is the left ear's, so the right hand is seen mirrored.
+            const auto& scanHand=scanHands[supportHand];
+            const bool scanValid=OpenXRManager::Get().GetGestureHandFrame(&scanHead,scanHands,&sequence,&stamp,true)
+                && scanHead.valid && scanHand.valid;
+            const float scanX=supportHand==0 ? scanHand.posX : -scanHand.posX;
+            const cvr::input::ScannerEarZone zone{CyberpunkVR_ScannerEarX,CyberpunkVR_ScannerEarY,
+                CyberpunkVR_ScannerEarZ,CyberpunkVR_ScannerEarRadius,CyberpunkVR_ScannerEarMargin};
+            if(scanValid)inZone=zone.Contains(scanX,scanHand.posY,scanHand.posZ,s_earArmed);
+            if(cvr::RuntimeDiagnosticsEnabled()) {
+                static uint64_t lastLog=0;const auto tick=GetTickCount64();
+                if(tick-lastLog>=500 && (vr.leftGrip>.1f || inZone)) {
+                    lastLog=tick;
+                    Log("[scanner-gesture] valid=%d raw=(%.3f,%.3f,%.3f) grip=%.3f zone=%d armed=%d menu=%d\n",
+                        scanValid,scanX,scanHand.posY,scanHand.posZ,vr.leftGrip,inZone,s_earArmed,g_menuModeValue);
+                }
+            }
+
+            if (inZone) { s_inMs += dtMs; s_outMs = 0.0; }
+            else        { s_outMs += dtMs; s_inMs = 0.0; }
+
+            const double enterMs = (CyberpunkVR_ScannerEnterMs > 0) ? CyberpunkVR_ScannerEnterMs : 80;
+            const double exitMs  = (CyberpunkVR_ScannerExitMs  > 0) ? CyberpunkVR_ScannerExitMs  : 250;
+            if (!s_earArmed && s_inMs  >= enterMs) s_earArmed = true;
+            if ( s_earArmed && s_outMs >= exitMs)  s_earArmed = false;
+
+            // THE LEFT GRIP, which is the hand that is already at the ear. The right stick click
+            // used to do this, and it asked for two hands and a thumb reach for a one-hand gesture;
+            // squeezing the hand you just raised is the whole motion. Threshold matches the menu
+            // LB mapping above so one number describes "the left grip is held" everywhere.
+            //
+            // Gameplay screen only: in menus LB pages the popup list, which is not what a hand near
+            // a headset should do. And the ear zone is what keeps this off the reload -- the
+            // magazine grab is a left grip too, but it happens at the weapon, not at the head.
+            const bool gripHeld = vr.leftGrip >= 0.7f;
+            // A SQUEEZE THAT STARTED AT THE EAR. A hand that is already squeezing -- a shotgun shell, a
+            // magazine off the belt on its way to the gun -- passes within the zone's 22 cm of the head
+            // whenever the gun is held close in to load, and opened the scanner on the way.
+            const bool squeezed = s_squeeze.Update(gripHeld, inZone || s_earArmed);
+            s_gesture = s_earArmed && squeezed && (g_menuModeValue == 0);
+        } else {
+            s_earArmed = false;
+            s_inMs = 0.0;
+            s_outMs = 0.0;
+            s_gesture = false;
+            s_squeeze.Reset();
+            s_latch = false;          // the gesture is switched off: nothing may stay asserted
+        }
+
+        // THE LATCH, so the hand does not have to stay squeezed at the ear for as long as the scanner is
+        // wanted. One squeeze flips the state once, even if tracking drops out and returns.
+        // Releasing the grip rearms it; rejected requests cannot leave navigation captured.
+        //
+        // Evaluated OUTSIDE the ear-zone block on purpose: s_earArmed drops as soon as the hand leaves
+        // (with its exit hysteresis), and that must not close a scanner the latch says is open.
+        if(vr.leftGrip<.5f)s_pressUsed=false;
+        static cvr::input::ScannerRequest request;
+        if (CyberpunkVR_ScannerToggle != 0 && !scenePad) {
+            if (s_gesture && !s_pressUsed) {s_latch = !s_latch;s_pressUsed=true;}
+            if (g_menuModeValue != 0) s_latch = false;   // a menu owns LB; never leave it stuck
+            request.Update(s_latch,scannerVision,GetTickCount64());
+            scannerHold = s_latch;
+        } else {
+            s_latch = false;
+            // Scripted cameras can consume VisionHold without confirming normal
+            // player Vision=Focus. Keep LB down only while the deliberate ear
+            // squeeze is held; never latch a request across scene/menu exits.
+            scannerHold = s_gesture;
+            request.Update(s_latch,scannerVision,GetTickCount64());
+        }
+        static bool lastSceneHold=false;
+        const bool sceneHold=scenePad && scannerHold;
+        if(sceneHold!=lastSceneHold) {
+            Log("[scanner-scene] hold=%d scenePad=%d vision=%d; grip-at-ear is hold-to-scan in scripted scenes.\n",
+                sceneHold,scenePad,scannerVision);
+            lastSceneHold=sceneHold;
+        }
+    }
+
     bool menuOpenForGripShoulders = (g_menuModeValue != 0 || inBraindance) && !cvr::lobby::WorldShown();
     if (!menuOpenForGripShoulders && !cvr::lobby::WorldShown()) {
         if (float* sh = GetShotShared()) {
@@ -519,11 +648,12 @@ DWORD WINAPI HookedXInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState) {
     // the shared slots the CET mods read are put down -- a gesture must not fire from a menu press, and
     // a slot left standing at 1 would keep firing after the menu closes.
     if (keypadInput || (CyberpunkVR_InputDefaultInUi != 0 &&
-        (g_menuModeValue != 0 || inBraindance || g_bdActive.load(std::memory_order_relaxed) != 0))) {
+        (g_menuModeValue != 0 || inBraindance || scenePad))) {
         pState->Gamepad.wButtons |= vr.buttons;
         // the grips' shoulders: a menu's and a braindance's, never another scene's or the keypad's
         if (!keypadInput && (inBraindance || g_bdActive.load(std::memory_order_relaxed) == 0))
             pState->Gamepad.wButtons |= gripShoulders;
+        if (scannerHold) pState->Gamepad.wButtons |= XINPUT_GAMEPAD_LEFT_SHOULDER;
         const BYTE ltUi = FloatToBYTE(vr.leftTrigger);
         const BYTE rtUi = FloatToBYTE(vr.rightTrigger);
         if (ltUi > pState->Gamepad.bLeftTrigger)  pState->Gamepad.bLeftTrigger  = ltUi;
@@ -612,17 +742,6 @@ DWORD WINAPI HookedXInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState) {
     // still published, which is what it reads.
     if (GetTickCount64() < CyberpunkVR_LeftTriggerBlockUntil) pState->Gamepad.bLeftTrigger = 0;
 
-    // ---- SCANNER: left hand to the left ear + left grip -----------------------------------------
-    //
-    // The game's own scanner is a HOLD on LB (Vision_Hold_Button = IK_Tab + IK_Pad_LeftShoulder), so
-    // The gesture flips a latch which keeps LB asserted after the grip is released.
-    // Navigation is enabled only after the game confirms Vision=Focus.
-    //
-    // The hand arms the zone on its own and the grip gates the output, so a squeeze with the hand
-    // already at the ear takes effect on the same frame.
-    const int cyberwareKind=cvr::cyberware::SelectedKind();
-    const bool physicalCyberware=((cyberwareKind>=1 && cyberwareKind<=3) || cyberwareKind==5) && g_menuModeValue==0 && !cvr::anim::IsHeadAimWeaponActive();
-    const bool wireOwnsGrip=physicalCyberware && cyberwareKind==3 && !onLadder;
     const bool firearmTrigger=g_VRBind==4 && gameplayScreen && !uiPopupOpen && !g_isInVehicle &&
         g_hasWeaponEquipped && CyberpunkVR_WeaponClass>=1 && CyberpunkVR_WeaponClass<=4 && cyberwareKind!=4 &&
         !cvr::anim::IsHeadAimWeaponActive();
@@ -632,108 +751,6 @@ DWORD WINAPI HookedXInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState) {
     s_weaponTriggerEnabled.store(firearmTrigger,std::memory_order_relaxed);
     s_weaponTriggerStamp.store(GetTickCount64(),std::memory_order_relaxed);
     cvr::cyberware::PublishGrips(wireOwnsGrip && physical.leftGrip>.5f,wireOwnsGrip && physical.rightGrip>.5f);
-    bool scannerHold = false;
-    const int scannerVision=cvr::input::ScannerVision();
-    const bool scannerActive=scannerVision==1 && g_menuModeValue==0;
-    {
-        static bool   s_earArmed = false;
-        static bool   s_gesture = false;      // the raw gesture this frame: hand at the ear + grip
-        static bool   s_pressUsed = false;   // tracking dropouts cannot toggle twice during one squeeze
-        static bool   s_latch = false;        // the toggled state the port asserts LB from
-        static cvr::input::ScannerSqueeze s_squeeze;   // only a squeeze begun AT the ear counts
-        static double s_inMs = 0.0;    // continuous time INSIDE the zone
-        static double s_outMs = 0.0;   // continuous time OUTSIDE it
-        static LARGE_INTEGER s_qpc = {};
-
-        LARGE_INTEGER now, freq;
-        QueryPerformanceCounter(&now);
-        QueryPerformanceFrequency(&freq);
-        double dtMs = 0.0;
-        if (s_qpc.QuadPart != 0 && freq.QuadPart > 0) {
-            dtMs = static_cast<double>(now.QuadPart - s_qpc.QuadPart) * 1000.0
-                 / static_cast<double>(freq.QuadPart);
-        }
-        s_qpc = now;
-        if (dtMs < 0.0) dtMs = 0.0;
-        if (dtMs > 100.0) dtMs = 100.0;   // a hitch must not satisfy a whole window by itself
-
-        // Not in the lobby: an engram goes in at the neck under the left ear, held in the left grip -- the gesture's
-        // own pose -- and the lobby has nothing to scan.
-        if (CyberpunkVR_ScannerGesture != 0 && !wireOwnsGrip && !cvr::lobby::WorldShown()) {
-            // Coherent raw grip pose, before the visual hand filter. The filter can
-            // keep the hand below the zone until after a short squeeze has ended.
-            // An INVALID sample counts as absence --
-            // it feeds the exit timer rather than dropping the scan, because a dropout is exactly what
-            // that timer exists to ride out.
-            bool inZone = false;
-            OpenXRHeadPose scanHead{},scanHands[2]{};uint64_t sequence{},stamp{};
-            // The support hand at its own ear: the zone is the left ear's, so the right hand is seen mirrored.
-            const auto& scanHand=scanHands[supportHand];
-            const bool scanValid=OpenXRManager::Get().GetGestureHandFrame(&scanHead,scanHands,&sequence,&stamp,true)
-                && scanHead.valid && scanHand.valid;
-            const float scanX=supportHand==0 ? scanHand.posX : -scanHand.posX;
-            const cvr::input::ScannerEarZone zone{CyberpunkVR_ScannerEarX,CyberpunkVR_ScannerEarY,
-                CyberpunkVR_ScannerEarZ,CyberpunkVR_ScannerEarRadius,CyberpunkVR_ScannerEarMargin};
-            if(scanValid)inZone=zone.Contains(scanX,scanHand.posY,scanHand.posZ,s_earArmed);
-            if(cvr::RuntimeDiagnosticsEnabled()) {
-                static uint64_t lastLog=0;const auto tick=GetTickCount64();
-                if(tick-lastLog>=500 && (vr.leftGrip>.1f || inZone)) {
-                    lastLog=tick;
-                    Log("[scanner-gesture] valid=%d raw=(%.3f,%.3f,%.3f) grip=%.3f zone=%d armed=%d menu=%d\n",
-                        scanValid,scanX,scanHand.posY,scanHand.posZ,vr.leftGrip,inZone,s_earArmed,g_menuModeValue);
-                }
-            }
-
-            if (inZone) { s_inMs += dtMs; s_outMs = 0.0; }
-            else        { s_outMs += dtMs; s_inMs = 0.0; }
-
-            const double enterMs = (CyberpunkVR_ScannerEnterMs > 0) ? CyberpunkVR_ScannerEnterMs : 80;
-            const double exitMs  = (CyberpunkVR_ScannerExitMs  > 0) ? CyberpunkVR_ScannerExitMs  : 250;
-            if (!s_earArmed && s_inMs  >= enterMs) s_earArmed = true;
-            if ( s_earArmed && s_outMs >= exitMs)  s_earArmed = false;
-
-            // THE LEFT GRIP, which is the hand that is already at the ear. The right stick click
-            // used to do this, and it asked for two hands and a thumb reach for a one-hand gesture;
-            // squeezing the hand you just raised is the whole motion. Threshold matches the menu
-            // LB mapping above so one number describes "the left grip is held" everywhere.
-            //
-            // Gameplay screen only: in menus LB pages the popup list, which is not what a hand near
-            // a headset should do. And the ear zone is what keeps this off the reload -- the
-            // magazine grab is a left grip too, but it happens at the weapon, not at the head.
-            const bool gripHeld = vr.leftGrip >= 0.7f;
-            // A SQUEEZE THAT STARTED AT THE EAR. A hand that is already squeezing -- a shotgun shell, a
-            // magazine off the belt on its way to the gun -- passes within the zone's 22 cm of the head
-            // whenever the gun is held close in to load, and opened the scanner on the way.
-            const bool squeezed = s_squeeze.Update(gripHeld, inZone || s_earArmed);
-            s_gesture = s_earArmed && squeezed && (g_menuModeValue == 0);
-        } else {
-            s_earArmed = false;
-            s_inMs = 0.0;
-            s_outMs = 0.0;
-            s_gesture = false;
-            s_squeeze.Reset();
-            s_latch = false;          // the gesture is switched off: nothing may stay asserted
-        }
-
-        // THE LATCH, so the hand does not have to stay squeezed at the ear for as long as the scanner is
-        // wanted. One squeeze flips the state once, even if tracking drops out and returns.
-        // Releasing the grip rearms it; rejected requests cannot leave navigation captured.
-        //
-        // Evaluated OUTSIDE the ear-zone block on purpose: s_earArmed drops as soon as the hand leaves
-        // (with its exit hysteresis), and that must not close a scanner the latch says is open.
-        if(vr.leftGrip<.5f)s_pressUsed=false;
-        if (CyberpunkVR_ScannerToggle != 0) {
-            if (s_gesture && !s_pressUsed) {s_latch = !s_latch;s_pressUsed=true;}
-            if (g_menuModeValue != 0) s_latch = false;   // a menu owns LB; never leave it stuck
-            static cvr::input::ScannerRequest request;
-            request.Update(s_latch,scannerVision,GetTickCount64());
-            scannerHold = s_latch;
-        } else {
-            s_latch = false;
-            scannerHold = s_gesture;
-        }
-    }
-
     // ---- THE SCANNER, WORKED WITH THE HAND THAT RAISED IT ---------------------------------------
     //
     // WHAT THE GAME LISTENS FOR, read out of its own files rather than guessed:
