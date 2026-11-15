@@ -9,9 +9,9 @@ code='''#include <cassert>
 #include "Camera/AnchorTranslation.hpp"
 
 struct Hand {bool engaged=false,gripPrev=false,atWheel=false;};
-void update(Hand& w,bool grip,bool enabled=true,bool driving=true,bool handBlocked=false){
+void update(Hand& w,bool grip,bool enabled=true,bool driving=true,bool handBlocked=false,bool toggleGrip=true){
 '''+update+'''}
-void maintain(Hand& w,bool grip,bool allowed=true,bool tracked=true,int h=0,bool g_hasWeaponEquipped=false,int gunHand=0){
+void maintain(Hand& w,bool grip,bool allowed=true,bool tracked=true,int h=0,bool g_hasWeaponEquipped=false,int gunHand=0,bool toggleGrip=true){
 '''+maintain+'''}
 int main(){
  using namespace cvr::camera;
@@ -30,6 +30,16 @@ int main(){
  // Physical left gun cannot remain latched; opposite hand remains usable.
  w.engaged=true;maintain(w,false,true,true,1,true,1);assert(!w.engaged);
  w.engaged=true;maintain(w,false,true,true,0,true,1);assert(w.engaged);
+ // Bike hold mode: releasing immediately releases, including during a camera miss.
+ Hand bikeHand;bikeHand.atWheel=true;
+ update(bikeHand,true,true,true,false,false);assert(bikeHand.engaged);
+ update(bikeHand,true,true,true,false,false);assert(bikeHand.engaged);
+ update(bikeHand,false,true,true,false,false);assert(!bikeHand.engaged);
+ update(bikeHand,true,true,true,false,false);assert(bikeHand.engaged);
+ maintain(bikeHand,false,true,true,0,false,0,false);assert(!bikeHand.engaged);
+ // Switching an existing toggle latch to hold releases when fingers are open.
+ bikeHand.engaged=true;update(bikeHand,false,true,true,false,false);assert(!bikeHand.engaged);
+ bikeHand.atWheel=false;update(bikeHand,true,true,true,false,false);assert(!bikeHand.engaged);
  Hand other;other.atWheel=true;update(other,true);update(other,false);
  update(w,true);assert(!w.engaged && other.engaged);
  maintain(other,false,false);assert(!other.engaged);

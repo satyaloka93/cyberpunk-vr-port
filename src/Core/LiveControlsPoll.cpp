@@ -685,6 +685,9 @@ void PollLiveControls() {
     float xrBikeHeadOffsetZ = g_liveControls.xrBikeHeadOffsetZ;
     bool xrBikeHeadOffsetZConfigured=false;
     int xrWheelGrab = g_liveControls.xrWheelGrab;
+    float xrBikeBarLockDeg = g_liveControls.xrBikeBarLockDeg;
+    float xrBikeBodyLean = g_liveControls.xrBikeBodyLean;
+    int xrBikeGripToggle = g_liveControls.xrBikeGripToggle;
     int xrMenuGesture = g_liveControls.xrMenuGesture;
     int xrVrWeaponWheel = g_liveControls.xrVrWeaponWheel;
     float xrWheelRadius = g_liveControls.xrWheelRadius > 0.0f ? g_liveControls.xrWheelRadius : 0.28f;
@@ -1667,6 +1670,21 @@ void PollLiveControls() {
             xrBikeHeadOffsetZ = value; xrBikeHeadOffsetZConfigured = true;
             continue;
         }
+        if (sscanf_s(line, "xr_bike_bar_lock_deg=%f", &value) == 1 ||
+            sscanf_s(line, "xr_bike_bar_lock_deg = %f", &value) == 1) {
+            xrBikeBarLockDeg = value;
+            continue;
+        }
+        if (sscanf_s(line, "xr_bike_body_lean=%f", &value) == 1 ||
+            sscanf_s(line, "xr_bike_body_lean = %f", &value) == 1) {
+            xrBikeBodyLean = value;
+            continue;
+        }
+        if (sscanf_s(line, "xr_bike_grip_toggle=%d", &intValue) == 1 ||
+            sscanf_s(line, "xr_bike_grip_toggle = %d", &intValue) == 1) {
+            xrBikeGripToggle = intValue;
+            continue;
+        }
         if (sscanf_s(line, "xr_wheel_grab=%d", &intValue) == 1 ||
             sscanf_s(line, "xr_wheel_grab = %d", &intValue) == 1) {
             xrWheelGrab = intValue;
@@ -1879,6 +1897,9 @@ void PollLiveControls() {
     g_liveControls.xrVehHeadOffsetZ = clampVehOff(xrVehHeadOffsetZ);
     g_liveControls.xrBikeHeadOffsetZ = clampVehOff(xrBikeHeadOffsetZ);
     g_liveControls.xrWheelGrab = xrWheelGrab != 0 ? 1 : 0;
+    g_liveControls.xrBikeBarLockDeg = cvr::anim::BikeBarLockDegrees(xrBikeBarLockDeg);
+    g_liveControls.xrBikeBodyLean = cvr::anim::BikeBodyLeanShare(xrBikeBodyLean);
+    g_liveControls.xrBikeGripToggle = xrBikeGripToggle != 0 ? 1 : 0;
     g_liveControls.xrMenuGesture = xrMenuGesture != 0 ? 1 : 0;
     g_liveControls.xrVrWeaponWheel = xrVrWeaponWheel != 0 ? 1 : 0;
     // Clamped, not trusted: these come from a text file. Below ~8 cm the grab is unreachable for a
@@ -2246,6 +2267,9 @@ LiveControlsUiState MakeLiveControlsUiState() {
     state.xrVehHeadOffsetZ = g_liveControls.xrVehHeadOffsetZ;
     state.xrBikeHeadOffsetZ = g_liveControls.xrBikeHeadOffsetZ;
     state.xrWheelGrab = g_liveControls.xrWheelGrab;
+    state.xrBikeBarLockDeg = g_liveControls.xrBikeBarLockDeg;
+    state.xrBikeBodyLean = g_liveControls.xrBikeBodyLean;
+    state.xrBikeGripToggle = g_liveControls.xrBikeGripToggle;
     state.xrMenuGesture = g_liveControls.xrMenuGesture;
     state.xrVrWeaponWheel = g_liveControls.xrVrWeaponWheel;
     state.xrWheelRadius = g_liveControls.xrWheelRadius;
@@ -2626,6 +2650,9 @@ void PersistLiveControlsUiState(const LiveControlsUiState& state) {
     fprintf(file, "xr_veh_head_offset_z=%.4f\n", state.xrVehHeadOffsetZ);
     fprintf(file, "xr_bike_head_offset_z=%.4f\n", state.xrBikeHeadOffsetZ);
     fprintf(file, "xr_wheel_grab=%d\n", state.xrWheelGrab != 0 ? 1 : 0);
+    fprintf(file, "xr_bike_bar_lock_deg=%.1f\n", cvr::anim::BikeBarLockDegrees(state.xrBikeBarLockDeg));
+    fprintf(file, "xr_bike_body_lean=%.2f\n", cvr::anim::BikeBodyLeanShare(state.xrBikeBodyLean));
+    fprintf(file, "xr_bike_grip_toggle=%d\n", state.xrBikeGripToggle != 0 ? 1 : 0);
     fprintf(file, "xr_menu_gesture=%d\n", state.xrMenuGesture != 0 ? 1 : 0);
     fprintf(file, "xr_vr_weapon_wheel=%d\n", state.xrVrWeaponWheel != 0 ? 1 : 0);
     fprintf(file, "xr_wheel_radius=%.3f\n", state.xrWheelRadius > 0.0f ? state.xrWheelRadius : 0.28f);
@@ -2792,6 +2819,9 @@ extern "C" void SetLiveControlsUiState(const LiveControlsUiState* state, int per
     // DRIVING. Same clamps as the ini path -- the overlay sliders already bound these, but the two
     // entry points must not be able to disagree about what a valid value is.
     g_liveControls.xrWheelGrab = state->xrWheelGrab != 0 ? 1 : 0;
+    g_liveControls.xrBikeBarLockDeg = cvr::anim::BikeBarLockDegrees(state->xrBikeBarLockDeg);
+    g_liveControls.xrBikeBodyLean = cvr::anim::BikeBodyLeanShare(state->xrBikeBodyLean);
+    g_liveControls.xrBikeGripToggle = state->xrBikeGripToggle != 0 ? 1 : 0;
     g_liveControls.xrMenuGesture = state->xrMenuGesture != 0 ? 1 : 0;
     g_liveControls.xrVrWeaponWheel = state->xrVrWeaponWheel != 0 ? 1 : 0;
     g_liveControls.xrWheelHorn = state->xrWheelHorn != 0 ? 1 : 0;

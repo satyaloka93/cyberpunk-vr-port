@@ -58,7 +58,9 @@ std::atomic<float> g_wheelBlendLeft{0.0f};
 std::atomic<float> g_wheelSteer{0.0f};
 std::atomic<float> g_wheelSteerDeg{0.0f};
 std::atomic<bool> g_wheelMountedCar{false};
+std::atomic<bool> g_wheelMountedBike{false};
 void WheelSetMountedCar(bool car) {g_wheelMountedCar.store(car,std::memory_order_relaxed);}
+void WheelSetMountedBike(bool bike) {g_wheelMountedBike.store(bike,std::memory_order_relaxed);}
 std::atomic<int>   g_wheelHornMask{0};
 
 namespace {
@@ -186,6 +188,7 @@ void WheelUpdate(float dtSec) {
             w.atWheel = (dx*dx + dy*dy + dz*dz) <= (radius * radius);
         }
 
+        const bool toggleGrip=!g_wheelMountedBike.load(std::memory_order_relaxed) || g_liveControls.xrBikeGripToggle!=0;
         if (!enabled || !driving || handBlocked) {
             // In practice the right hand is already OFF the wheel when a weapon appears -- equipping
             // means reaching to the holster and squeezing there, which is the opposite end of the
@@ -193,8 +196,10 @@ void WheelUpdate(float dtSec) {
             // radial, a keyboard) must not leave the hand welded to the wheel, and the blend below
             // then walks the arm back over the usual ~0.1 s instead of snapping.
             w.engaged = false;
+        } else if (!toggleGrip && !grip) {
+            w.engaged = false;
         } else if (grip && !w.gripPrev) {
-            if (w.engaged) {
+            if (w.engaged && toggleGrip) {
                 w.engaged = false;                  // second click releases, wherever the hand moved
             } else if (w.atWheel) {
                 w.engaged = true;                   // first click must begin at the wheel/handlebar
@@ -310,8 +315,9 @@ void WheelMaintainGrab() {
         auto& w=g_wheel[h];
         const bool grip=WheelSlot(h==0 ? 49:vrshared::kLeftGripPressed)>.5f;
         const bool tracked=SharedPose(h==0 ? 8:0)>0;
-        if(!allowed || !tracked || (h==gunHand && g_hasWeaponEquipped))w.engaged=false;
-        else if(w.engaged && grip && !w.gripPrev)w.engaged=false; // release still works during a camera miss
+        const bool toggleGrip=!g_wheelMountedBike.load(std::memory_order_relaxed) || g_liveControls.xrBikeGripToggle!=0;
+        if(!allowed || !tracked || (h==gunHand && g_hasWeaponEquipped) || (!toggleGrip && !grip))w.engaged=false;
+        else if(toggleGrip && w.engaged && grip && !w.gripPrev)w.engaged=false; // release still works during a camera miss
         w.gripPrev=grip;
         if(!w.engaged)w.blend=0;
     }
@@ -355,10 +361,12 @@ float WheelSteerInput() {
     std::lock_guard lock(g_steerMutex);
     if(g_sampledGrabEpoch!=(grab>>2)){g_steering.Reset();g_sampledGrabEpoch=grab>>2;}
     const bool car=g_wheelMountedCar.load(std::memory_order_relaxed);
+    const bool bike=g_wheelMountedBike.load(std::memory_order_relaxed);
     float out=g_steering.Update(uint8_t(state&grab&3),frame,XrDiagNowUs(),
         g_physicalRadius.load(std::memory_order_relaxed),
-        WheelFullLockForVehicle(g_liveControls.xrWheelSteerMaxDeg,car),g_liveControls.xrWheelSteerDeadDeg,
-        g_liveControls.xrWheelPrediction ? g_liveControls.xrWheelPredictionMs:0.f);
+        bike ? BikeBarLockDegrees(g_liveControls.xrBikeBarLockDeg):WheelFullLockForVehicle(g_liveControls.xrWheelSteerMaxDeg,car),g_liveControls.xrWheelSteerDeadDeg,
+        g_liveControls.xrWheelPrediction ? g_liveControls.xrWheelPredictionMs:0.f,
+        bike,g_liveControls.xrBikeBodyLean);
     // A car's output is the share of its cabin wheel's full lock the hands have turned; the input that puts the
     // cabin wheel there is read off its curve, so the wheel the hands hold turns with them one to one.
     if(car)out=CarInputForCabinAngle(out*CarCabinWheelLockDeg);

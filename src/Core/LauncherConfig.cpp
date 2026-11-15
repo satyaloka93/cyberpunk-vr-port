@@ -77,6 +77,9 @@ void InitRuntimePaths() {
     // enough that you do not have to hunt for a wheel you cannot see, tight enough that a hand
     // resting on your knee never arms it.
     g_liveControls.xrWheelGrab = 1;
+    g_liveControls.xrBikeBarLockDeg = cvr::anim::BikeBarLockDefault;
+    g_liveControls.xrBikeBodyLean = cvr::anim::BikeBodyLeanDefault;
+    g_liveControls.xrBikeGripToggle = 0;
     g_liveControls.xrWheelRadius = 0.28f;
     // 90 deg = hands vertical is full lock, the 1:1 reading of a real wheel.
     g_liveControls.xrWheelSteerMaxDeg = cvr::anim::WheelFullLockDefault;

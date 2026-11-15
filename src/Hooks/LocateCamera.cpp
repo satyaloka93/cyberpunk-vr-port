@@ -290,6 +290,7 @@ void RefreshPlayerCameraState() {
             }
             g_isOnBike.store(onBike,std::memory_order_relaxed);
             cvr::anim::WheelSetMountedCar(mountedCar);
+            cvr::anim::WheelSetMountedBike(onBike);
             s_mountedVehicleIdentity.store(mountedIdentity,std::memory_order_release);
 
             // PlayerPuppet::vehicleState mirrors PSM.Vehicle. Combat is passenger
