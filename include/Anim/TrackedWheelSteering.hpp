@@ -22,17 +22,29 @@ public:
     static constexpr uint64_t kStaleUs=250000;   // tracking older than this is not used
     static constexpr uint64_t kHoldUs=2000000;   // the last output is held this long through a suspension, then 0
     void Reset() { *this={}; }
+    bool CurrentSampleValid() const { return m_currentSampleValid; }
     float Angle() const { return m_wheel.Angle(); }
+    float HeadTiltDegrees() const { return m_tiltDegrees; }
+    bool HeadTiltValid() const { return m_tiltValid; }
+    float LeanMeters() const { return m_leanMeters; }
+    float LeanDegrees() const { return m_leanDegrees; }
+    uint64_t SampleStampUs() const { return m_stamp; }
     // No usable sample now, the grab still owned: keep everything, hold the last output a moment.
     float Suspend(uint64_t now) {
+        m_currentSampleValid=false;
         m_prediction.Reset();
+        if(m_headTilt){m_tiltValid=false;return 0;} // missing head tracking must not hold a turn
         return m_fresh && now>=m_fresh && now-m_fresh<=kHoldUs ? m_last:0;
     }
     float Update(uint8_t held,const WheelTrackingFrame& frame,uint64_t now,
                  float radius,float limit,float dead,float predictionMs=0,
-                 bool handlebar=false,float bodyLean=0) {
+                 bool handlebar=false,float bodyLean=0, bool headTilt=false,float tiltLock=25,float tiltDead=3,bool directBank=false) {
+        m_currentSampleValid=false;
         held&=3;
         if(!held) {Reset();return 0;}
+        const bool useHeadTilt=handlebar && headTilt;
+        const bool useDirectBank=handlebar && directBank;
+        if(m_headTilt!=useHeadTilt || m_directBank!=useDirectBank)Reset();
         const uint8_t tracked=held&frame.validHands;
         const auto& q=frame.head.orientation;
         const float norm=q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w;
@@ -42,11 +54,38 @@ public:
         if(m_origin && m_origin!=frame.origin)Reset();
         else if(m_sequence!=frame.sequence && m_stamp && frame.stampUs<=m_stamp)return Suspend(now);
         m_origin=frame.origin;
+        m_headTilt=useHeadTilt;
+        m_directBank=useDirectBank;
+        if(useHeadTilt) {
+            const float scale=1/std::sqrt(norm);
+            const XrQuaternionf rotation{q.x*scale,q.y*scale,q.z*scale,q.w*scale};
+            const auto right=RotateVector(rotation,XrVector3f{1,0,0});
+            const auto up=RotateVector(rotation,XrVector3f{0,1,0});
+            // Head roll relative to gravity: yaw cancels, and normal pitch
+            // multiplies both terms equally. Near vertical, roll is ambiguous;
+            // disable the tilt contribution without disabling handlebar steering.
+            m_tiltValid=up.y>0 && std::hypot(right.y,up.y)>.258819045f;
+            m_tiltShare=0;m_tiltDegrees=0;
+            if(m_tiltValid) {
+                const float roll=std::atan2(-right.y,up.y)*57.295779513f; // right tilt positive
+                if(!m_tiltNeutralValid){m_tiltNeutral=roll;m_tiltNeutralValid=true;}
+                m_tiltDegrees=std::remainder(roll-m_tiltNeutral,360.f);
+                m_tiltShare=BikeTiltOutput(m_tiltDegrees,tiltLock,tiltDead);
+            }
+            // Tilt replaces the body-translation term, never the handlebars.
+            // It is steering assistance, not an independent bike-bank axis.
+        }
         const float horizon=WheelPrediction::ClampMs(predictionMs);
         if(m_held!=tracked || horizon!=m_horizon){m_prediction.Reset();m_horizon=horizon;}
-        if(m_sequence==frame.sequence && m_held==tracked)return Keep(now,Output(now,limit,dead));
+        if(m_sequence==frame.sequence && m_held==tracked){m_currentSampleValid=true;return Keep(now,Output(now,limit,dead));}
         const float scale=1/std::sqrt(norm);
         const XrQuaternionf rotation{q.x*scale,q.y*scale,q.z*scale,q.w*scale};
+        if(useDirectBank && !m_bankBasisValid) {
+            const auto forward=RotateVector(rotation,XrVector3f{0,0,-1});
+            const float horizontal=std::hypot(forward.x,forward.z);
+            if(horizontal<.258819045f)return Suspend(now);
+            m_bankRightX=-forward.z/horizontal;m_bankRightZ=forward.x/horizontal;m_bankBasisValid=true;
+        }
         WheelPoint points[2]{};
         for(int i=0;i<2;++i)if(tracked&(1<<i)) {
             const auto local=frame.hands[i];
@@ -56,19 +95,25 @@ public:
             // game camera, car animation and head-relative controller offsets.
             // A motorcycle's bars turn about the vertical, so the same turn is measured seen from above: right/forward
             // (OpenXR -Z is forward). Right hand pushed forward, left pulled back is a turn left, as on a real bike.
-            points[i]={frame.head.position.x+world.x,handlebar ? -(frame.head.position.z+world.z):frame.head.position.y+world.y};
+            const float x=frame.head.position.x+world.x,z=frame.head.position.z+world.z;
+            points[i]=useDirectBank ? WheelPoint{x*m_bankRightX+z*m_bankRightZ,x*m_bankRightZ-z*m_bankRightX}
+                : WheelPoint{x,handlebar ? -z:frame.head.position.y+world.y};
         }
         m_sequence=frame.sequence;m_stamp=frame.stampUs;m_held=tracked;
         // THE BODY LEANING INTO A BIKE'S TURN, measured from where it was at the grab. At the neck and not the headset:
         // the eyes swing round it, and looking 60 degrees aside moved the headset about 9 cm sideways.
-        m_leanDegrees=0;
-        if(handlebar) {
-            const auto neck=frame.head.position.x+RotateVector(rotation,XrVector3f{0,-kNeckBelowM,kNeckBehindM}).x;
+        m_leanDegrees=0;m_leanMeters=0;
+        if(handlebar && !useHeadTilt) {
+            const auto offset=RotateVector(rotation,XrVector3f{0,-kNeckBelowM,kNeckBehindM});
+            const float neck=useDirectBank ? (frame.head.position.x+offset.x)*m_bankRightX+(frame.head.position.z+offset.z)*m_bankRightZ
+                                          : frame.head.position.x+offset.x;
             if(!m_leanValid){m_leanNeck=neck;m_leanValid=true;}
-            m_leanDegrees=BikeLeanDegrees(neck-m_leanNeck,bodyLean,WheelFullLockDegrees(limit));
+            m_leanMeters=neck-m_leanNeck;
+            m_leanDegrees=BikeLeanDegrees(m_leanMeters,bodyLean,WheelFullLockDegrees(limit));
         }
-        m_wheel.Update(tracked,points[0],points[1],radius,limit,dead);
-        if(!m_horizon)return Keep(now,WheelSteering::Output(Angle()+m_leanDegrees,limit,dead));
+        m_wheel.Update(tracked,points[0],points[1],radius,limit,dead,handlebar);
+        m_currentSampleValid=true;
+        if(!m_horizon)return Keep(now,CombinedOutput(Angle(),limit,dead));
         m_prediction.Push(Angle(),frame.stampUs);
         return Keep(now,Output(now,limit,dead));
     }
@@ -79,10 +124,18 @@ private:
     WheelPrediction m_prediction;
     float m_horizon{},m_last{};
     static constexpr float kNeckBelowM=.10f,kNeckBehindM=.10f; // estimated, from between the eyes
-    float m_leanDegrees{},m_leanNeck{};
+    float m_leanDegrees{},m_leanNeck{},m_leanMeters{};
     bool m_leanValid{};
+    bool m_headTilt{},m_tiltNeutralValid{},m_tiltValid{},m_directBank{},m_currentSampleValid{},m_bankBasisValid{};
+    float m_bankRightX{},m_bankRightZ{};
+    float m_tiltNeutral{},m_tiltDegrees{},m_tiltShare{};
+    float CombinedOutput(float bars,float limit,float dead) const {
+        if(m_directBank)return WheelSteering::Output(bars,limit,dead); // lean goes to the native bank target instead
+        const float steer=WheelSteering::Output(bars+m_leanDegrees,limit,dead);
+        return m_headTilt ? std::clamp(steer+m_tiltShare,-1.f,1.f):steer;
+    }
     float Output(uint64_t now,float limit,float dead) const {
-        return WheelSteering::Output(m_prediction.Angle(Angle(),now,m_horizon,limit,dead)+m_leanDegrees,limit,dead);
+        return CombinedOutput(m_prediction.Angle(Angle(),now,m_horizon,limit,dead),limit,dead);
     }
     uint64_t m_sequence{},m_origin{},m_stamp{},m_fresh{};
     uint8_t m_held{};

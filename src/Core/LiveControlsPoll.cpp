@@ -1,3 +1,6 @@
+#include "Anim/BikeBankPolicy.hpp"
+#include "Anim/BikeStunts.hpp"
+#include "Anim/BikeWheelieHold.hpp"
 #include "Runtimes/HapticRouting.hpp"
 #include "Runtimes/Haptics.hpp"
 // LiveControlsPoll -- reading the forty-odd live controls, once per tick, off the game threads.
@@ -687,6 +690,23 @@ void PollLiveControls() {
     int xrWheelGrab = g_liveControls.xrWheelGrab;
     float xrBikeBarLockDeg = g_liveControls.xrBikeBarLockDeg;
     float xrBikeBodyLean = g_liveControls.xrBikeBodyLean;
+    int xrBikeHeadTilt = g_liveControls.xrBikeHeadTilt;
+    int xrBikeDirectBank = g_liveControls.xrBikeDirectBank;
+    float xrBikeBankGain = g_liveControls.xrBikeBankGain;
+    float xrBikeBankMaxDeg = g_liveControls.xrBikeBankMaxDeg;
+    int xrBikeStunts = g_liveControls.xrBikeStunts;
+    float xrBikeStuntFullM = g_liveControls.xrBikeStuntFullM;
+    int xrBikeWheelieAssist = g_liveControls.xrBikeWheelieAssist;
+    float xrBikeWheelieLimitDeg = g_liveControls.xrBikeWheelieLimitDeg;
+    int xrBikeHandBalance = g_liveControls.xrBikeHandBalance;
+    int xrBikeWheelieHold = g_liveControls.xrBikeWheelieHold;
+    float xrBikeWheelieHoldDeg = g_liveControls.xrBikeWheelieHoldDeg;
+    float xrBikeHandFullM = g_liveControls.xrBikeHandFullM;
+    int xrBikeAirLeanOnly = g_liveControls.xrBikeAirLeanOnly;
+    int xrBikeStableSeat = g_liveControls.xrBikeStableSeat;
+    float xrBikeStuntDeadM = g_liveControls.xrBikeStuntDeadM;
+    float xrBikeTiltLockDeg = g_liveControls.xrBikeTiltLockDeg;
+    float xrBikeTiltDeadDeg = g_liveControls.xrBikeTiltDeadDeg;
     int xrBikeGripToggle = g_liveControls.xrBikeGripToggle;
     int xrMenuGesture = g_liveControls.xrMenuGesture;
     int xrHandPhysics = g_liveControls.xrHandPhysics;
@@ -1688,6 +1708,23 @@ void PollLiveControls() {
             xrBikeBodyLean = value;
             continue;
         }
+        if (sscanf_s(line, "xr_bike_direct_bank = %d", &intValue) == 1) { xrBikeDirectBank = intValue; continue; }
+        if (sscanf_s(line, "xr_bike_bank_gain = %f", &value) == 1) { xrBikeBankGain = value; continue; }
+        if (sscanf_s(line, "xr_bike_bank_max_deg = %f", &value) == 1) { xrBikeBankMaxDeg = value; continue; }
+        if (sscanf_s(line, "xr_bike_stunts = %d", &intValue) == 1) { xrBikeStunts = intValue; continue; }
+        if (sscanf_s(line, "xr_bike_stunt_full_m = %f", &value) == 1) { xrBikeStuntFullM = value; continue; }
+        if (sscanf_s(line, "xr_bike_stunt_dead_m = %f", &value) == 1) { xrBikeStuntDeadM = value; continue; }
+        if (sscanf_s(line, "xr_bike_stable_seat = %d", &intValue) == 1) { xrBikeStableSeat = intValue; continue; }
+        if (sscanf_s(line, "xr_bike_air_lean_only = %d", &intValue) == 1) { xrBikeAirLeanOnly = intValue; continue; }
+        if (sscanf_s(line, "xr_bike_hand_full_m = %f", &value) == 1) { xrBikeHandFullM = value; continue; }
+        if (sscanf_s(line, "xr_bike_hand_balance = %d", &intValue) == 1) { xrBikeHandBalance = intValue; continue; }
+        if (sscanf_s(line, "xr_bike_wheelie_hold = %d", &intValue) == 1) { xrBikeWheelieHold = intValue; continue; }
+        if (sscanf_s(line, "xr_bike_wheelie_hold_deg = %f", &value) == 1) { xrBikeWheelieHoldDeg = value; continue; }
+        if (sscanf_s(line, "xr_bike_wheelie_limit_deg = %f", &value) == 1) { xrBikeWheelieLimitDeg = value; continue; }
+        if (sscanf_s(line, "xr_bike_wheelie_assist = %d", &intValue) == 1) { xrBikeWheelieAssist = intValue; continue; }
+        if (sscanf_s(line, "xr_bike_head_tilt = %d", &intValue) == 1) { xrBikeHeadTilt = intValue; continue; }
+        if (sscanf_s(line, "xr_bike_tilt_lock_deg = %f", &value) == 1) { xrBikeTiltLockDeg = value; continue; }
+        if (sscanf_s(line, "xr_bike_tilt_dead_deg = %f", &value) == 1) { xrBikeTiltDeadDeg = value; continue; }
         if (sscanf_s(line, "xr_bike_grip_toggle=%d", &intValue) == 1 ||
             sscanf_s(line, "xr_bike_grip_toggle = %d", &intValue) == 1) {
             xrBikeGripToggle = intValue;
@@ -1947,6 +1984,23 @@ void PollLiveControls() {
     g_liveControls.xrWheelGrab = xrWheelGrab != 0 ? 1 : 0;
     g_liveControls.xrBikeBarLockDeg = cvr::anim::BikeBarLockDegrees(xrBikeBarLockDeg);
     g_liveControls.xrBikeBodyLean = cvr::anim::BikeBodyLeanShare(xrBikeBodyLean);
+    g_liveControls.xrBikeHeadTilt = xrBikeHeadTilt != 0;
+    g_liveControls.xrBikeDirectBank = xrBikeDirectBank != 0;
+    g_liveControls.xrBikeBankGain = cvr::bikebank::Gain(xrBikeBankGain);
+    g_liveControls.xrBikeBankMaxDeg = cvr::bikebank::MaxAddedDegrees(xrBikeBankMaxDeg);
+    g_liveControls.xrBikeStunts = xrBikeStunts != 0;
+    g_liveControls.xrBikeStableSeat = xrBikeStableSeat != 0;
+    g_liveControls.xrBikeAirLeanOnly = xrBikeAirLeanOnly != 0;
+    g_liveControls.xrBikeHandFullM = cvr::anim::BikeHandFullMeters(xrBikeHandFullM);
+    g_liveControls.xrBikeHandBalance = xrBikeHandBalance != 0;
+    g_liveControls.xrBikeWheelieHold = xrBikeWheelieHold != 0;
+    g_liveControls.xrBikeWheelieHoldDeg = cvr::anim::WheelieHoldDegrees(xrBikeWheelieHoldDeg);
+    g_liveControls.xrBikeWheelieLimitDeg = cvr::anim::WheelieLimitDegrees(xrBikeWheelieLimitDeg);
+    g_liveControls.xrBikeWheelieAssist = xrBikeWheelieAssist != 0;
+    g_liveControls.xrBikeStuntFullM = cvr::anim::BikeStuntFullMeters(xrBikeStuntFullM);
+    g_liveControls.xrBikeStuntDeadM = cvr::anim::BikeStuntDeadMeters(xrBikeStuntDeadM,xrBikeStuntFullM);
+    g_liveControls.xrBikeTiltLockDeg = cvr::anim::BikeTiltLockDegrees(xrBikeTiltLockDeg);
+    g_liveControls.xrBikeTiltDeadDeg = cvr::anim::BikeTiltDeadDegrees(xrBikeTiltDeadDeg);
     g_liveControls.xrBikeGripToggle = xrBikeGripToggle != 0 ? 1 : 0;
     g_liveControls.xrMenuGesture = xrMenuGesture != 0 ? 1 : 0;
     g_liveControls.xrHandPhysics = xrHandPhysics != 0 ? 1 : 0;
@@ -2325,6 +2379,23 @@ LiveControlsUiState MakeLiveControlsUiState() {
     state.xrWheelGrab = g_liveControls.xrWheelGrab;
     state.xrBikeBarLockDeg = g_liveControls.xrBikeBarLockDeg;
     state.xrBikeBodyLean = g_liveControls.xrBikeBodyLean;
+    state.xrBikeHeadTilt = g_liveControls.xrBikeHeadTilt;
+    state.xrBikeDirectBank = g_liveControls.xrBikeDirectBank;
+    state.xrBikeBankGain = g_liveControls.xrBikeBankGain;
+    state.xrBikeBankMaxDeg = g_liveControls.xrBikeBankMaxDeg;
+    state.xrBikeStunts = g_liveControls.xrBikeStunts;
+    state.xrBikeStableSeat = g_liveControls.xrBikeStableSeat;
+    state.xrBikeAirLeanOnly = g_liveControls.xrBikeAirLeanOnly;
+    state.xrBikeHandFullM = g_liveControls.xrBikeHandFullM;
+    state.xrBikeHandBalance = g_liveControls.xrBikeHandBalance;
+    state.xrBikeWheelieHold = g_liveControls.xrBikeWheelieHold;
+    state.xrBikeWheelieHoldDeg = g_liveControls.xrBikeWheelieHoldDeg;
+    state.xrBikeWheelieLimitDeg = g_liveControls.xrBikeWheelieLimitDeg;
+    state.xrBikeWheelieAssist = g_liveControls.xrBikeWheelieAssist;
+    state.xrBikeStuntFullM = g_liveControls.xrBikeStuntFullM;
+    state.xrBikeStuntDeadM = g_liveControls.xrBikeStuntDeadM;
+    state.xrBikeTiltLockDeg = g_liveControls.xrBikeTiltLockDeg;
+    state.xrBikeTiltDeadDeg = g_liveControls.xrBikeTiltDeadDeg;
     state.xrBikeGripToggle = g_liveControls.xrBikeGripToggle;
     state.xrMenuGesture = g_liveControls.xrMenuGesture;
     state.xrHandPhysics = g_liveControls.xrHandPhysics;
@@ -2716,6 +2787,23 @@ void PersistLiveControlsUiState(const LiveControlsUiState& state) {
     fprintf(file, "xr_wheel_grab=%d\n", state.xrWheelGrab != 0 ? 1 : 0);
     fprintf(file, "xr_bike_bar_lock_deg=%.1f\n", cvr::anim::BikeBarLockDegrees(state.xrBikeBarLockDeg));
     fprintf(file, "xr_bike_body_lean=%.2f\n", cvr::anim::BikeBodyLeanShare(state.xrBikeBodyLean));
+    fprintf(file, "xr_bike_head_tilt=%d\n", state.xrBikeHeadTilt != 0);
+    fprintf(file, "xr_bike_direct_bank=%d\n", state.xrBikeDirectBank != 0);
+    fprintf(file, "xr_bike_bank_gain=%.2f\n", cvr::bikebank::Gain(state.xrBikeBankGain));
+    fprintf(file, "xr_bike_bank_max_deg=%.1f\n", cvr::bikebank::MaxAddedDegrees(state.xrBikeBankMaxDeg));
+    fprintf(file, "xr_bike_stunts=%d\n", state.xrBikeStunts != 0);
+    fprintf(file, "xr_bike_stable_seat=%d\n", state.xrBikeStableSeat != 0);
+    fprintf(file, "xr_bike_air_lean_only=%d\n", state.xrBikeAirLeanOnly != 0);
+    fprintf(file, "xr_bike_hand_full_m=%.3f\n", cvr::anim::BikeHandFullMeters(state.xrBikeHandFullM));
+    fprintf(file, "xr_bike_hand_balance=%d\n", state.xrBikeHandBalance != 0);
+    fprintf(file, "xr_bike_wheelie_hold=%d\n", state.xrBikeWheelieHold != 0);
+    fprintf(file, "xr_bike_wheelie_hold_deg=%.3f\n", cvr::anim::WheelieHoldDegrees(state.xrBikeWheelieHoldDeg));
+    fprintf(file, "xr_bike_wheelie_limit_deg=%.3f\n", cvr::anim::WheelieLimitDegrees(state.xrBikeWheelieLimitDeg));
+    fprintf(file, "xr_bike_wheelie_assist=%d\n", state.xrBikeWheelieAssist != 0);
+    fprintf(file, "xr_bike_stunt_full_m=%.3f\n", cvr::anim::BikeStuntFullMeters(state.xrBikeStuntFullM));
+    fprintf(file, "xr_bike_stunt_dead_m=%.3f\n", cvr::anim::BikeStuntDeadMeters(state.xrBikeStuntDeadM,state.xrBikeStuntFullM));
+    fprintf(file, "xr_bike_tilt_lock_deg=%.1f\n", cvr::anim::BikeTiltLockDegrees(state.xrBikeTiltLockDeg));
+    fprintf(file, "xr_bike_tilt_dead_deg=%.1f\n", cvr::anim::BikeTiltDeadDegrees(state.xrBikeTiltDeadDeg));
     fprintf(file, "xr_bike_grip_toggle=%d\n", state.xrBikeGripToggle != 0 ? 1 : 0);
     fprintf(file, "xr_menu_gesture=%d\n", state.xrMenuGesture != 0 ? 1 : 0);
     fprintf(file, "xr_hand_physics=%d\n", state.xrHandPhysics != 0 ? 1 : 0);
@@ -2893,6 +2981,23 @@ extern "C" void SetLiveControlsUiState(const LiveControlsUiState* state, int per
     g_liveControls.xrWheelGrab = state->xrWheelGrab != 0 ? 1 : 0;
     g_liveControls.xrBikeBarLockDeg = cvr::anim::BikeBarLockDegrees(state->xrBikeBarLockDeg);
     g_liveControls.xrBikeBodyLean = cvr::anim::BikeBodyLeanShare(state->xrBikeBodyLean);
+    g_liveControls.xrBikeHeadTilt = state->xrBikeHeadTilt != 0;
+    g_liveControls.xrBikeDirectBank = state->xrBikeDirectBank != 0;
+    g_liveControls.xrBikeBankGain = cvr::bikebank::Gain(state->xrBikeBankGain);
+    g_liveControls.xrBikeBankMaxDeg = cvr::bikebank::MaxAddedDegrees(state->xrBikeBankMaxDeg);
+    g_liveControls.xrBikeStunts = state->xrBikeStunts != 0;
+    g_liveControls.xrBikeStableSeat = state->xrBikeStableSeat != 0;
+    g_liveControls.xrBikeAirLeanOnly = state->xrBikeAirLeanOnly != 0;
+    g_liveControls.xrBikeHandFullM = cvr::anim::BikeHandFullMeters(state->xrBikeHandFullM);
+    g_liveControls.xrBikeHandBalance = state->xrBikeHandBalance != 0;
+    g_liveControls.xrBikeWheelieHold = state->xrBikeWheelieHold != 0;
+    g_liveControls.xrBikeWheelieHoldDeg = cvr::anim::WheelieHoldDegrees(state->xrBikeWheelieHoldDeg);
+    g_liveControls.xrBikeWheelieLimitDeg = cvr::anim::WheelieLimitDegrees(state->xrBikeWheelieLimitDeg);
+    g_liveControls.xrBikeWheelieAssist = state->xrBikeWheelieAssist != 0;
+    g_liveControls.xrBikeStuntFullM = cvr::anim::BikeStuntFullMeters(state->xrBikeStuntFullM);
+    g_liveControls.xrBikeStuntDeadM = cvr::anim::BikeStuntDeadMeters(state->xrBikeStuntDeadM,state->xrBikeStuntFullM);
+    g_liveControls.xrBikeTiltLockDeg = cvr::anim::BikeTiltLockDegrees(state->xrBikeTiltLockDeg);
+    g_liveControls.xrBikeTiltDeadDeg = cvr::anim::BikeTiltDeadDegrees(state->xrBikeTiltDeadDeg);
     g_liveControls.xrBikeGripToggle = state->xrBikeGripToggle != 0 ? 1 : 0;
     g_liveControls.xrMenuGesture = state->xrMenuGesture != 0 ? 1 : 0;
     g_liveControls.xrHandPhysics = state->xrHandPhysics != 0 ? 1 : 0;

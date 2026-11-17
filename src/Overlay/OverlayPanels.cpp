@@ -17,6 +17,7 @@
 // of half-applied states, which is visible in the headset.
 
 #include "Anim/WheelGrab.hpp"
+#include "Hooks/BikeBank.hpp"
 #include "Anim/WheelRange.hpp"
 #include "Runtimes/HybridBodyYaw.hpp"
 #include "Anim/VehiclePosePolicy.hpp"
@@ -681,35 +682,141 @@ static bool DrawDrivingControls(LiveControlsUiState& state) {
                 }
                 UI::TextUnformatted("Bike");
                 changed |= CheckboxInt("Toggle grip", &state.xrBikeGripToggle);
-                if (UI::IsItemHovered()) UI::SetTooltip("Off (default): hold each grip to keep that hand on the bars.\nOn: squeeze near the bars to grab; release your fingers, then squeeze again to let go.");
-                float m = cvr::anim::BikeBarLockDegrees(state.xrBikeBarLockDeg);
-                if (widgets::SliderFloat("Bike full lock at (deg)", &m, cvr::anim::BikeBarLockMin, cvr::anim::BikeBarLockMax, "%.0f")) {
-                    state.xrBikeBarLockDeg = m;
-                    changed = true;
+                if (UI::IsItemHovered()) UI::SetTooltip("Off (default): hold each grip to keep that hand on the bars.\nOn: squeeze near the bars to grab; release your fingers, then squeeze again to let go.\nBoth steering modes require at least one attached hand. Release BOTH hands and regrab upright to reset centre.");
+                if (UI::Button("Reset lean / wheelie / stoppie defaults")) {
+                    const LiveControlsUiState defaults{};
+                    state.xrBikeBarLockDeg = defaults.xrBikeBarLockDeg;
+                    state.xrBikeBodyLean = defaults.xrBikeBodyLean;
+                    state.xrBikeHeadTilt = defaults.xrBikeHeadTilt;
+                    state.xrBikeDirectBank = defaults.xrBikeDirectBank;
+                    state.xrBikeBankGain = defaults.xrBikeBankGain;
+                    state.xrBikeBankMaxDeg = defaults.xrBikeBankMaxDeg;
+                    state.xrBikeStunts = defaults.xrBikeStunts;
+                    state.xrBikeStuntFullM = defaults.xrBikeStuntFullM;
+                    state.xrBikeStuntDeadM = defaults.xrBikeStuntDeadM;
+                    state.xrBikeWheelieAssist = defaults.xrBikeWheelieAssist;
+                    state.xrBikeWheelieLimitDeg = defaults.xrBikeWheelieLimitDeg;
+                    state.xrBikeHandBalance = defaults.xrBikeHandBalance;
+                    state.xrBikeWheelieHold = defaults.xrBikeWheelieHold;
+                    state.xrBikeWheelieHoldDeg = defaults.xrBikeWheelieHoldDeg;
+                    state.xrBikeHandFullM = defaults.xrBikeHandFullM;
+                    state.xrBikeAirLeanOnly = defaults.xrBikeAirLeanOnly;
+                    state.xrBikeStableSeat = defaults.xrBikeStableSeat;
+                    state.xrBikeTiltLockDeg = defaults.xrBikeTiltLockDeg;
+                    state.xrBikeTiltDeadDeg = defaults.xrBikeTiltDeadDeg;
+                    changed = true; // caller applies and persists the edited snapshot
                 }
-                if (UI::IsItemHovered()) {
-                    UI::SetTooltip("Motorcycle handlebars: push one hand forward and pull the other back.\n"
-                                      "This is how far the bars turn, seen from above, to reach full lock. Lower = more sensitive.\n"
-                                      "Two hands use the line between them; one hand turns about a point half the bars' width to its side.\n"
-                                      "Adding or releasing a hand keeps the current turn.");
+                if (UI::IsItemHovered()) UI::SetTooltip(
+                    "Restores upstream handlebars + body lean and all bike lean/stunt tuning.\n"
+                    "Direct bank, physical wheelies/stoppies, hand balance, angle assist,\n"
+                    "balance hold, front-lift steering override and stable seat return to OFF.\n"
+                    "Defaults: bars 40 deg, body lean 0.5, bank gain 1 / max 20 deg;\n"
+                    "head tilt 25 deg / deadzone 3 deg; torso travel 15 cm / deadzone 3 cm;\n"
+                    "hand travel 12 cm and wheelie limit 35 deg. Saved immediately.\n"
+                    "Grip toggle, camera offsets, haptics and car settings are kept.\n"
+                    "Release both grips and regrab upright to reset your neutral pose.");
+                int leanMode=(state.xrBikeDirectBank?2:0)+(state.xrBikeHeadTilt?1:0);
+                if(widgets::Combo("Lean mode",&leanMode,
+                    "Upstream: handlebars + body lean\0Head-tilt steering assist\0Body lean banking\0Head-tilt banking\0")) {
+                    state.xrBikeDirectBank=leanMode>=2;state.xrBikeHeadTilt=leanMode&1;changed=true;
                 }
-                float lean = cvr::anim::BikeBodyLeanShare(state.xrBikeBodyLean);
-                if (widgets::SliderFloat("Bike body lean", &lean, 0.0f, 1.0f, "%.2f")) {
-                    state.xrBikeBodyLean = lean;
-                    changed = true;
+                if(UI::IsItemHovered()) UI::SetTooltip(
+                    "Upstream: handlebars and sideways torso movement both steer, using upstream's original math.\n"
+                    "Head-tilt assist: handlebars steer and tilting an ear toward a shoulder adds steering.\n"
+                    "Banking modes: body lean or head tilt adds bike angle; handlebars still steer independently.\n"
+                    "Grab upright facing forward. Release BOTH grips and regrab to reset neutral.\n"
+                    "Use both hands for predictable handlebar control.");
+                changed |= CheckboxInt("Wheelies / stoppies",&state.xrBikeStunts);
+                if(UI::IsItemHovered()) UI::SetTooltip(
+                    "Lean your torso back and accelerate to pop a wheelie; lean forward and brake for a stoppie.\n"
+                    "Looking up/down alone is compensated. Grip upright to establish neutral.\n"
+                    "Throttle and brake stay under your control. Explicit stick input takes priority.");
+                int wheelieMode=state.xrBikeHandBalance?(state.xrBikeWheelieHold?2:1):0;
+                if(state.xrBikeStunts) {
+                    if(widgets::Combo("Wheelie control",&wheelieMode,
+                        "Body lean + throttle\0Hands + throttle\0Stabilized hands + throttle\0")) {
+                        state.xrBikeHandBalance=wheelieMode!=0;state.xrBikeWheelieHold=wheelieMode==2;
+                        if(wheelieMode==2)state.xrBikeWheelieAssist=1;
+                        changed=true;
+                    }
+                    if(UI::IsItemHovered()) UI::SetTooltip(
+                        "Body: your forward/back lean continues controlling pitch after the pop.\n"
+                        "Hands: after liftoff, raise/lower BOTH hands relative to your torso to adjust pitch.\n"
+                        "Stabilized: neutral hands hold a target angle; raise/lower hands to adjust that target.\n"
+                        "Both hand modes require both grips attached through liftoff.\n"
+                        "Stabilization engages after a confirmed lift above 8 degrees; keep some throttle.\n"
+                        "Release throttle, brake, lean forward or release a grip to end the hold.\n"
+                        "Throttle is never added automatically. Physics can still overwhelm the aid.");
+                    if(wheelieMode==2) {
+                        changed |= widgets::SliderFloat("Wheelie target angle (deg)",&state.xrBikeWheelieHoldDeg,5.f,45.f,"%.0f");
+                        if(UI::IsItemHovered()) UI::SetTooltip(
+                            "Target above road pitch at liftoff. Default 25 degrees.\n"
+                            "Hands can trim it by up to 12 degrees; changes are smoothed.\n"
+                            "The target stays 8 degrees below the maximum angle in Advanced bike tuning.\n"
+                            "The default 35 degree maximum permits a target up to 27 degrees.");
+                    }
                 }
-                if (UI::IsItemHovered()) {
-                    UI::SetTooltip("Lean your body sideways to steer a motorcycle, added to your arms while holding the bars.\n"
-                                      "The value is the share of full lock from a 15 cm lean; 0 turns it off.\n"
-                                      "Centre is where your body was when you grabbed the bars.");
+                if(UI::CollapsingHeader("Advanced bike tuning")) {
+                    float bars=cvr::anim::BikeBarLockDegrees(state.xrBikeBarLockDeg);
+                    if(widgets::SliderFloat("Handlebar full lock (deg)",&bars,cvr::anim::BikeBarLockMin,cvr::anim::BikeBarLockMax,"%.0f")){state.xrBikeBarLockDeg=bars;changed=true;}
+                    if(UI::IsItemHovered())UI::SetTooltip("Default 40 degrees. Lower = more sensitive. Push one hand forward and pull the other back.\nTwo hands use their connecting line; one hand turns around a virtual pivot.");
+                    if(leanMode==0) {
+                        changed |= widgets::SliderFloat("Body lean steering strength",&state.xrBikeBodyLean,0.f,1.f,"%.2f");
+                        if(UI::IsItemHovered())UI::SetTooltip("Upstream default 0.50: 15 cm sideways torso travel adds half steering.\nThe first 3 cm is a deadzone. Set zero to use handlebars only.");
+                    }
+                    if(state.xrBikeDirectBank) {
+                        changed |= widgets::SliderFloat("Bank strength",&state.xrBikeBankGain,0.f,2.f,"%.2f");
+                        if(UI::IsItemHovered())UI::SetTooltip("Default 1.0: one degree of added bike bank per degree of physical lean beyond the deadzone.\nBody mode estimates torso angle; handlebars keep steering independently.");
+                        changed |= widgets::SliderFloat("Maximum added bank (deg)",&state.xrBikeBankMaxDeg,0.f,45.f,"%.0f");
+                        if(UI::IsItemHovered())UI::SetTooltip("Default 20 degrees. Limits your added bank, not the bike's natural bank. Native tilt limits still apply.");
+                    }
+                    if(state.xrBikeHeadTilt) {
+                        if(!state.xrBikeDirectBank)changed |= widgets::SliderFloat("Head tilt full steering (deg)",&state.xrBikeTiltLockDeg,10.f,45.f,"%.0f");
+                        changed |= widgets::SliderFloat("Head tilt deadzone (deg)",&state.xrBikeTiltDeadDeg,0.f,8.f,"%.1f");
+                        if(UI::IsItemHovered())UI::SetTooltip("Default 3 degrees around your grab-time neutral. Tilt toward a shoulder; bars remain independent.");
+                    }
+                    if(state.xrBikeStunts) {
+                        float full=state.xrBikeStuntFullM*100.f,dead=state.xrBikeStuntDeadM*100.f;
+                        if(widgets::SliderFloat("Full forward/back lean (cm)",&full,8.f,35.f,"%.0f")){state.xrBikeStuntFullM=full*.01f;changed=true;}
+                        if(UI::IsItemHovered())UI::SetTooltip("Default 15 cm of torso travel for full input. Larger = less sensitive, not a higher wheelie angle.");
+                        if(widgets::SliderFloat("Forward/back deadzone (cm)",&dead,0.f,std::min(8.f,full-1.f),"%.1f")){state.xrBikeStuntDeadM=dead*.01f;changed=true;}
+                        if(UI::IsItemHovered())UI::SetTooltip("Default 3 cm. Increase if ordinary posture shifts cause unwanted stunts.");
+                        if(wheelieMode!=0) {
+                            float travel=state.xrBikeHandFullM*100.f;
+                            if(widgets::SliderFloat("Hand control travel (cm)",&travel,6.f,25.f,"%.0f")){state.xrBikeHandFullM=travel*.01f;changed=true;}
+                            if(UI::IsItemHovered())UI::SetTooltip("Default 12 cm from the hands' height before liftoff. Smaller = stronger adjustments.\nHands mode changes weight shift; Stabilized mode changes the target angle.");
+                        }
+                        if(wheelieMode!=2)changed |= CheckboxInt("Limit wheelie angle",&state.xrBikeWheelieAssist);
+                        if(state.xrBikeWheelieAssist || wheelieMode==2) {
+                            changed |= widgets::SliderFloat("Maximum wheelie angle (deg)",&state.xrBikeWheelieLimitDeg,10.f,60.f,"%.0f");
+                            if(UI::IsItemHovered())UI::SetTooltip("Default 35 degrees above the road. Included in Stabilized control.\nSoftly reduces rearward input/throttle and adds forward correction near the limit.\nIt cannot prevent every backflip caused by collisions or existing momentum.");
+                        }
+                    }
+                    changed |= CheckboxInt("Lean-only steering during wheelies",&state.xrBikeAirLeanOnly);
+                    if(UI::IsItemHovered())UI::SetTooltip("Bars stop steering while the front wheel is off the ground; sideways lean stays active.\nBars resume on touchdown. Stoppies retain handlebar steering.");
+                    changed |= CheckboxInt("Stable bike viewpoint",&state.xrBikeStableSeat);
+                    if(UI::IsItemHovered())UI::SetTooltip("Removes the bike animation's sideways camera sway. Physical head movement and saved camera offsets remain.\nNeutral is captured upright with both wheels grounded; dismount to reset.");
+                }
+                if(UI::CollapsingHeader("Bike input readout")) {
+                    if(!cvr::bikebank::MotionReady())UI::TextDisabled("Wheel-contact/pitch measurement unavailable on this game build.");
+                    const auto bike=cvr::anim::WheelLastBikeSample();
+                    const auto stunt=cvr::anim::WheelLastBikeStuntSample();
+                    const auto bank=cvr::bikebank::LastSample();
+                    if(bike.stampUs)UI::Text("Bars %+.1f deg; body lean %+.1f cm; steering %+.0f%%",bike.barsDegrees,bike.leanMeters*100,bike.combinedShare*100);
+                    if(state.xrBikeDirectBank && bank.stampUs)UI::Text("Bank: native %+.1f + lean %+.1f; actual %+.1f deg",bank.nativeDegrees,bank.requestedDegrees,bank.actualDegrees);
+                    if(stunt.stampUs) {
+                        UI::Text("Fore/aft %+.1f cm; hands %+.1f cm; front %s",stunt.meters*100,stunt.handMeters*100,!stunt.motionValid?"unknown":stunt.frontLifted?"lifted":"grounded");
+                        UI::Text("Balance hold %s: pitch %.1f / target %.1f deg",stunt.holdActive?"active":"idle",stunt.holdPitch,stunt.holdTarget);
+                    }
+                    UI::TextDisabled("Saved samples; close the menu to ride.");
                 }
                 float d = state.xrWheelSteerDeadDeg >= 0.0f ? state.xrWheelSteerDeadDeg : 0.0f;
-                if (widgets::SliderFloat("Steering deadzone (deg)", &d, 0.0f, 20.0f, "%.1f")) {
+                if (widgets::SliderFloat("Car / handlebar deadzone (deg)", &d, 0.0f, 20.0f, "%.1f")) {
                     state.xrWheelSteerDeadDeg = d;
                     changed = true;
                 }
                 if (UI::IsItemHovered()) {
-                    UI::SetTooltip("Tilt around centre that steers nothing at all.\n"
+                    UI::SetTooltip("For car/handlebar steering; head tilt uses its own deadzone above.\n"
                                       "Raise it if the car drifts while you hold the wheel straight;\n"
                                       "every degree here is a degree of dead wheel off centre.\n"
                                       "The full range still ends at 'Full lock at', so widening the\n"

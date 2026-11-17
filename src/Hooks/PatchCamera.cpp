@@ -1,3 +1,6 @@
+#include "Camera/PlayerCameraState.hpp"
+#include "Camera/BikeSeat.hpp"
+#include "Hooks/BikeBank.hpp"
 #include "Utils/DebugGate.hpp"
 #include "Camera/SurveillanceFollow.hpp"
 // PatchCamera -- one hook, one file.
@@ -1181,6 +1184,35 @@ extern "C" void __fastcall OnPatchCameraCallback(float* cameraState, void* owner
         // puts the player's PHYSICAL head motion back in with the opposite sign -- move your head right
         // and the reconstructed camera goes left -- so the avatar's body, which hangs off it, follows
         // the head instead of standing still.
+        if(camKind==1) {
+            static std::mutex seatMutex;
+            static cvr::camera::BikeSeat seat;
+            std::lock_guard seatLock(seatMutex);
+            CameraOwnerWorld after{};
+            const bool eligible=g_liveControls.xrBikeStableSeat && g_isDriving.load(std::memory_order_relaxed) &&
+                g_isOnBike.load(std::memory_order_relaxed) && !DeviceCamActive() && !bdOnScene &&
+                g_sceneTier.load(std::memory_order_relaxed)<=2 && !g_hasWeaponEquipped;
+            if(!eligible)seat.Reset();
+            else if(ok && haveCameraOwner && ReadCameraOwnerWorld(ownerState,&after) &&
+                    std::memcmp(&after,&cameraOwnerBefore,sizeof(after))==0) {
+                const auto motion=cvr::bikebank::LastMotion();
+                const auto bike=CurrentMountedVehicleIdentity();
+                const auto now=XrDiagNowUs();
+                const bool fresh=cvr::anim::BikeMotionFresh(motion,now,bike);
+                const bool upright=fresh && motion.frontContact && motion.rearContact && motion.upZ>.95f &&
+                    std::abs(motion.pitch)<15 && std::abs(motion.roll)<5;
+                if(fresh) {
+                    const bool applied=seat.Apply(p,after.position,after.rotation,bike,after.root,
+                        reinterpret_cast<uintptr_t>(ownerState),eligible,upright);
+                    static uint64_t lastSeatLog{};
+                    if(now>=lastSeatLog && now-lastSeatLog>5000000) {
+                        lastSeatLog=now;
+                        Log("[bike-seat] applied=%d lateral_removed_cm=%+.2f bank=%.1f capture_ready=%d\n",
+                            applied?1:0,-seat.CorrectionMeters()*100,motion.roll,upright?1:0);
+                    }
+                }
+            }
+        }
         if (ok && camKind == 1) {
             CyberpunkVR_EngineCamPosFP[0] = p[0];
             CyberpunkVR_EngineCamPosFP[1] = p[1];

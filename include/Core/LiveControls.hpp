@@ -98,7 +98,25 @@ struct LiveControls {
     volatile float xrWheelRadius;    // how near the animated hand the controller must be for the grip to mean "grab", metres. Default 0.28.
     volatile float xrWheelSteerMaxDeg;  // bike/other mount hand travel to full lock per side (30..120, else 90); a car's is its cabin wheel's (WheelRange.hpp, 1:1)
     volatile float xrBikeBarLockDeg = 40.0f;
-    volatile float xrBikeBodyLean = 0.5f;
+    volatile float xrBikeBodyLean = 0.5f; // legacy handlebar mode only
+    volatile int xrBikeHeadTilt = 0;
+    volatile int xrBikeDirectBank = 0; // experimental direct native bank-angle addition
+    volatile float xrBikeBankGain = 1.0f;
+    volatile float xrBikeBankMaxDeg = 20.0f;
+    volatile int xrBikeStunts = 0; // physical fore/aft lean through native vehicle input
+    volatile float xrBikeStuntFullM = .15f;
+    volatile float xrBikeStuntDeadM = .03f;
+    volatile int xrBikeWheelieAssist = 0;
+    volatile float xrBikeWheelieLimitDeg = 35.f;
+    volatile int xrBikeHandBalance = 0;
+    volatile int xrBikeWheelieHold = 0;
+    volatile float xrBikeWheelieHoldDeg = 25.f;
+    volatile float xrBikeHandFullM = .12f;
+    volatile int xrBikeAirLeanOnly = 0;
+    volatile int xrBikeStableSeat = 0;
+
+    volatile float xrBikeTiltLockDeg = 25.0f;
+    volatile float xrBikeTiltDeadDeg = 3.0f;
     volatile int xrBikeGripToggle = 0; // bikes hold by default; second squeeze releases when enabled
     volatile float xrWheelSteerDeadDeg; // steering deadzone around centre, degrees. 0 (default): a real wheel has none; every degree here is a degree of dead wheel.
     volatile int xrWheelPrediction = 0; // optional conservative history-based steering lead

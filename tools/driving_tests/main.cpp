@@ -1,4 +1,8 @@
+#include "Camera/BikeSeat.hpp"
 #include "Anim/WheelSteering.hpp"
+#include "Anim/BikeBankPolicy.hpp"
+#include "Anim/BikeStunts.hpp"
+#include "Anim/BikeWheelieHold.hpp"
 #include "Anim/TrackedWheelSteering.hpp"
 #include <cstdlib>
 #include <bit>
@@ -280,11 +284,284 @@ void Handlebar() {
         lean(body,leaned(++s,0,0),.5f);
         Near(lean(body,leaned(++s,0,60),.5f),0,"looking aside counted as leaning");
     }
+    for(float direction:{-1.f,1.f}) {
+        TrackedWheelSteering body;uint64_t s=0;
+        lean(body,leaned(++s,0,0),.5f);
+        auto tilted=leaned(++s,0,0);
+        const float half=direction*30/114.59155902f;
+        tilted.head.orientation={0,0,std::sin(half),std::cos(half)};
+        const auto eyes=RotateVector(tilted.head.orientation,XrVector3f{0,.1f,-.1f});
+        tilted.head.position={eyes.x,1.5f+eyes.y,.1f+eyes.z};
+        const XrVector3f world[2]={{.25f,1.2f,-.4f},{-.25f,1.2f,-.4f}};
+        for(int i=0;i<2;++i)tilted.hands[i]=RotateVector(ConjugateQuat(tilted.head.orientation),
+            XrVector3f{world[i].x-tilted.head.position.x,world[i].y-tilted.head.position.y,world[i].z-tilted.head.position.z});
+        Near(lean(body,tilted,.5f),0,"head roll around a stationary neck counted as body lean");
+    }
     Near(WheelFullLockForVehicle(120,false),120,"legacy mount setting changed");
     Near(BikeBarLockDegrees(0),BikeBarLockDefault,"unset bar lock did not default");
     Near(BikeBarLockDegrees(5),BikeBarLockMin,"bar lock below its range");
     Near(BikeBarLockDegrees(90),BikeBarLockMax,"bar lock above its range");
 }
+void BikeLeanLifecycle() {
+    const auto frame=[](uint64_t seq,float lean,float bars=0.f) {
+        auto f=Bars(seq,bars);f.head.position.x=lean;
+        // Stationary physical bars; moving the head must not move the controllers.
+        for(auto& hand:f.hands)hand.x-=lean;
+        return f;
+    };
+    for(int mask:{1,2,3})for(float direction:{-1.f,1.f})for(float prediction:{0.f,8.f}) {
+        TrackedWheelSteering wheel;uint64_t seq=0;
+        const auto update=[&](const WheelTrackingFrame& f,int held,float share=.5f) {
+            return wheel.Update(uint8_t(held),f,f.stampUs,.25f,40,0,prediction,true,share);
+        };
+        update(frame(++seq,0),mask);
+        auto f=frame(++seq,direction*.15f);
+        Near(update(f,mask),direction*.5f,"lean did not reach live steering with one/two hands or prediction");
+        Near(wheel.LeanMeters(),direction*.15f,"lean readout does not match tracked displacement");
+        Near(wheel.LeanDegrees(),direction*20,"lean readout does not match steering contribution");
+        Check(wheel.SampleStampUs()==f.stampUs,"readout lost tracking timestamp");
+        Near(update(f,mask==3 ? 1:3),direction*.5f,"hand change lost lean centre");
+        Near(update(frame(++seq,0),3),0,"returning torso to centre did not straighten");
+        f=frame(++seq,direction*.15f);
+        update(f,3);
+        Near(wheel.Update(3,f,f.stampUs+300000,.25f,40,0,prediction,true,.5f),direction*.5f,"brief tracking pause lost lean");
+        auto resumed=frame(++seq,direction*.15f);resumed.stampUs=f.stampUs+800000;
+        Near(update(resumed,3),direction*.5f,"resuming tracking changed lean centre");
+        auto centred=resumed;centred.origin=2;
+        Near(update(centred,3),0,"recenter did not reset lean origin");
+        Near(update(frame(++seq,direction*.15f),0),0,"releasing last grip retained lean");
+        update(frame(++seq,direction*.15f),mask);
+        Near(update(frame(++seq,direction*.30f),mask),direction*.5f,"new grab did not capture new neutral");
+    }
+    for(float direction:{-1.f,1.f}) {
+        TrackedWheelSteering wheel;
+        auto a=frame(1,0);wheel.Update(3,a,a.stampUs,.25f,40,0,0,true,.5f);
+        auto b=frame(2,direction*.15f,direction*10);
+        Near(wheel.Update(3,b,b.stampUs,.25f,40,0,0,true,.5f),direction*.75f,"bar and lean contributions did not add");
+        auto c=frame(3,direction*.30f,direction*30);
+        Near(wheel.Update(3,c,c.stampUs,.25f,40,0,0,true,1),direction,"combined steering exceeded full lock");
+    }
+}
+void BikeHeadTilt() {
+    // Keep the hands fixed in tracking space when the headset turns. The
+    // runtime supplies head-relative hands, so rotate them back into that frame.
+    const auto pose=[](uint64_t seq,float yaw,float pitch,float roll,float bars=0.f,XrVector3f shift=XrVector3f{}) {
+        auto f=Bars(seq,bars);
+        const auto q=[](int axis,float degrees) {
+            const float a=degrees*pi/360;XrQuaternionf q{0,0,0,std::cos(a)};
+            if(axis==0)q.x=std::sin(a);else if(axis==1)q.y=std::sin(a);else q.z=std::sin(a);
+            return q;
+        };
+        f.head.orientation=MultiplyQuat(MultiplyQuat(q(1,yaw),q(0,pitch)),q(2,-roll));
+        f.head.position.x+=shift.x;f.head.position.y+=shift.y;f.head.position.z+=shift.z;
+        for(auto& hand:f.hands)hand=RotateVector(ConjugateQuat(f.head.orientation),
+            XrVector3f{hand.x-shift.x,hand.y-shift.y,hand.z-shift.z});
+        return f;
+    };
+    const auto tick=[](TrackedWheelSteering& w,int held,const WheelTrackingFrame& f,float lock=25,float dead=3) {
+        return w.Update(uint8_t(held),f,f.stampUs,.25f,40,0,0,true,.5f,true,lock,dead);
+    };
+    for(float yaw:{-170.f,-90.f,0.f,60.f,170.f})for(float pitch:{-60.f,0.f,60.f})
+    for(int held:{1,2,3})for(float dir:{-1.f,1.f}) {
+        TrackedWheelSteering w;uint64_t seq=0;
+        Near(tick(w,held,pose(++seq,yaw,pitch,0)),0,"tilt grab should centre");
+        Near(tick(w,held,pose(++seq,yaw,pitch,dir*2)),0,"tilt deadzone failed");
+        Near(tick(w,held,pose(++seq,yaw,pitch,dir*14)),dir*.5f,"tilt depends on yaw/pitch/hand");
+        Near(tick(w,held,pose(++seq,yaw,pitch,dir*25)),dir,"full tilt did not saturate");
+        Near(tick(w,held,pose(++seq,yaw,pitch,dir*40)),dir,"tilt exceeded full lock");
+        Near(tick(w,held,pose(++seq,yaw,pitch,0)),0,"tilt did not return to centre");
+        Near(tick(w,held,pose(++seq,yaw,pitch,0,dir*20)),dir*.5f,"head tilt mode lost handlebar steering");
+        Near(tick(w,held,pose(++seq,yaw,pitch,dir*14,dir*20)),dir,"bars and tilt did not add");
+        Near(tick(w,held,pose(++seq,yaw,pitch,-dir*14,dir*20)),0,"opposite bars and tilt did not cancel");
+        Near(tick(w,held,pose(++seq,yaw,pitch,dir*25,dir*20)),dir,"combined output exceeded full lock");
+    }
+    TrackedWheelSteering w;uint64_t seq=0;tick(w,3,pose(++seq,0,0,0));
+    Near(tick(w,3,pose(++seq,150,60,0)),0,"looking around alone steered");
+    auto f=pose(++seq,150,60,14,0,{.2f,.1f,.2f});
+    Near(tick(w,3,f),.5f,"body translation contributed to tilt mode");
+    Near(w.Angle(),0,"stationary bars changed with head motion");
+    Near(tick(w,1,pose(++seq,0,0,14)),.5f,"releasing one hand reset tilt neutral");
+    Near(tick(w,2,pose(++seq,0,80,30)),0,"near vertical pose must disable tilt contribution");
+    Check(!w.HeadTiltValid(),"near vertical reported valid roll");
+    Near(tick(w,2,pose(++seq,0,80,30,20)),.5f,"near vertical disabled valid handlebar steering");
+    Near(tick(w,2,pose(++seq,0,0,14)),.5f,"vertical guard lost neutral");
+    f=pose(++seq,0,0,14);f.headValid=false;
+    Near(tick(w,2,f),0,"lost head tracking held a turn");
+    f=pose(++seq,0,0,14);Near(tick(w,2,f),.5f,"tracking recovery reset neutral");
+    Near(w.Update(2,f,f.stampUs+300000,.25f,40,0,0,true,.5f,true),0,"stale tilt held a turn");
+    auto recentered=pose(++seq,0,0,14);recentered.origin=2;
+    Near(tick(w,2,recentered),0,"recenter did not set tilt neutral");
+    Near(tick(w,0,pose(++seq,0,0,0)),0,"released bars kept steering");
+    Near(tick(w,3,pose(++seq,0,0,5)),0,"regrab did not capture new neutral");
+    f=pose(++seq,0,0,19);Near(tick(w,3,f),.5f,"new tilt neutral wrong");
+    Near(tick(w,3,f,14,3),1,"live lock change ignored on same sample");
+    f=pose(++seq,0,0,19);
+    Near(w.Update(3,f,f.stampUs,.25f,40,0,0,true,.5f,false),0,"mode switch kept old turn");
+    Near(tick(w,3,pose(++seq,0,0,19)),0,"returning to tilt did not rebase");
+    Near(BikeTiltLockDegrees(std::numeric_limits<float>::quiet_NaN()),25,"NaN tilt lock");
+    Near(BikeTiltDeadDegrees(std::numeric_limits<float>::infinity()),3,"invalid tilt deadzone");
+    Near(BikeTiltLockDegrees(-20),10,"tilt lock clamp");
+    Near(BikeTiltDeadDegrees(30),8,"tilt deadzone clamp");
+}
+void BikeDirectBank() {
+    using namespace cvr::bikebank;
+    const auto pose=[](uint64_t seq,float yaw,float roll,float bars,float lean,bool moveHands) {
+        auto f=Bars(seq,bars);
+        const float a=yaw*pi/360,b=-roll*pi/360;
+        const XrQuaternionf heading{0,std::sin(a),0,std::cos(a)},tilt{0,0,std::sin(b),std::cos(b)};
+        f.head.orientation=MultiplyQuat(heading,tilt);
+        const auto shift=RotateVector(heading,XrVector3f{lean,0,0});
+        f.head.position={shift.x,1.6f,shift.z};
+        for(auto& hand:f.hands) {
+            auto world=RotateVector(heading,hand);
+            if(moveHands){world.x+=shift.x;world.z+=shift.z;}
+            hand=RotateVector(ConjugateQuat(f.head.orientation),XrVector3f{world.x-shift.x,world.y,world.z-shift.z});
+        }
+        return f;
+    };
+    for(float yaw:{-170.f,-90.f,0.f,60.f,170.f})for(int held:{1,2,3})for(float dir:{-1.f,1.f}) {
+        TrackedWheelSteering w;uint64_t seq=0;
+        const auto tick=[&](const WheelTrackingFrame& f,bool tilt=true) {
+            return w.Update(uint8_t(held),f,f.stampUs,.25f,40,0,0,true,.5f,tilt,25,3,true);
+        };
+        Near(tick(pose(++seq,yaw,0,0,0,false)),0,"direct bank starts neutral");
+        auto f=pose(++seq,yaw,dir*13,0,.1f,false);
+        Near(tick(f),0,"direct head bank leaked into steering");
+        Near(RequestedDegrees(true,w.HeadTiltValid(),w.HeadTiltDegrees(),w.LeanMeters(),3,1,20),dir*10,"head bank not angular 1:1");
+        f=pose(++seq,yaw,dir*13,dir*20,.1f,false);
+        Near(tick(f),dir*.5f,"direct bank lost independent handlebars");
+        Check(w.CurrentSampleValid(),"valid input not published");
+        w.Suspend(f.stampUs+300000);Check(!w.CurrentSampleValid(),"suspended bank input valid");
+        f=pose(++seq,yaw,dir*13,dir*20,.1f,false);tick(f);
+        f.headValid=false;tick(f);Check(!w.CurrentSampleValid(),"tracking loss left bank valid");
+        f=pose(++seq,yaw,dir*13,dir*20,.1f,false);f.origin=2;
+        Near(tick(f),0,"recenter retained bar angle");Near(w.HeadTiltDegrees(),0,"recenter retained bank");
+        w.Update(0,f,f.stampUs,.25f,40,0,0,true,.5f,true,25,3,true);
+        Check(!w.CurrentSampleValid(),"release retained usable bank input");
+        // Switching back to original mode must rebase, without an old bank becoming steering.
+        f=pose(++seq,yaw,dir*13,dir*20,.1f,false);tick(f);
+        Near(w.Update(uint8_t(held),f,f.stampUs,.25f,40,0,0,true,.5f,true,25,3,false),0,"bank off retained old neutral");
+    }
+    for(float yaw:{-170.f,-90.f,0.f,60.f,170.f})for(float dir:{-1.f,1.f})for(bool movingHands:{false,true}) {
+        TrackedWheelSteering w;uint64_t seq=0;
+        const auto tick=[&](const WheelTrackingFrame& f) {return w.Update(3,f,f.stampUs,.25f,40,0,0,true,.5f,false,25,3,true);};
+        tick(pose(++seq,yaw,0,0,0,movingHands));
+        Near(tick(pose(++seq,yaw,0,0,dir*.15f,movingHands)),0,"body bank leaked into bar steering");
+        Near(w.LeanMeters(),dir*.15f,"body bank depends on room heading");
+        Near(RequestedDegrees(false,true,0,w.LeanMeters(),3,1,20),dir*std::atan2(.12f,.5f)/kRadPerDegree,"body bank estimate wrong");
+        Near(tick(pose(++seq,yaw,0,dir*20,dir*.15f,movingHands)),dir*.5f,"body bank lost independent bar steering");
+    }
+}
+void BikeBankPolicy() {
+    using namespace cvr::bikebank;
+    for(float dir:{-1.f,1.f}) {
+        Near(RequestedDegrees(true,true,dir*2,0,3,1,20),0,"head deadzone");
+        Near(RequestedDegrees(true,false,dir*20,0,3,1,20),0,"invalid tilt used");
+        Near(RequestedDegrees(true,true,dir*30,0,3,1,20),dir*20,"added angle cap");
+        Near(RequestedDegrees(true,true,dir*13,0,3,.5f,20),dir*5,"head bank gain");
+        Near(RequestedDegrees(false,true,0,dir*.02f,3,1,20),0,"body deadzone");
+        Near(AddToNative(dir*10*kRadPerDegree,dir*15,45)/kRadPerDegree,dir*25,"bank not additive");
+        Near(AddToNative(dir*40*kRadPerDegree,dir*20,45)/kRadPerDegree,dir*45,"native tilt cap");
+        Near(AddToNative(dir*40*kRadPerDegree,-dir*20,45)/kRadPerDegree,dir*20,"opposing lean wrong");
+        Near(AddToNative(dir*60*kRadPerDegree,dir*20,45)/kRadPerDegree,dir*60,"changed out-of-range native bank");
+    }
+    for(float native:{-1.f,-.5f,-0.f,0.f,.5f,1.f}) {
+        Check(std::bit_cast<uint32_t>(native)==std::bit_cast<uint32_t>(AddToNative(native,0,45)),"neutral changed native bits");
+        Near(AddToNative(native,10,0),native,"invalid native limit applied");
+        Near(AddToNative(native,std::numeric_limits<float>::quiet_NaN(),45),native,"NaN bank applied");
+    }
+    Check(!Fresh(100,0)&&!Fresh(100,101)&&Fresh(100100,100)&&!Fresh(100101,100),"freshness boundary");
+    for(int hz:{30,45,90,120}) {
+        const uint64_t stamp=1000000,interval=1000000/hz;
+        Check(Fresh(stamp+interval,stamp),"valid frame frequency dropped");
+        Check(!Fresh(stamp+300000,stamp),"stale frame accepted");
+    }
+}
+
+WheelTrackingFrame StuntPose(uint64_t seq,float facing,float yaw,float pitch,float roll,float forward,float sideways=0) {
+    auto f=Bars(seq,0);
+    const auto quat=[](int axis,float deg) {
+        const float a=deg*pi/360;XrQuaternionf q{0,0,0,std::cos(a)};
+        if(axis==0)q.x=std::sin(a);else if(axis==1)q.y=std::sin(a);else q.z=std::sin(a);return q;
+    };
+    const auto basis=quat(1,facing);
+    f.head.orientation=MultiplyQuat(MultiplyQuat(quat(1,facing+yaw),quat(0,pitch)),quat(2,roll));
+    // Head turns about the same physical neck; translations are true body motion.
+    const auto eyes=RotateVector(f.head.orientation,XrVector3f{0,.1f,-.1f});
+    const auto shift=RotateVector(basis,XrVector3f{sideways,0,-forward});
+    f.head.position={eyes.x+shift.x,1.5f+eyes.y,eyes.z+shift.z};
+    return f;
+}
+void BikeStuntMotion() {
+    for(float facing:{-170.f,-90.f,0.f,60.f,170.f})for(int held:{1,2,3})for(float dir:{-1.f,1.f}) {
+        TrackedBikeStunts s;uint64_t seq=0;
+        const auto tick=[&](WheelTrackingFrame f){s.Update(uint8_t(held),f,f.stampUs,123);return s.Axis(f.stampUs,.15f,.03f);};
+        Near(tick(StuntPose(++seq,facing,0,0,0,0)),0,"stunt starts neutral");
+        Near(tick(StuntPose(++seq,facing,0,0,0,dir*.02f)),0,"posture deadzone failed");
+        Near(tick(StuntPose(++seq,facing,0,0,0,dir*.09f)),dir*.5f,"native lean direction or midpoint wrong");
+        Near(tick(StuntPose(++seq,facing,0,0,0,dir*.15f)),dir,"full physical lean");
+        Near(tick(StuntPose(++seq,facing,0,0,0,dir*.35f)),dir,"native lean exceeds full input");
+        Near(tick(StuntPose(++seq,facing,0,0,0,0)),0,"return upright not neutral");
+        Near(tick(StuntPose(++seq,facing,0,0,0,0,dir*.2f)),0,"sideways bank added wheelie/stoppie");
+    }
+    // No nod/looking trigger when the tracked eyes rotate about the neck.
+    for(float facing:{-130.f,0.f,120.f}) {
+        TrackedBikeStunts s;uint64_t seq=0;auto f=StuntPose(++seq,facing,0,0,0,0);s.Update(3,f,f.stampUs,123);
+        for(float yaw:{-90.f,-45.f,0.f,90.f})for(float pitch:{-60.f,0.f,60.f})for(float roll:{-25.f,0.f,25.f}) {
+            f=StuntPose(++seq,facing,yaw,pitch,roll,0);s.Update(3,f,f.stampUs,123);
+            Near(s.Axis(f.stampUs,.15f,.03f),0,"head rotation created fore/aft input");
+            f=StuntPose(++seq,facing,yaw,pitch,roll,.09f);s.Update(3,f,f.stampUs,123);
+            Near(s.Axis(f.stampUs,.15f,.03f),.5f,"looking changed physical lean heading");
+        }
+    }
+}
+void BikeStuntLifecycle() {
+    TrackedBikeStunts s;uint64_t seq=0;
+    auto f=StuntPose(++seq,0,0,0,0,0);s.Update(3,f,f.stampUs,123);
+    f=StuntPose(++seq,0,0,0,0,-.15f);s.Update(3,f,f.stampUs,123);
+    Near(s.Axis(f.stampUs,.15f,.03f),-1,"wheelie setup");
+    s.Update(1,f,f.stampUs,123);Near(s.Axis(f.stampUs,.15f,.03f),-1,"one-hand change reset neutral");
+    Near(s.Axis(f.stampUs+100001,.15f,.03f),0,"stale input held wheelie");
+    Check(!s.Fresh(f.stampUs-1),"future input accepted");
+    f.headValid=false;s.Update(1,f,f.stampUs,123);Near(s.Axis(f.stampUs,.15f,.03f),0,"lost head held wheelie");
+    f=StuntPose(++seq,0,0,0,0,-.15f);s.Update(1,f,f.stampUs,123);Near(s.Axis(f.stampUs,.15f,.03f),-1,"tracking recovery reset neutral");
+    auto backwards=f;backwards.sequence++;backwards.stampUs--;s.Update(1,backwards,f.stampUs,123);Check(!s.Fresh(f.stampUs),"out-of-order input used");
+    f=StuntPose(++seq,0,0,0,0,-.15f);s.Update(1,f,f.stampUs,123);s.Suspend();Near(s.Axis(f.stampUs,.15f,.03f),0,"suspension held lean");
+    f.origin=2;s.Update(1,f,f.stampUs,123);Near(s.Axis(f.stampUs,.15f,.03f),0,"recenter retained lean");
+    f=StuntPose(++seq,0,0,0,0,0);s.Update(1,f,f.stampUs,456);Near(s.Axis(f.stampUs,.15f,.03f),0,"new bike retained old reference");
+    f=StuntPose(++seq,0,0,0,0,.15f);s.Update(1,f,f.stampUs,456);Near(s.Axis(f.stampUs,.15f,.03f),1,"new bike setup");
+    s.Update(0,f,f.stampUs,456);Near(s.Axis(f.stampUs,.15f,.03f),0,"grip release retained stunt");
+    s.Update(1,f,f.stampUs,456);Near(s.Axis(f.stampUs,.15f,.03f),0,"regrab did not capture current position");
+    f=StuntPose(++seq,0,0,0,0,1);s.Update(1,f,f.stampUs,456);Check(!s.Fresh(f.stampUs),"tracking jump counted as stunt");
+    f=StuntPose(++seq,0,0,0,0,.15f);f.head.position.x=std::numeric_limits<float>::quiet_NaN();s.Update(1,f,f.stampUs,456);Check(!s.Fresh(f.stampUs),"NaN position accepted");
+    s.Reset();f=StuntPose(++seq,0,0,90,0,0);s.Update(1,f,f.stampUs,456);Check(!s.Fresh(f.stampUs),"grab facing vertically has no heading");
+    f=StuntPose(++seq,0,0,0,0,0);s.Update(1,f,f.stampUs,0);Check(!s.Fresh(f.stampUs),"unmounted input accepted");
+}
+void BikeStuntNativeInput() {
+    for(float dir:{-1.f,1.f}) {
+        Near(BikeStuntMerge(0,dir*.8f),dir*.8f,"physical native input missing");
+        Near(BikeStuntMerge(-dir*.4f,dir*.8f),-dir*.4f,"stick cannot counter physical lean");
+        Near(BikeStuntMerge(dir*.3f,dir*.8f),dir*.3f,"explicit stick did not override");
+        Near(BikeStuntMerge(dir*.3f,0),dir*.3f,"no physical lean changed stick");
+        Near(BikeStuntMerge(0,dir*2),dir,"unbounded merged input");
+        for(float inner:{0.f,.2f,.35f})for(float outer:{.8f,.9f,1.f}) {
+            const float raw=WheelGamepadAxis(dir*.5f,inner,outer);
+            Near((std::abs(raw)-inner)/(outer-inner),.5f,"native deadzone changes intended lean");
+        }
+    }
+    Near(BikeStuntFullMeters(std::numeric_limits<float>::quiet_NaN()),.15f,"invalid full travel");
+    Near(BikeStuntAxis(.08f,.08f,.08f),1,"deadzone can reach full travel");
+    Near(BikeStuntAxis(std::numeric_limits<float>::quiet_NaN(),.15f,.03f),0,"NaN lean used");
+    for(int hz:{30,45,60,90,120}) {
+        TrackedBikeStunts s;auto f=StuntPose(1,0,0,0,0,0);s.Update(3,f,f.stampUs,1);
+        const auto start=f.stampUs;
+        for(int i=1;i<=hz;i++) {
+            f=StuntPose(i+1,0,0,0,0,.15f*i/hz);f.stampUs=start+uint64_t(1000000.*i/hz);s.Update(3,f,f.stampUs,1);
+        }
+        Near(s.Axis(f.stampUs,.15f,.03f),1,"lean depends on frame rate");
+    }
+}
+
 void TrackedLifetime() {
     TrackedWheelSteering wheel;auto frame=Tracking(1,0,0);
     wheel.Update(1,frame,frame.stampUs,radius,90,1.5f);
@@ -438,16 +715,161 @@ void PredictionModel() {
                  <<" predicted="<<std::sqrt(predictedError/count)<<'\n';
     }
 }
+BikeAttitude Ground(uint64_t now=1000000) {
+    BikeAttitude a{};a.stampUs=now;a.vehicle=42;a.valid=true;a.wheelsValid=true;
+    a.frontContact=a.rearContact=true;a.contacts=2;return a;
+}
+void BikeContactSteering() {
+    Check(BikeNativeWheelContact(-.001f)&&BikeNativeWheelContact(0.f),"native ground predicate changed");
+    Check(!BikeNativeWheelContact(.001f)&&!BikeNativeWheelContact(std::numeric_limits<float>::max()),"native no-hit sentinel counted as ground");
+    Check(!BikeNativeWheelContact(std::numeric_limits<float>::infinity()) &&
+          !BikeNativeWheelContact(std::numeric_limits<float>::quiet_NaN()),"native unordered/no-hit predicate changed");
+    auto a=Ground();const uint64_t now=a.stampUs;
+    Check(!BikeFrontLifted(a,now,42),"grounded front lifted");
+    a.rearContact=false;a.contacts=1;
+    Check(!BikeFrontLifted(a,now,42),"stoppie disabled handlebars");
+    Near(BikeAirSteering(.7f,-.2f,true,BikeFrontLifted(a,now,42)),.7f,"stoppie steering changed");
+    a.rearContact=true;a.frontContact=false;
+    Check(BikeFrontLifted(a,now,42),"wheelie not recognized");
+    Near(BikeAirSteering(.7f,-.2f,true,true),0,"direct-bank wheelie kept handlebars");
+    Near(BikeAirSteering(.7f,-.2f,false,true),-.2f,"legacy wheelie lost sideways lean");
+    a.rearContact=false;a.contacts=0;
+    Check(BikeFrontLifted(a,now,42),"airborne front kept bar steering");
+    Check(!BikeFrontLifted(a,now+100001,42),"stale wheel contact used");
+    Check(!BikeFrontLifted(a,now,43),"foreign bike wheel contact used");
+    a.wheelsValid=false;Check(!BikeFrontLifted(a,now,42),"unsupported wheels guessed");
+    float pitch=0,up=0;
+    const float q[]={std::sin(15*pi/180),0,0,std::cos(15*pi/180)};
+    Check(BikePitchFromQuaternion(q,pitch,up),"valid attitude rejected");Near(pitch,30,"wrong game pitch convention");
+    const float bad[]={0,0,0,0};Check(!BikePitchFromQuaternion(bad,pitch,up),"zero quaternion used");
+}
+void BikeWheelieLimit() {
+    BikeWheelieAssist limit;auto a=Ground();a.pitch=12;
+    a.rate=250;auto out=limit.Apply(-1,.8f,a,a.stampUs,10);Near(out.lean,-1,"ground lean suppressed");Near(out.throttle,.8f,"hill cut throttle");
+    a.rate=0;a.frontContact=false;a.contacts=1;a.pitch=32;a.stampUs+=11111;
+    out=limit.Apply(-1,.8f,a,a.stampUs,35);Near(out.relativePitch,20,"hill not subtracted");Near(out.throttle,.8f,"early throttle cut");
+    a.pitch=47;a.stampUs+=11111;
+    out=limit.Apply(-1,.8f,a,a.stampUs,35);Near(out.lean,0,"rear lean retained at limit");Near(out.throttle,0,"throttle retained at limit");
+    a.pitch=52;a.stampUs+=11111;out=limit.Apply(-1,.8f,a,a.stampUs,35);Check(out.lean>0,"no forward correction");
+    a.rearContact=false;a.contacts=0;out=limit.Apply(-1,.8f,a,a.stampUs,35);Near(out.lean,-1,"airborne controls replaced");Near(out.throttle,.8f,"airborne throttle replaced");
+    limit.Reset();a=Ground();limit.Apply(-1,1,a,a.stampUs,35);a.frontContact=false;a.pitch=20;a.rate=100;a.stampUs+=11111;
+    out=limit.Apply(-1,1,a,a.stampUs,35);Check(out.predictedPitch>30 && out.throttle<1,"rising momentum ignored");
+    out=limit.Apply(-1,.8f,a,a.stampUs+100001,35);Near(out.throttle,.8f,"stale attitude cuts throttle");
+    BikeWheelieAssist unknown;a.frontContact=false;out=unknown.Apply(-1,.8f,a,a.stampUs,35);Near(out.throttle,.8f,"missing ground reference guessed");
+}
+void BikeHandsBalance() {
+    BikeHandBalance balance;auto a=Ground();
+    Near(balance.Apply(-.6f,-.4f,true,a,a.stampUs,.12f),-.6f,"ground hand motion overrode body");
+    a.frontContact=false;a.pitch=15;a.stampUs+=11111;
+    Near(balance.Apply(0,-.4f,true,a,a.stampUs,.12f),-.6f,"liftoff lost pitch initiation");
+    Check(balance.Active(),"hands not engaged after liftoff");
+    a.stampUs+=180000;
+    Near(balance.Apply(-1,-.4f,true,a,a.stampUs,.12f),0,"launch lean stayed stuck with neutral hands");
+    Near(balance.Apply(0,-.28f,true,a,a.stampUs,.12f),-1,"raising hands did not lift");
+    Near(balance.Apply(0,-.52f,true,a,a.stampUs,.12f),1,"lowering hands did not lower");
+    Check(balance.Apply(.8f,-.28f,true,a,a.stampUs,.12f)>=.8f,"hands blocked forward body override");
+    a.frontContact=true;a.stampUs+=10000;balance.Apply(0,-.4f,true,a,a.stampUs,.12f);
+    Check(balance.Active(),"one contact sample erased hand balance");
+    a.frontContact=false;a.stampUs+=10000;
+    Near(balance.Apply(-1,-.4f,true,a,a.stampUs,.12f),0,"contact bounce restarted full launch lean");
+    Near(balance.Apply(0,-.28f,false,a,a.stampUs,.12f),0,"lost hand held pitch");
+    Near(balance.Apply(0,-.28f,true,a,a.stampUs,.12f),0,"hand regrab in air guessed neutral");
+    a.frontContact=true;balance.Apply(-.5f,-.4f,true,a,a.stampUs,.12f);a.frontContact=false;
+    balance.Apply(-.5f,-.4f,true,a,a.stampUs,.12f);
+    Near(balance.Apply(.1f,-.4f,true,a,a.stampUs,.12f,2),.1f,"recenter retained old hand phase");
+    a.frontContact=true;balance.Apply(-.5f,-.4f,true,a,a.stampUs,.12f,2);a.frontContact=false;
+    Near(balance.Apply(0,-.4f,true,a,a.stampUs+100001,.12f,2),0,"stale hands applied");
+    // Hand height is torso-relative: translating the whole rider must not change it.
+    TrackedBikeStunts tracked;auto f=Tracking(1,0,0);tracked.Update(3,f,f.stampUs,42);
+    const float height=tracked.HandHeight();Check(tracked.HandsValid(f.stampUs),"valid hands rejected");
+    f=Tracking(2,0,0);f.head.position.y+=.2f;tracked.Update(3,f,f.stampUs,42);Near(tracked.HandHeight(),height,"body rise counted as hand rise");
+    f=Tracking(3,0,0);const auto rise=RotateVector(ConjugateQuat(f.head.orientation),XrVector3f{0,.1f,0});for(auto& h:f.hands){h.x+=rise.x;h.y+=rise.y;h.z+=rise.z;}tracked.Update(3,f,f.stampUs,42);Near(tracked.HandHeight(),height+.1f,"coordinated hand rise lost");
+}
+void BikeWheelieHoldPolicy() {
+    BikeWheelieHold hold;auto a=Ground();a.pitch=12;
+    auto apply=[&](float body=0,float height=-.4f,float throttle=.8f,float brake=0,bool hands=true,uint64_t origin=1){return hold.Apply(body,height,hands,throttle,brake,a,a.stampUs,.12f,origin,25,35);};
+    auto out=apply(-.7f);Near(out.lean,-.7f,"hold altered grounded launch");Check(!out.active,"hold active on road");
+    a.frontContact=false;a.pitch=24;a.stampUs+=10000;out=apply();Check(!out.active,"single lost contact armed hold");
+    a.stampUs+=30000;out=apply();Check(out.active,"confirmed deliberate wheelie did not engage");Near(out.relativePitch,12,"hold ignored road slope");
+    for(int i=0;i<60;++i){a.stampUs+=11111;out=apply();}
+    Near(out.target,25,"neutral hands did not reach chosen hold target");Check(out.lean<0,"falling/below-target wheelie not lifted");
+    const auto before=out;for(int i=0;i<20;++i)out=apply();Near(out.lean,before.lean,"repeated input polls advanced feedback");Near(out.target,before.target,"repeated polls moved target");
+    a.pitch=47;a.rate=25;for(int i=0;i<30;++i){a.stampUs+=11111;out=apply();}Check(out.lean>0,"rising above target not corrected forward");
+    for(int i=0;i<90;++i){a.stampUs+=11111;out=apply(0,-.28f);}Near(out.target,27,"raised hands bypassed angle margin");
+    for(int i=0;i<90;++i){a.stampUs+=11111;out=apply(0,-.52f);}Near(out.target,13,"lowered hands did not lower target");
+    a.frontContact=true;a.stampUs+=10000;Check(apply().active,"brief contact reset hold");a.frontContact=false;a.stampUs+=10000;Check(apply().active,"contact flicker lost hold");
+    out=apply(0,-.4f,.8f,1);Check(!out.active,"braking did not immediately cancel hold");
+    Check(!apply().active,"hold rearmed in air after braking");
+    auto arm=[&](){hold.Reset();a=Ground();apply(-.7f);a.frontContact=false;a.pitch=15;a.stampUs+=10000;apply();a.stampUs+=30000;Check(apply().active,"test wheelie failed to arm");};
+    arm();Check(!apply(.3f).active,"forward lean did not cancel");Check(!apply().active,"forward cancel rearmed midair");
+    arm();Check(!apply(0,-.4f,0).active,"throttle release did not cancel");
+    arm();Check(!apply(0,-.4f,.8f,0,false).active,"hand tracking loss held pitch");
+    arm();a.rearContact=false;Check(!apply().active,"fully airborne bike held pitch");
+    arm();a.vehicle=43;Check(!apply().active,"vehicle switch retained hold");
+    arm();Check(!apply(0,-.4f,.8f,0,true,2).active,"recenter retained hold");
+    arm();out=hold.Apply(0,-.4f,true,.8f,0,a,a.stampUs+100001,.12f,1,25,35);Check(!out.active,"stale native sample held pitch");
+    arm();a.stampUs+=10000;a.frontContact=true;apply();a.stampUs+=30000;Check(!apply().active,"confirmed landing did not stop hold");
+    arm();a.valid=false;Check(!apply().active,"invalid attitude held pitch");
+    arm();out=apply(0,std::numeric_limits<float>::quiet_NaN());Check(!out.active&&std::isfinite(out.lean),"invalid hand sample polluted native input");
+    BikeWheelieHold unknown;a=Ground();a.frontContact=false;a.pitch=25;out=unknown.Apply(-1,-.4f,true,1,0,a,a.stampUs,.12f,1,25,35);Check(!out.active,"enabled in air guessed road reference");
+}
+void BikeWheelieHoldResponse() {
+    float results[4]{};int index=0;
+    // A deliberately simple pitch plant checks feedback direction, damping and
+    // sample-rate consistency. It is NOT a claim about Cyberpunk's vehicle tuning.
+    for(int hz:{30,60,90,144}) {
+        BikeWheelieHold hold;auto a=Ground();const uint64_t step=1000000/hz;
+        hold.Apply(-1,-.4f,true,.8f,0,a,a.stampUs,.12f,1,25,35);
+        a.frontContact=false;a.pitch=12;a.rate=20;
+        float peak=a.pitch;
+        for(int i=0;i<hz*6;++i) {
+            a.stampUs+=step;
+            const auto out=hold.Apply(0,-.4f,true,.8f,0,a,a.stampUs,.12f,1,25,35);
+            if(i>hz/5)Check(out.active,"hold lost valid sustained wheelie");
+            Check(std::isfinite(out.lean)&&std::abs(out.lean)<=1,"hold output unbounded");
+            if(i==hz*3)a.rate-=15; // bump/torque disturbance, not controller input
+            const float dt=1.f/hz;
+            a.rate+=(-80.f*out.lean-.8f*a.rate-10.f)*dt;
+            a.pitch+=a.rate*dt;peak=std::max(peak,a.pitch);
+        }
+        Check(std::abs(a.pitch-25)<5,"nominal model failed to settle near target");
+        Check(peak<40,"nominal model has excessive overshoot");results[index++]=a.pitch;
+    }
+    for(float value:results)Check(std::abs(value-results[0])<2,"hold depends excessively on polling rate");
+}
+void BikeSeatMirror() {
+    for(int sign:{-1,1}) {
+        cvr::camera::BikeSeat seat;
+        int32_t owner[]={1000000000,-1000000000,1000000};
+        int32_t camera[]={owner[0],owner[1],owner[2]+131072};
+        const float q0[]={0,0,0,1};
+        Check(!seat.Apply(camera,owner,q0,42,7,9,true,true),"baseline moved camera");
+        const float angle=sign*25*pi/180;
+        // Bank about local +Y. Fresh native camera has an extra +/-20cm sway.
+        const float q[]={0,std::sin(angle/2),0,std::cos(angle/2)};
+        owner[0]+=123456;owner[1]-=54321;
+        const double r[]={std::cos(angle),0,-std::sin(angle)},u[]={std::sin(angle),0,std::cos(angle)};
+        for(int i=0;i<3;++i)camera[i]=owner[i]+int32_t(std::llround((u[i]+sign*.2*r[i])*131072));
+        Check(seat.Apply(camera,owner,q,42,7,9,true,false),"seat not stabilized");
+        for(int i=0;i<3;++i)Check(std::abs(int64_t(camera[i])-owner[i]-std::llround(u[i]*131072))<3,"seat mirrored bank mismatch");
+        Near(seat.CorrectionMeters(),-sign*.2f,"seat correction not symmetric");
+        const int32_t before=camera[0];seat.Apply(camera,owner,q,42,7,9,false,false);Check(before==camera[0],"disabled seat changed position");
+        Check(!seat.Apply(camera,owner,q,42,7,9,true,false),"seat captured while banked");
+    }
+}
+
 }
 int main(int argc,char** argv) {
     if(argc!=2)return 2;const std::string name=argv[1];
-    if(name=="grab_offset")GrabOffset();else if(name=="one_hand")OneHand();
+    if(name=="bike_wheelie_hold")BikeWheelieHoldPolicy();else if(name=="bike_wheelie_hold_response")BikeWheelieHoldResponse();else if(name=="bike_contact_steering")BikeContactSteering();else if(name=="bike_wheelie_limit")BikeWheelieLimit();else if(name=="bike_hands_balance")BikeHandsBalance();else if(name=="bike_seat_mirror")BikeSeatMirror();else if(name=="grab_offset")GrabOffset();else if(name=="one_hand")OneHand();
     else if(name=="two_hands")TwoHands();else if(name=="handoff")Handoff();
     else if(name=="lock_reversal")LockReversal();else if(name=="tracking_loss")TrackingLoss();
     else if(name=="rate_matrix")RateMatrix();else if(name=="deadzone")Deadzone();
     else if(name=="extended_travel")ExtendedTravel();
     else if(name=="gamepad_range")GamepadRange();else if(name=="tracked_head_motion")TrackedHeadMotion();
-    else if(name=="tracked_roundtrip")TrackedRoundtrip();else if(name=="handlebar")Handlebar();else if(name=="tracked_lifetime")TrackedLifetime();
+    else if(name=="tracked_roundtrip")TrackedRoundtrip();else if(name=="handlebar")Handlebar();else if(name=="bike_lean_lifecycle")BikeLeanLifecycle();else if(name=="bike_head_tilt")BikeHeadTilt();else if(name=="tracked_lifetime")TrackedLifetime();
+    else if(name=="bike_direct_bank")BikeDirectBank();else if(name=="bike_bank_policy")BikeBankPolicy();
+    else if(name=="bike_stunt_motion")BikeStuntMotion();else if(name=="bike_stunt_lifecycle")BikeStuntLifecycle();else if(name=="bike_stunt_native")BikeStuntNativeInput();
     else if(name=="tracked_freeze")TrackedFreeze();
     else if(name=="prediction_constant")PredictionConstant();else if(name=="prediction_stop_reverse")PredictionStopReverse();
     else if(name=="prediction_boundaries")PredictionBoundaries();else if(name=="prediction_freshness")PredictionFreshness();

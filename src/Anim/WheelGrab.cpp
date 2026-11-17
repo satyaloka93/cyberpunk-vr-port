@@ -1,3 +1,8 @@
+#include "Anim/BikeBankPolicy.hpp"
+#include "Anim/BikeStunts.hpp"
+#include "Anim/BikeWheelieHold.hpp"
+#include "Camera/PlayerCameraState.hpp"
+#include "Hooks/BikeBank.hpp"
 // WheelGrab -- give the arm back to the driving animation, and steer with your hands.
 //
 // Ported from iPowerTech's fork (425d4262 "wip motioncontroller vehicle steering" and 51861118
@@ -50,6 +55,7 @@
 #include <windows.h>
 
 extern float* g_pSharedHands;
+extern void Log(const char*,...);
 
 namespace cvr::anim {
 
@@ -92,6 +98,13 @@ bool  g_wheelCenterValid = false;
 // animation holds it. It is the reference LEVER for the steering measurement below.
 float g_wheelSpan = 0.0f;
 TrackedWheelSteering g_steering;
+TrackedBikeStunts g_stunts;
+BikeHandBalance g_handBalance;
+BikeWheelieAssist g_wheelieAssist;
+BikeWheelieHold g_wheelieHold;
+void ResetBikeStunts(){g_stunts.Reset();g_handBalance.Reset();g_wheelieAssist.Reset();g_wheelieHold.Reset();}
+BikeStuntSample g_lastStuntSample;
+BikeSteeringSample g_lastBikeSample;
 std::mutex g_steerMutex;
 uint64_t g_sampledGrabEpoch=0;
 uint64_t g_wheelFrame=0;
@@ -341,7 +354,10 @@ float WheelSteerInput() {
     if((state&4) && !(state&3) && (grab&3)) {
         std::lock_guard lock(g_steerMutex);
         if(g_sampledGrabEpoch==(grab>>2)) {
+            g_lastBikeSample.bankValid=false;
+            g_stunts.Suspend();
             float out=g_steering.Suspend(XrDiagNowUs());
+            if(g_wheelMountedBike.load(std::memory_order_relaxed) && g_liveControls.xrBikeAirLeanOnly)out=0;
             if(g_wheelMountedCar.load(std::memory_order_relaxed))out=CarInputForCabinAngle(out*CarCabinWheelLockDeg);
             g_wheelSteer.store(out,std::memory_order_relaxed);
             return out;
@@ -359,20 +375,120 @@ float WheelSteerInput() {
         }
     }
     std::lock_guard lock(g_steerMutex);
-    if(g_sampledGrabEpoch!=(grab>>2)){g_steering.Reset();g_sampledGrabEpoch=grab>>2;}
+    if(g_sampledGrabEpoch!=(grab>>2)){g_steering.Reset();g_lastBikeSample={};ResetBikeStunts();g_lastStuntSample={};g_sampledGrabEpoch=grab>>2;}
     const bool car=g_wheelMountedCar.load(std::memory_order_relaxed);
     const bool bike=g_wheelMountedBike.load(std::memory_order_relaxed);
+    const bool directBank=bike && g_liveControls.xrBikeDirectBank!=0;
+    const bool stuntAllowed=bike && g_liveControls.xrBikeStunts && !g_hasWeaponEquipped &&
+        g_sceneTier.load(std::memory_order_relaxed)<=2;
+    if(stuntAllowed)g_stunts.Update(uint8_t(state&grab&3),frame,XrDiagNowUs(),CurrentMountedVehicleIdentity());
+    else ResetBikeStunts();
+    g_lastBikeSample.bankValid=false;
     float out=g_steering.Update(uint8_t(state&grab&3),frame,XrDiagNowUs(),
         g_physicalRadius.load(std::memory_order_relaxed),
         bike ? BikeBarLockDegrees(g_liveControls.xrBikeBarLockDeg):WheelFullLockForVehicle(g_liveControls.xrWheelSteerMaxDeg,car),g_liveControls.xrWheelSteerDeadDeg,
         g_liveControls.xrWheelPrediction ? g_liveControls.xrWheelPredictionMs:0.f,
-        bike,g_liveControls.xrBikeBodyLean);
+        bike,g_liveControls.xrBikeBodyLean,g_liveControls.xrBikeHeadTilt!=0,
+        g_liveControls.xrBikeTiltLockDeg,g_liveControls.xrBikeTiltDeadDeg,directBank);
     // A car's output is the share of its cabin wheel's full lock the hands have turned; the input that puts the
     // cabin wheel there is read off its curve, so the wheel the hands hold turns with them one to one.
     if(car)out=CarInputForCabinAngle(out*CarCabinWheelLockDeg);
-    g_wheelSteer.store(out,std::memory_order_relaxed);
     g_wheelSteerDeg.store(g_steering.Angle(),std::memory_order_relaxed);
+    if(bike && (state&grab&frame.validHands&3) && frame.headValid && frame.stampUs &&
+       g_steering.CurrentSampleValid() && g_steering.SampleStampUs()==frame.stampUs) {
+        const bool tiltMode=g_liveControls.xrBikeHeadTilt!=0;
+        if(g_lastBikeSample.origin!=frame.origin || g_lastBikeSample.headTiltMode!=tiltMode)g_lastBikeSample={};
+        auto& s=g_lastBikeSample;s.stampUs=frame.stampUs;s.origin=frame.origin;
+        s.held=uint8_t(state&grab&frame.validHands&3);s.barsDegrees=g_steering.Angle();
+        s.headTiltMode=tiltMode;s.headTiltValid=g_steering.HeadTiltValid();s.headTiltDegrees=g_steering.HeadTiltDegrees();
+        if(std::abs(s.headTiltDegrees)>std::abs(s.peakHeadTiltDegrees))s.peakHeadTiltDegrees=s.headTiltDegrees;
+        s.leanMeters=g_steering.LeanMeters();s.combinedShare=out;
+        s.vehicleIdentity=CurrentMountedVehicleIdentity();s.directBank=directBank;
+        s.bankValid=directBank && s.vehicleIdentity && (!tiltMode || s.headTiltValid);
+        s.bankOffsetDegrees=s.bankValid ? cvr::bikebank::RequestedDegrees(tiltMode,s.headTiltValid,s.headTiltDegrees,s.leanMeters,
+            g_liveControls.xrBikeTiltDeadDeg,g_liveControls.xrBikeBankGain,g_liveControls.xrBikeBankMaxDeg):0;
+        s.leanShare=tiltMode ? (g_steering.HeadTiltValid() ? BikeTiltOutput(g_steering.HeadTiltDegrees(),
+            g_liveControls.xrBikeTiltLockDeg,g_liveControls.xrBikeTiltDeadDeg):0.f) : WheelSteering::Output(g_steering.LeanDegrees(),
+            BikeBarLockDegrees(g_liveControls.xrBikeBarLockDeg),g_liveControls.xrWheelSteerDeadDeg);
+        if(std::abs(s.leanMeters)>=std::abs(s.peakLeanMeters)) {
+            s.peakLeanMeters=s.leanMeters;s.peakLeanShare=s.leanShare;
+        }
+    }
+    if(bike && g_liveControls.xrBikeAirLeanOnly) {
+        const auto motion=cvr::bikebank::LastMotion();
+        const bool lifted=BikeFrontLifted(motion,XrDiagNowUs(),CurrentMountedVehicleIdentity());
+        const float lateral=g_steering.CurrentSampleValid() ? g_lastBikeSample.leanShare:0.f;
+        out=BikeAirSteering(out,lateral,directBank,lifted);
+        g_lastBikeSample.combinedShare=out;
+    }
+    g_wheelSteer.store(out,std::memory_order_relaxed);
     return out;
+}
+BikeSteeringSample WheelLastBikeSample() {std::lock_guard lock(g_steerMutex);return g_lastBikeSample;}
+BikeStuntSample WheelLastBikeStuntSample() {std::lock_guard lock(g_steerMutex);return g_lastStuntSample;}
+BikeStuntInput WheelBikeStuntInput(float padY,float throttle,bool blocked,float brake) {
+    BikeStuntInput result{padY,throttle};
+    if(!g_liveControls.xrBikeStunts || !g_isDriving.load(std::memory_order_relaxed) ||
+       !g_wheelMountedBike.load(std::memory_order_relaxed))return result;
+    std::lock_guard lock(g_steerMutex);
+    auto motion=cvr::bikebank::LastMotion();
+    const auto now=XrDiagNowUs(); // after both snapshots: a newly published sample is not from the future
+    if(blocked || !(WheelControlState()&3) || g_hasWeaponEquipped ||
+       g_sceneTier.load(std::memory_order_relaxed)>2) {ResetBikeStunts();return result;}
+    if(!g_stunts.Fresh(now) || g_stunts.Vehicle()!=CurrentMountedVehicleIdentity()) {
+        g_handBalance.Reset();g_wheelieAssist.Reset();g_wheelieHold.Reset();return result;
+    }
+    float requested=g_stunts.Axis(now,g_liveControls.xrBikeStuntFullM,g_liveControls.xrBikeStuntDeadM);
+    if(motion.vehicle!=g_stunts.Vehicle()){motion.valid=false;motion.wheelsValid=false;}
+    const bool stickPriority=std::abs(padY)>.15f;
+    const bool stabilized=g_liveControls.xrBikeHandBalance && g_liveControls.xrBikeWheelieHold;
+    const bool useAngleAssist=g_liveControls.xrBikeWheelieAssist || stabilized;
+    BikeHoldOutput hold{};
+    if(g_liveControls.xrBikeHandBalance && !stickPriority) {
+        if(g_liveControls.xrBikeWheelieHold) {
+            g_handBalance.Reset();
+            hold=g_wheelieHold.Apply(requested,g_stunts.HandHeight(),g_stunts.HandsValid(now),throttle,brake,
+                motion,now,g_liveControls.xrBikeHandFullM,g_stunts.Origin(),g_liveControls.xrBikeWheelieHoldDeg,
+                g_liveControls.xrBikeWheelieLimitDeg);
+            requested=hold.lean;
+        } else {
+            g_wheelieHold.Reset();
+            requested=g_handBalance.Apply(requested,g_stunts.HandHeight(),g_stunts.HandsValid(now),
+                motion,now,g_liveControls.xrBikeHandFullM,g_stunts.Origin());
+        }
+    } else {g_handBalance.Reset();g_wheelieHold.Reset();}
+    const float output=BikeStuntMerge(padY,WheelGamepadSteer(requested));
+    result.padY=output;
+    BikeAssistOutput assist{};
+    if(useAngleAssist) {
+        const auto profile=std::bit_cast<GamepadProfile>(g_padProfile.load(std::memory_order_relaxed));
+        const float axis=stickPriority ? std::copysign(std::clamp((std::abs(output)-profile.inner)/(profile.outer-profile.inner),0.f,1.f),output):requested;
+        assist=g_wheelieAssist.Apply(axis,throttle,motion,now,g_liveControls.xrBikeWheelieLimitDeg);
+        if(assist.lean!=axis)result.padY=WheelGamepadSteer(assist.lean);
+        result.throttle=assist.throttle;
+    } else g_wheelieAssist.Reset();
+    g_lastStuntSample={g_stunts.Stamp(),g_stunts.Meters(),requested,result.padY,stickPriority};
+    g_lastStuntSample.handActive=g_handBalance.Active() || hold.active;
+    g_lastStuntSample.handMeters=hold.active?hold.handTravel:g_handBalance.Travel();
+    g_lastStuntSample.holdActive=hold.active;g_lastStuntSample.holdTarget=hold.target;g_lastStuntSample.holdPitch=hold.relativePitch;
+    g_lastStuntSample.assistActive=assist.active;g_lastStuntSample.pitch=motion.pitch;
+    g_lastStuntSample.frontLifted=BikeFrontLifted(motion,now,g_stunts.Vehicle());
+    g_lastStuntSample.motionValid=BikeMotionFresh(motion,now,g_stunts.Vehicle());
+    static uint64_t lastLog=0;static unsigned lastState=~0u;
+    const unsigned state=(g_handBalance.Active()?1u:0u)|(assist.active?2u:0u)|
+        (g_lastStuntSample.frontLifted?4u:0u)|(g_lastStuntSample.motionValid?8u:0u)|(hold.active?16u:0u);
+    if(now>=lastLog && (now-lastLog>=5000000 || (state!=lastState && now-lastLog>=250000))) {
+        lastLog=now;lastState=state;
+        Log("[bike-stunts] fore_aft_cm=%+.1f lean=%+.3f pad_y=%+.3f stick_priority=%d hand=%d hand_cm=%+.1f pitch=%.1f relative=%.1f predicted=%.1f assist=%d throttle=%.2f->%.2f contact_valid=%d front=%d rear=%d age_us=%llu pose=%d wheels=%d count=%u gap=%.6g/%.6g hands_valid=%d\n",
+            g_stunts.Meters()*100,requested,result.padY,stickPriority?1:0,g_lastStuntSample.handActive?1:0,
+            g_lastStuntSample.handMeters*100,motion.pitch,assist.relativePitch,assist.predictedPitch,assist.active?1:0,
+            throttle,result.throttle,g_lastStuntSample.motionValid?1:0,motion.frontContact?1:0,motion.rearContact?1:0,
+            static_cast<unsigned long long>(now>=motion.stampUs?now-motion.stampUs:0),motion.valid?1:0,motion.wheelsValid?1:0,
+            motion.wheelCount,motion.frontGap,motion.rearGap,g_stunts.HandsValid(now)?1:0);
+        if(g_liveControls.xrBikeWheelieHold)Log("[bike-hold] active=%d pitch=%.1f target=%.1f native_lean=%+.3f hands_cm=%+.1f throttle=%.2f brake=%.2f\n",
+            hold.active?1:0,hold.relativePitch,hold.target,requested,hold.handTravel*100,throttle,brake);
+    }
+    return result;
 }
 bool WheelSetGamepadProfile(float inner,float outer) {
     if(!std::isfinite(inner)||!std::isfinite(outer)||inner<0||inner>=.5f||outer>1||outer<=inner+.01f)return false;
@@ -485,7 +601,7 @@ void WheelFingers(uint8_t* boneBuf) {
 
 void WheelReset() {
     std::lock_guard lock(g_steerMutex);
-    g_steering.Reset();g_wheelFrame=0;
+    g_steering.Reset();g_lastBikeSample={};ResetBikeStunts();g_lastStuntSample={};g_wheelFrame=0;
     const auto epoch=(g_grabState.load(std::memory_order_relaxed)>>2)+1;
     g_grabState.store(epoch<<2,std::memory_order_release);g_wheelStampMs.store(0,std::memory_order_relaxed);
     for (int h = 0; h < 2; ++h) {

@@ -30,6 +30,20 @@ inline float BikeBarLockDegrees(float value) {
     return std::isfinite(value) && value>0 ? std::clamp(value,BikeBarLockMin,BikeBarLockMax):BikeBarLockDefault;
 }
 
+inline float BikeTiltLockDegrees(float value) {
+    return std::isfinite(value) ? std::clamp(value,10.f,45.f):25.f;
+}
+inline float BikeTiltDeadDegrees(float value) {
+    return std::isfinite(value) ? std::clamp(value,0.f,8.f):3.f;
+}
+
+inline float BikeTiltOutput(float angle,float lock,float dead) {
+    if(!std::isfinite(angle))return 0;
+    lock=BikeTiltLockDegrees(lock);dead=BikeTiltDeadDegrees(dead);
+    const float amount=std::clamp((std::abs(angle)-dead)/(lock-dead),0.f,1.f);
+    return amount>0 ? std::copysign(amount,angle):0;
+}
+
 // Physical hand travel from the grab reference to one full steering lock.
 // This normalizes input only; cabin wheel travel is authored in vehicle graphs.
 inline float WheelFullLockDegrees(float value) {

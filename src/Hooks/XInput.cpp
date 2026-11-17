@@ -1188,6 +1188,22 @@ DWORD WINAPI HookedXInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState) {
         s_vehGunPrev = vehGunMode;
     }
 
+    // Physical fore/aft bike weight shift goes through the game's existing
+    // LeanFB/RockFB mappings; optional angle assist only reduces throttle.
+    // No direct physics, brake, animation or haptic writes.
+    // Insert AFTER gun-mode trim, and never let physical movement operate it.
+    // The sprint detector below reads the original stick, not this injected Y.
+    {
+        const SHORT previous=pState->Gamepad.sThumbLY;
+        const float padY=previous/32767.f;
+        const float throttle=pState->Gamepad.bRightTrigger/255.f;
+        const auto result=cvr::anim::WheelBikeStuntInput(padY,throttle,
+            vehGunMode || !gameplayScreen || uiPopupOpen || inBraindance || scenePad,
+            pState->Gamepad.bLeftTrigger/255.f);
+        if(result.padY!=padY)pState->Gamepad.sThumbLY=FloatToSHORT(result.padY);
+        if(result.throttle<throttle)pState->Gamepad.bRightTrigger=static_cast<BYTE>(std::clamp(result.throttle,0.f,1.f)*255.f);
+    }
+
     // Left stick pushed near FULL forward => SPRINT. A partial push is left as the
     // game's normal jog; only "to the stop" sprints. CP2077 sprint is the left-stick
     // click (L3), so we just assert L3 while the stick is forward past the threshold

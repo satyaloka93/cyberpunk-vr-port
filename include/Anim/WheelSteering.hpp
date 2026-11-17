@@ -16,7 +16,7 @@ public:
     void Reset() { *this={}; }
     float Angle() const { return m_angle; }
     float Update(uint8_t held,WheelPoint right,WheelPoint left,float radius,
-                 float maxDegrees,float deadDegrees) {
+                 float maxDegrees,float deadDegrees,bool handlebar=false) {
         held&=3;
         if(!held || ((held&1) && !Finite(right)) || ((held&2) && !Finite(left))) {
             Reset();return 0;
@@ -30,7 +30,11 @@ public:
                 const auto hand=held==1 ? right:left;
                 const float angle=-m_angle/kDegrees;
                 const float side=held==1 ? 1.f:-1.f;
-                m_pivot={hand.x-side*radius*std::cos(angle),hand.y-side*radius*std::sin(angle)};
+                if(handlebar) {
+                    // Upstream 0.2.45, 6f33af62: bikes pass no rim-grab angle.
+                    const float upstreamAngle=(held==1 ? 0.f:3.14159265f)-m_angle/kDegrees;
+                    m_pivot={hand.x-radius*std::cos(upstreamAngle),hand.y-radius*std::sin(upstreamAngle)};
+                } else m_pivot={hand.x-side*radius*std::cos(angle),hand.y-side*radius*std::sin(angle)};
             }
         }
         const WheelPoint v=held==3 ? Sub(right,left):Sub(held==1 ? right:left,m_pivot);

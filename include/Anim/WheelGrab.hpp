@@ -33,6 +33,31 @@ void WheelSetMountedBike(bool bike);
 bool WheelSetGamepadProfile(float inner,float outer);
 float WheelGamepadSteer(float normalized);
 float WheelSteerInput(); // latest coherent raw tracking, sampled by XInput
+// Native LeanFB/RockFB input; caller passes true when another mode owns input.
+struct BikeStuntInput {float padY{},throttle{};};
+BikeStuntInput WheelBikeStuntInput(float padY,float throttle,bool blocked,float brake=0.f);
+struct BikeStuntSample {
+    uint64_t stampUs{};
+    float meters{},requested{},padOutput{};
+    bool stickPriority{};
+    float handMeters{},pitch{};
+    bool handActive{},assistActive{},frontLifted{},motionValid{};
+    bool holdActive{};float holdTarget{},holdPitch{};
+};
+BikeStuntSample WheelLastBikeStuntSample();
+// Last accepted bike input, retained while menus pause steering. No extra tracking or GPU work.
+struct BikeSteeringSample {
+    uint64_t stampUs{},origin{};
+    uintptr_t vehicleIdentity{};
+    bool directBank{},bankValid{};
+    float bankOffsetDegrees{};
+    uint8_t held{};
+    float barsDegrees{},leanMeters{},leanShare{},combinedShare{};
+    float peakLeanMeters{},peakLeanShare{};
+    bool headTiltMode{},headTiltValid{};
+    float headTiltDegrees{},peakHeadTiltDegrees{};
+};
+BikeSteeringSample WheelLastBikeSample();
 
 // Called from the pose hook, in this order, once per FRESH solve:
 //

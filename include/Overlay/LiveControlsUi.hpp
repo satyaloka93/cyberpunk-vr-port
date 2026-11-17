@@ -172,7 +172,25 @@ struct LiveControlsUiState {
     // centre that steers nothing: 1.5 (default) only swallows tremor.
     float xrWheelSteerMaxDeg;
     float xrBikeBarLockDeg = 40.0f;
-    float xrBikeBodyLean = 0.5f;
+    float xrBikeBodyLean = 0.5f; // legacy handlebar mode only
+    int xrBikeHeadTilt = 0;
+    int xrBikeDirectBank = 0; // experimental direct native bank-angle addition
+    float xrBikeBankGain = 1.0f;
+    float xrBikeBankMaxDeg = 20.0f;
+    int xrBikeStunts = 0; // physical fore/aft lean through native vehicle input
+    float xrBikeStuntFullM = .15f;
+    float xrBikeStuntDeadM = .03f;
+    int xrBikeWheelieAssist = 0;
+    float xrBikeWheelieLimitDeg = 35.f;
+    int xrBikeHandBalance = 0;
+    int xrBikeWheelieHold = 0;
+    float xrBikeWheelieHoldDeg = 25.f;
+    float xrBikeHandFullM = .12f;
+    int xrBikeAirLeanOnly = 0;
+    int xrBikeStableSeat = 0;
+
+    float xrBikeTiltLockDeg = 25.0f;
+    float xrBikeTiltDeadDeg = 3.0f;
     int xrBikeGripToggle = 0; // bikes hold by default; second squeeze releases when enabled
     float xrWheelSteerDeadDeg;
     int xrWheelPrediction;
