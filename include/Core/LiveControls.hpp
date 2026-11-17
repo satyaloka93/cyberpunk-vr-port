@@ -135,6 +135,17 @@ struct LiveControls {
     // 1 (default) = holding Y opens the port's weapon wheel in front of the body and the game keeps running; a
     // tap is still the game's next weapon. 0 = the game's own wheel (it slows time). Hooks/WeaponWheelHold.hpp.
     volatile int xrVrWeaponWheel = 1;
+    // Upstream PhysX collision controls (separate from rendering).
+    volatile int xrHandPhysics = 0; // experimental backport: enable explicitly for contact testing
+    volatile int xrHandCollision = 1;
+    volatile int xrHandCollisionVehicle = 1;
+    volatile int xrHandPush = 1;
+    volatile int xrFingerContact = 0;   // unused: the fingers no longer stop at surfaces (VrMenu.cpp, bit 16)
+    volatile int xrPropGrab = 1;
+    volatile int xrDebugView = 0;
+    volatile int xrCarryPicture = 1;          // a carried thing is drawn on the hand, its body following
+    volatile float xrCarryLead = 0.03f;       // s a carried thing is put ahead of the hand
+    volatile float xrContactMargin = 0.01f;   // m kept from a surface, because the collision is smaller than the mesh
 };
 
 extern LiveControls g_liveControls;

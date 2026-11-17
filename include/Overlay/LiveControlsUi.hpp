@@ -158,6 +158,14 @@ struct LiveControlsUiState {
     // The VR menu's grip swipe (1 = on); L3 + R3 always opens it.
     int xrMenuGesture = 1;
     // The port's weapon wheel on a held Y (1 = on); off, the game's own.
+    int xrHandPhysics = 0; // experimental backport: enable explicitly for contact testing
+    int xrHandCollision = 1;
+    int xrHandCollisionVehicle = 1;
+    int xrHandPush = 1;
+    int xrPropGrab = 1;
+    int xrCarryPicture = 1;
+    float xrCarryLead = 0.03f;
+    float xrContactMargin = 0.01f;
     int xrVrWeaponWheel = 1;
     // Controller tilt that means full lock, degrees. 90 (default) = hands vertical, the 1:1 reading of
     // a real wheel; lower = the same wrist movement steers more. The deadzone is the tilt around

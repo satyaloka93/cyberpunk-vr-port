@@ -1291,6 +1291,13 @@ bool DrawLiveControls(LiveControlsUiState& state,int section,bool* foveatedEditi
                                   "A hand holding something (the steering wheel, a ladder, an item) never opens it.");
             }
             changed |= CheckboxInt("VR weapon wheel on a held Y", &state.xrVrWeaponWheel);
+            UI::Separator();
+            changed |= CheckboxInt("Physics hands (experimental)", &state.xrHandPhysics);
+            changed |= CheckboxInt("Hand collision", &state.xrHandCollision);
+            changed |= CheckboxInt("Hand collision in vehicles", &state.xrHandCollisionVehicle);
+            changed |= CheckboxInt("Push loose objects", &state.xrHandPush);
+            changed |= CheckboxInt("Grab loose objects", &state.xrPropGrab);
+            UI::TextWrapped("Physics uses simplified contact shapes. Hands, reloads and steering keep their own ownership; visual mesh contact still needs testing.");
             if (UI::IsItemHovered()) {
                 UI::SetTooltip("Hold Y: a small wheel opens in front of the body and the game keeps running.\n"
                                   "Point at a weapon, the arm cyberware, fists, a grenade or a consumable, then let go of Y.\n"

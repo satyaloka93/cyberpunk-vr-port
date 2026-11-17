@@ -30,3 +30,5 @@ void TwoHandTick();
 
 }  // namespace anim
 }  // namespace cvr
+
+namespace cvr::anim { void TwoHandWeaponHandMoved(const float* moved); }

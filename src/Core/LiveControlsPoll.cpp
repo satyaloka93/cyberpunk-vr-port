@@ -689,6 +689,14 @@ void PollLiveControls() {
     float xrBikeBodyLean = g_liveControls.xrBikeBodyLean;
     int xrBikeGripToggle = g_liveControls.xrBikeGripToggle;
     int xrMenuGesture = g_liveControls.xrMenuGesture;
+    int xrHandPhysics = g_liveControls.xrHandPhysics;
+    int xrHandCollision = g_liveControls.xrHandCollision;
+    int xrHandCollisionVehicle = g_liveControls.xrHandCollisionVehicle;
+    int xrHandPush = g_liveControls.xrHandPush;
+    int xrPropGrab = g_liveControls.xrPropGrab;
+    int xrCarryPicture = g_liveControls.xrCarryPicture;
+    float xrCarryLead = g_liveControls.xrCarryLead;
+    float xrContactMargin = g_liveControls.xrContactMargin;
     int xrVrWeaponWheel = g_liveControls.xrVrWeaponWheel;
     float xrWheelRadius = g_liveControls.xrWheelRadius > 0.0f ? g_liveControls.xrWheelRadius : 0.28f;
     float xrWheelSteerMaxDeg = cvr::anim::WheelFullLockDegrees(g_liveControls.xrWheelSteerMaxDeg);
@@ -1695,6 +1703,46 @@ void PollLiveControls() {
             xrMenuGesture = intValue;
             continue;
         }
+        if (sscanf_s(line, "xr_hand_physics=%d", &intValue) == 1 ||
+            sscanf_s(line, "xr_hand_physics = %d", &intValue) == 1) {
+            xrHandPhysics = intValue;
+            continue;
+        }
+        if (sscanf_s(line, "xr_hand_collision=%d", &intValue) == 1 ||
+            sscanf_s(line, "xr_hand_collision = %d", &intValue) == 1) {
+            xrHandCollision = intValue;
+            continue;
+        }
+        if (sscanf_s(line, "xr_hand_collision_vehicle=%d", &intValue) == 1 ||
+            sscanf_s(line, "xr_hand_collision_vehicle = %d", &intValue) == 1) {
+            xrHandCollisionVehicle = intValue;
+            continue;
+        }
+        if (sscanf_s(line, "xr_hand_push=%d", &intValue) == 1 ||
+            sscanf_s(line, "xr_hand_push = %d", &intValue) == 1) {
+            xrHandPush = intValue;
+            continue;
+        }
+        if (sscanf_s(line, "xr_prop_grab=%d", &intValue) == 1 ||
+            sscanf_s(line, "xr_prop_grab = %d", &intValue) == 1) {
+            xrPropGrab = intValue;
+            continue;
+        }
+        if (sscanf_s(line, "xr_carry_picture=%d", &intValue) == 1 ||
+            sscanf_s(line, "xr_carry_picture = %d", &intValue) == 1) {
+            xrCarryPicture = intValue;
+            continue;
+        }
+        if (sscanf_s(line, "xr_carry_lead=%f", &value) == 1 ||
+            sscanf_s(line, "xr_carry_lead = %f", &value) == 1) {
+            xrCarryLead = value;
+            continue;
+        }
+        if (sscanf_s(line, "xr_contact_margin=%f", &value) == 1 ||
+            sscanf_s(line, "xr_contact_margin = %f", &value) == 1) {
+            xrContactMargin = value;
+            continue;
+        }
         if (sscanf_s(line, "xr_vr_weapon_wheel=%d", &intValue) == 1 ||
             sscanf_s(line, "xr_vr_weapon_wheel = %d", &intValue) == 1) {
             xrVrWeaponWheel = intValue;
@@ -1901,6 +1949,14 @@ void PollLiveControls() {
     g_liveControls.xrBikeBodyLean = cvr::anim::BikeBodyLeanShare(xrBikeBodyLean);
     g_liveControls.xrBikeGripToggle = xrBikeGripToggle != 0 ? 1 : 0;
     g_liveControls.xrMenuGesture = xrMenuGesture != 0 ? 1 : 0;
+    g_liveControls.xrHandPhysics = xrHandPhysics != 0 ? 1 : 0;
+    g_liveControls.xrHandCollision = xrHandCollision != 0 ? 1 : 0;
+    g_liveControls.xrHandCollisionVehicle = xrHandCollisionVehicle != 0 ? 1 : 0;
+    g_liveControls.xrHandPush = xrHandPush != 0 ? 1 : 0;
+    g_liveControls.xrPropGrab = xrPropGrab != 0 ? 1 : 0;
+    g_liveControls.xrCarryPicture = xrCarryPicture != 0 ? 1 : 0;
+    g_liveControls.xrCarryLead = std::isfinite(xrCarryLead) ? std::clamp(float(xrCarryLead),0.f,.1f) : .03f;
+    g_liveControls.xrContactMargin = std::isfinite(xrContactMargin) ? std::clamp(float(xrContactMargin),0.f,.05f) : .01f;
     g_liveControls.xrVrWeaponWheel = xrVrWeaponWheel != 0 ? 1 : 0;
     // Clamped, not trusted: these come from a text file. Below ~8 cm the grab is unreachable for a
     // hand you cannot see; above 60 cm every grip in a car is a grab.
@@ -2271,6 +2327,14 @@ LiveControlsUiState MakeLiveControlsUiState() {
     state.xrBikeBodyLean = g_liveControls.xrBikeBodyLean;
     state.xrBikeGripToggle = g_liveControls.xrBikeGripToggle;
     state.xrMenuGesture = g_liveControls.xrMenuGesture;
+    state.xrHandPhysics = g_liveControls.xrHandPhysics;
+    state.xrHandCollision = g_liveControls.xrHandCollision;
+    state.xrHandCollisionVehicle = g_liveControls.xrHandCollisionVehicle;
+    state.xrHandPush = g_liveControls.xrHandPush;
+    state.xrPropGrab = g_liveControls.xrPropGrab;
+    state.xrCarryPicture = g_liveControls.xrCarryPicture;
+    state.xrCarryLead = g_liveControls.xrCarryLead;
+    state.xrContactMargin = g_liveControls.xrContactMargin;
     state.xrVrWeaponWheel = g_liveControls.xrVrWeaponWheel;
     state.xrWheelRadius = g_liveControls.xrWheelRadius;
     state.xrWheelSteerMaxDeg = g_liveControls.xrWheelSteerMaxDeg;
@@ -2654,6 +2718,14 @@ void PersistLiveControlsUiState(const LiveControlsUiState& state) {
     fprintf(file, "xr_bike_body_lean=%.2f\n", cvr::anim::BikeBodyLeanShare(state.xrBikeBodyLean));
     fprintf(file, "xr_bike_grip_toggle=%d\n", state.xrBikeGripToggle != 0 ? 1 : 0);
     fprintf(file, "xr_menu_gesture=%d\n", state.xrMenuGesture != 0 ? 1 : 0);
+    fprintf(file, "xr_hand_physics=%d\n", state.xrHandPhysics != 0 ? 1 : 0);
+    fprintf(file, "xr_hand_collision=%d\n", state.xrHandCollision != 0 ? 1 : 0);
+    fprintf(file, "xr_hand_collision_vehicle=%d\n", state.xrHandCollisionVehicle != 0 ? 1 : 0);
+    fprintf(file, "xr_hand_push=%d\n", state.xrHandPush != 0 ? 1 : 0);
+    fprintf(file, "xr_prop_grab=%d\n", state.xrPropGrab != 0 ? 1 : 0);
+    fprintf(file, "xr_carry_picture=%d\n", state.xrCarryPicture != 0 ? 1 : 0);
+    fprintf(file, "xr_carry_lead=%.3f\n", state.xrCarryLead);
+    fprintf(file, "xr_contact_margin=%.3f\n", state.xrContactMargin);
     fprintf(file, "xr_vr_weapon_wheel=%d\n", state.xrVrWeaponWheel != 0 ? 1 : 0);
     fprintf(file, "xr_wheel_radius=%.3f\n", state.xrWheelRadius > 0.0f ? state.xrWheelRadius : 0.28f);
     fprintf(file, "xr_wheel_steer_max_deg=%.1f\n", cvr::anim::WheelFullLockDegrees(state.xrWheelSteerMaxDeg));
@@ -2823,6 +2895,14 @@ extern "C" void SetLiveControlsUiState(const LiveControlsUiState* state, int per
     g_liveControls.xrBikeBodyLean = cvr::anim::BikeBodyLeanShare(state->xrBikeBodyLean);
     g_liveControls.xrBikeGripToggle = state->xrBikeGripToggle != 0 ? 1 : 0;
     g_liveControls.xrMenuGesture = state->xrMenuGesture != 0 ? 1 : 0;
+    g_liveControls.xrHandPhysics = state->xrHandPhysics != 0 ? 1 : 0;
+    g_liveControls.xrHandCollision = state->xrHandCollision != 0 ? 1 : 0;
+    g_liveControls.xrHandCollisionVehicle = state->xrHandCollisionVehicle != 0 ? 1 : 0;
+    g_liveControls.xrHandPush = state->xrHandPush != 0 ? 1 : 0;
+    g_liveControls.xrPropGrab = state->xrPropGrab != 0 ? 1 : 0;
+    g_liveControls.xrCarryPicture = state->xrCarryPicture != 0 ? 1 : 0;
+    g_liveControls.xrCarryLead = std::isfinite(state->xrCarryLead) ? std::clamp(float(state->xrCarryLead),0.f,.1f) : .03f;
+    g_liveControls.xrContactMargin = std::isfinite(state->xrContactMargin) ? std::clamp(float(state->xrContactMargin),0.f,.05f) : .01f;
     g_liveControls.xrVrWeaponWheel = state->xrVrWeaponWheel != 0 ? 1 : 0;
     g_liveControls.xrWheelHorn = state->xrWheelHorn != 0 ? 1 : 0;
     g_liveControls.xrVehicleGunTrigger = state->xrVehicleGunTrigger != 0 ? 1 : 0;

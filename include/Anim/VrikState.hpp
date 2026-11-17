@@ -429,3 +429,5 @@ extern float g_vrikViewScaleUsed;
 // is a coincidence with a build behind it, and it is the first thing that breaks when the header
 // becomes a translation unit of its own. Declared here, where the rest of the ABI lives.
 extern float* g_pSharedHands;
+
+inline volatile int g_VRBodyFemale = -1; // physics skin fit, set by rig policy
