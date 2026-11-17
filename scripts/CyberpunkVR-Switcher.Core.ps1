@@ -218,7 +218,7 @@ function Set-MigratedSettings([string]$Root, [string]$Stage) {
     $releaseMarker=Get-SafePath $Stage "$modern\release.json"
     if($newLayout -and (Test-Path -LiteralPath $releaseMarker)) {
         $meta=Get-Content -LiteralPath $releaseMarker -Raw | ConvertFrom-Json
-        if($meta.version -eq '0.2.3-psvr2.1-rc1') {
+        if($meta.version -in @('0.2.3-psvr2.1-rc1','0.2.45-psvr2.1-rc1')) {
             $lines+=@('xr_framegen_backend=3','xr_framegen_quality=1','xr_framegen_flow_scale=50','xr_framegen_pace=1','xr_framegen_steamvr_optimizations=1','xr_framegen_flight_recorder=0','xr_framegen_overlay=0')
         }
     }
