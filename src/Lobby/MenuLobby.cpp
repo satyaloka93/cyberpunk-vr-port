@@ -1,3 +1,4 @@
+#include "Lobby/CompositionGrading.hpp"
 // The main menu as a place (Lobby/MenuLobby.hpp). Verified against game 2.5 (Core/GameBuild.hpp) with IDA headless and a
 // RenderDoc capture of the main menu (composition shader a4dc07ba..., the dispatch before the final copy).
 #include "Lobby/MenuLobby.hpp"
@@ -433,22 +434,6 @@ void Tick() {
 // block holds: real weights, a whole-pixel target and the repeated grading.
 // 0 = a composition block, else what it failed: 2 weights, 3 target size, 4 repeated grading, 5 grading values
 // (CyberpunkVR_LobbyComposeStats indices).
-static int CompositionBlock(const float* b) {
-    const auto weight = [](float v) { return v == 0.0f || (v >= 1e-3f && v <= 1.0f); };
-    for (const int i : {1 * 4 + 0, 1 * 4 + 1, 1 * 4 + 2, 1 * 4 + 3, 2 * 4 + 0})
-        if (!weight(b[i])) return 2;
-    const float w = b[16 * 4 + 2], h = b[16 * 4 + 3];
-    if (!(w >= 64.0f && w <= 16384.0f && h >= 64.0f && h <= 16384.0f) || w != float(int(w)) || h != float(int(h)))
-        return 3;
-    // Rows 22-25 and 26.xy: 26.zw is padding with whatever the stack held. With frame generation on it held a pointer
-    // (0x00007FFE65594504) and, compared with it, 62 of 66 main-menu blocks a second were turned away: the backdrop
-    // came back in those frames and the menu blinked, on the monitor too, and the frames counted as a menu went to
-    // the headset as a flat panel (2026-11-04). Without it the stack happened to hold the grading's own words.
-    if (std::memcmp(b + 4 * 4, b + 22 * 4, 4 * 16 + 8) != 0) return 4;
-    // The grading is real: saturation set, aberration tiny.
-    const float sat = b[6 * 4 + 2], ab = b[6 * 4 + 3];
-    return sat >= 1e-3f && sat <= 4.0f && ab >= 0.0f && ab < 0.01f ? 0 : 5;
-}
 
 bool ComposeWorld(float* block) {
     if (!block || !CyberpunkVR_LobbyCompose || !Active()) return false;
