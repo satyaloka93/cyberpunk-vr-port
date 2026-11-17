@@ -33,6 +33,12 @@ extern "C" void SetHmdTypeAndPersist(int hmdType);
 extern "C" int GetCurrentHmdType();
 extern "C" void SetLauncherDebugAndPersist(int on);
 extern "C" int GetLauncherDebug();
+extern "C" int GetLauncherLobby();
+extern "C" void SetLauncherLobbyAndPersist(int on);
+extern "C" int GetLauncherInterface();
+extern "C" void SetLauncherInterfaceAndPersist(int on);
+extern "C" int GetLauncherHandPhysics();
+extern "C" void SetLauncherHandPhysicsAndPersist(int on);
 // 1 when this launch renders both eyes through engine stereo (src/Core/VrCore.cpp).
 extern "C" int GetLauncherEngineStereo();
 
@@ -41,6 +47,9 @@ extern "C" int GetLauncherEngineStereo();
 #define ID_COMBO_RUNTIME 103
 #define ID_COMBO_HMD     104
 #define ID_CHECK_DEBUG   105
+#define ID_CHECK_LOBBY   112
+#define ID_CHECK_INTERFACE 113
+#define ID_CHECK_PHYSICS 114
 
 struct ResolutionPreset {
     int width;
@@ -553,6 +562,8 @@ static HWND g_hHmd     = nullptr;
 static HWND g_hRes     = nullptr;
 static HWND g_hDebug   = nullptr;
 static HWND g_hStart   = nullptr;
+static HWND g_hLobby = nullptr, g_hInterface = nullptr, g_hPhysics = nullptr;
+static bool g_lobbyOn = false, g_interfaceOn = true, g_physicsOn = false;
 static HWND g_hot      = nullptr;   // the control under the pointer
 static bool g_debugOn  = false;
 static int g_clientW = 0, g_clientH = 0;
@@ -740,16 +751,24 @@ static LRESULT CALLBACK ListProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
     return DefSubclassProc(hwnd, msg, wParam, lParam);
 }
 
+static bool* SwitchState(HWND hwnd) {
+    if (hwnd == g_hDebug) return &g_debugOn;
+    if (hwnd == g_hLobby) return &g_lobbyOn;
+    if (hwnd == g_hInterface) return &g_interfaceOn;
+    if (hwnd == g_hPhysics) return &g_physicsOn;
+    return nullptr;
+}
+
 // The start button and the debug switch: pointer tracking, and the switch's own check state (an owner-drawn
 // button keeps none) behind BM_GETCHECK / BM_SETCHECK.
 static LRESULT CALLBACK ButtonProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR) {
     switch (msg) {
     case BM_GETCHECK:
-        if (hwnd == g_hDebug) return g_debugOn ? BST_CHECKED : BST_UNCHECKED;
+        if (const auto state = SwitchState(hwnd)) return *state ? BST_CHECKED : BST_UNCHECKED;
         break;
     case BM_SETCHECK:
-        if (hwnd == g_hDebug) {
-            g_debugOn = wParam == BST_CHECKED;
+        if (auto state = SwitchState(hwnd)) {
+            *state = wParam == BST_CHECKED;
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
@@ -892,21 +911,21 @@ static void DrawStart(const DRAWITEMSTRUCT& d) {
     Text(d.hDC, L"START GAME", d.rcItem, g_fontButton, kColOnAccent, DT_CENTER | DT_VCENTER | DT_SINGLELINE, Px(1));
 }
 
-static void DrawDebugSwitch(const DRAWITEMSTRUCT& d) {
+static void DrawSwitch(const DRAWITEMSTRUCT& d, bool checked, const wchar_t* label, const wchar_t* hint) {
     FillRect(d.hDC, &d.rcItem, g_brushBg);
     const bool hot = g_hot == d.hwndItem;
     const int h = Px(22), w = Px(40);
     const int top = (d.rcItem.top + d.rcItem.bottom - h) / 2;
     const RECT track{d.rcItem.left, top, d.rcItem.left + w, top + h};
-    const COLORREF fill = g_debugOn ? (hot ? kColAccentHot : kColAccent) : (hot ? kColSurfaceHot : kColSurface);
-    Rounded(d.hDC, track, h / 2, fill, g_debugOn ? fill : (d.itemState & ODS_FOCUS) ? kColAccent
+    const COLORREF fill = checked ? (hot ? kColAccentHot : kColAccent) : (hot ? kColSurfaceHot : kColSurface);
+    Rounded(d.hDC, track, h / 2, fill, checked ? fill : (d.itemState & ODS_FOCUS) ? kColAccent
                                                           : hot ? kColBorderHot : kColBorder);
     const int knob = h - Px(8);
-    const int kx = g_debugOn ? track.right - Px(4) - knob : track.left + Px(4);
+    const int kx = checked ? track.right - Px(4) - knob : track.left + Px(4);
     const RECT dot{kx, top + Px(4), kx + knob, top + Px(4) + knob};
-    const COLORREF knobColor = g_debugOn ? kColOnAccent : kColMuted;
+    const COLORREF knobColor = checked ? kColOnAccent : kColMuted;
     Rounded(d.hDC, dot, knob / 2, knobColor, knobColor);
-    if ((d.itemState & ODS_FOCUS) && g_debugOn) {
+    if ((d.itemState & ODS_FOCUS) && checked) {
         RECT ring = track;
         InflateRect(&ring, Px(2), Px(2));
         HBRUSH frame = CreateSolidBrush(kColText);
@@ -916,12 +935,12 @@ static void DrawDebugSwitch(const DRAWITEMSTRUCT& d) {
     RECT title = d.rcItem;
     title.left = track.right + Px(14);
     title.bottom = (d.rcItem.top + d.rcItem.bottom) / 2 + Px(1);
-    Text(d.hDC, L"Debug mode", title, g_fontBody, kColText, DT_LEFT | DT_BOTTOM | DT_SINGLELINE);
+    Text(d.hDC, label, title, g_fontBody, kColText, DT_LEFT | DT_BOTTOM | DT_SINGLELINE);
     RECT sub = d.rcItem;
     sub.left = title.left;
     sub.top = title.bottom + Px(1);
-    Text(d.hDC, L"Probes and a verbose log. Slower; for bug reports.", sub, g_fontHint, kColMuted,
-         DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
+    Text(d.hDC, hint, sub, g_fontHint, kColMuted,
+         DT_LEFT | DT_TOP | DT_WORDBREAK);
 }
 
 static void DrawListItem(const DRAWITEMSTRUCT& d) {
@@ -951,6 +970,9 @@ static void DrawListItem(const DRAWITEMSTRUCT& d) {
 }
 
 static void StartGame(HWND hwnd) {
+    SetLauncherLobbyAndPersist(g_lobbyOn ? 1 : 0);
+    SetLauncherInterfaceAndPersist(g_interfaceOn ? 1 : 0);
+    SetLauncherHandPhysicsAndPersist(g_physicsOn ? 1 : 0);
     SetLauncherDebugAndPersist(SendMessageW(g_hDebug, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1 : 0);
     if (const HmdPreset* hmd = SelectedHmd()) SetHmdTypeAndPersist(hmd->mhdType);
     const int rIdx = int(SendMessageW(g_hRuntime, CB_GETCURSEL, 0, 0));
@@ -975,8 +997,8 @@ LRESULT CALLBACK LauncherWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         g_hot = nullptr;
 
         const int margin = Px(28);
-        g_clientW = Px(420);
-        const int right = g_clientW - margin, fieldW = right - margin;
+        g_clientW = Px(760);
+        const int right = Px(420) - margin, fieldW = right - margin;
         int y = Px(26);
         g_rcTitle = {margin, y, right, y + Px(38)};
         g_rcSub = {margin, y + Px(44), right, y + Px(84)};
@@ -994,6 +1016,14 @@ LRESULT CALLBACK LauncherWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             y += (r.bottom - r.top) + Px(20);
             return combo;
         };
+        // Keep the existing resolution/runtime picks; the feature switches are independent.
+        const int featureLeft = Px(420), featureRight = g_clientW - margin;
+        g_lobbyOn = GetLauncherLobby() != 0;
+        g_interfaceOn = GetLauncherInterface() != 0;
+        g_physicsOn = GetLauncherHandPhysics() != 0;
+        g_hLobby = MakeButton(hwnd, ID_CHECK_LOBBY, L"VR Lobby", {featureLeft, y, featureRight, y + Px(72)});
+        g_hInterface = MakeButton(hwnd, ID_CHECK_INTERFACE, L"VR Interface", {featureLeft, y + Px(92), featureRight, y + Px(164)});
+        g_hPhysics = MakeButton(hwnd, ID_CHECK_PHYSICS, L"Hand Physics", {featureLeft, y + Px(184), featureRight, y + Px(256)});
         g_hHmd = field(g_rcLabelHmd, ID_COMBO_HMD);
         const int currentHmd = GetCurrentHmdType();
         int hmdSel = 0;
@@ -1048,7 +1078,10 @@ LRESULT CALLBACK LauncherWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         const auto& d = *reinterpret_cast<const DRAWITEMSTRUCT*>(lParam);
         if (d.CtlType == ODT_COMBOBOX) DrawListItem(d);
         else if (d.CtlID == ID_BUTTON_START) DrawStart(d);
-        else if (d.CtlID == ID_CHECK_DEBUG) DrawDebugSwitch(d);
+        else if (d.CtlID == ID_CHECK_DEBUG) DrawSwitch(d, g_debugOn, L"Debug mode", L"Verbose diagnostics. Slower; for bug reports.");
+        else if (d.CtlID == ID_CHECK_LOBBY) DrawSwitch(d, g_lobbyOn, L"VR Lobby", L"Use the virtual lobby before loading a save.");
+        else if (d.CtlID == ID_CHECK_INTERFACE) DrawSwitch(d, g_interfaceOn, L"VR Interface", L"In-world inventory and shops. F10 stays available.");
+        else if (d.CtlID == ID_CHECK_PHYSICS) DrawSwitch(d, g_physicsOn, L"Hand Physics", L"Hand/body contact and NPC grabbing. Experimental.");
         return TRUE;
     }
     case WM_CTLCOLORLISTBOX: {
@@ -1082,9 +1115,10 @@ LRESULT CALLBACK LauncherWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         if ((notif == CBN_DROPDOWN || notif == CBN_CLOSEUP || notif == CBN_SELCHANGE) &&
             (id == ID_COMBO_HMD || id == ID_COMBO_RUNTIME || id == ID_COMBO_RES))
             InvalidateRect(reinterpret_cast<HWND>(lParam), nullptr, FALSE);
-        if (id == ID_CHECK_DEBUG && notif == BN_CLICKED) {
-            g_debugOn = !g_debugOn;
-            InvalidateRect(g_hDebug, nullptr, FALSE);
+        if ((id == ID_CHECK_DEBUG || id == ID_CHECK_LOBBY || id == ID_CHECK_INTERFACE || id == ID_CHECK_PHYSICS) && notif == BN_CLICKED) {
+            HWND control = GetDlgItem(hwnd, id);
+            if (auto state = SwitchState(control)) *state = !*state;
+            InvalidateRect(control, nullptr, FALSE);
         } else if (id == ID_BUTTON_START || id == IDOK) {
             StartGame(hwnd);
         } else if (id == IDCANCEL) {
@@ -1102,6 +1136,7 @@ LRESULT CALLBACK LauncherWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             if (*font) { DeleteObject(*font); *font = nullptr; }
         if (g_brushSurface) { DeleteObject(g_brushSurface); g_brushSurface = nullptr; }
         g_hHmd = g_hRuntime = g_hRes = g_hDebug = g_hStart = g_hot = nullptr;
+        g_hLobby = g_hInterface = g_hPhysics = nullptr;
         break;
     default:
         return DefWindowProcW(hwnd, msg, wParam, lParam);

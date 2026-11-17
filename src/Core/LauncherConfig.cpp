@@ -197,6 +197,7 @@ void EnsureLiveControlFileExists() {
     // the reference and applied to the raw pose rather than to what the arms read.
     // 25, not 15: the per-class values ship at 25/15/15/10/40, and the base is what a class of 0
     // falls back to -- a base below the commonest class made the fallback the odd one out.
+    fprintf(file, "xr_vr_interface=1\n");
     fprintf(file, "xr_hand_lerp_speed=25.0\n");
     fprintf(file, "xr_pair_lock=0\n");
     fprintf(file, "xr_render_pose_submit=1\n");

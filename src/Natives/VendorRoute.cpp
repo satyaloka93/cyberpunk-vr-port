@@ -1,3 +1,4 @@
+#include "Core/LiveControls.hpp"
 // Route scene-driven vendor events before the engine creates a menu instance.
 // CET's RequestVendorMenu override sees script calls only. Native quest requests
 // reach this UI event queue directly, before any MenuScenario callback runs.
@@ -48,7 +49,7 @@ void Forward(Request&& request) {
 }
 uintptr_t Queue(void* queue,const Handle<IScriptable>& event) {
     const auto now=GetTickCount64(),last=heartbeat.load(std::memory_order_acquire);
-    if(last && now-last<1000) {
+    if(g_liveControls.xrVrInterface != 0 && last && now-last<1000) {
         auto panel=Panel(event);
         if(panel) {
             std::lock_guard lock(mutex);
@@ -89,6 +90,7 @@ CVR_HOOK("VendorRoute",::cvr::hooks::Stage::Boot,84,Install);
 
 void WatchdogRegistered(bool ready) {watchdogRegistered=ready;}
 Handle<RED4ext::IScriptable> Poll(bool enabled,const RED4ext::Handle<RED4ext::IScriptable>& system) {
+    enabled = enabled && g_liveControls.xrVrInterface != 0;
     Request fallback;
     Handle<RED4ext::IScriptable> result;
     {

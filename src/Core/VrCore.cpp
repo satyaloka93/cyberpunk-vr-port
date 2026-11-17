@@ -1,5 +1,6 @@
 #include "Utils/DebugGate.hpp"
 #include "Core/Paths.hpp"
+#include "Lobby/MenuLobby.hpp"
 #include <windows.h>
 #include "Stereo/VrcamConfig.hpp"   // cname_hash, for the device camera name
 #include "Stereo/EngineStereo.hpp"
@@ -182,6 +183,22 @@ extern "C" void SetLauncherDebugAndPersist(int on) {
     g_launcherDebug = on != 0 ? 1 : 0;
     SaveLauncherConfig(g_launcherWidth, g_launcherHeight);
     ApplyLauncherDebugGate();
+}
+
+extern "C" int GetLauncherLobby() { return cvr::lobby::Enabled() ? 1 : 0; }
+extern "C" void SetLauncherLobbyAndPersist(int on) {
+    cvr::lobby::SetEnabled(on != 0);
+    PersistLiveControlsUiState(MakeLiveControlsUiState());
+}
+extern "C" int GetLauncherInterface() { return g_liveControls.xrVrInterface != 0; }
+extern "C" void SetLauncherInterfaceAndPersist(int on) {
+    g_liveControls.xrVrInterface = on != 0;
+    PersistLiveControlsUiState(MakeLiveControlsUiState());
+}
+extern "C" int GetLauncherHandPhysics() { return g_liveControls.xrHandPhysics != 0; }
+extern "C" void SetLauncherHandPhysicsAndPersist(int on) {
+    g_liveControls.xrHandPhysics = on != 0;
+    PersistLiveControlsUiState(MakeLiveControlsUiState());
 }
 
 extern "C" int GetCurrentHmdType() {

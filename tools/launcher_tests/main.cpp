@@ -14,6 +14,7 @@ volatile int g_verboseLog=0;
 bool g_cursorClipped=false;
 void Log(const char*,...) {}
 bool OverlayIsVisible(){return false;}
+namespace cvr::lua { bool OverlayOpen(){return false;} }
 extern "C" UINT GetForcedDisplayModeWidth(){return 7654;}
 extern "C" UINT GetForcedDisplayModeHeight(){return 4321;}
 extern "C" UINT GetForcedSwapchainWidth(){return 7654;}
@@ -38,6 +39,14 @@ extern "C" void SetHmdTypeAndPersist(int value){savedHmd=value;}
 extern "C" int GetCurrentHmdType(){return savedHmd;}
 extern "C" void SetLauncherDebugAndPersist(int value){savedDebug=value;}
 extern "C" int GetLauncherDebug(){return savedDebug;}
+int savedLobby=0,savedInterface=1,savedPhysics=1,featureSaves=0;
+extern "C" int GetLauncherLobby() { return savedLobby; }
+extern "C" void SetLauncherLobbyAndPersist(int on) { savedLobby=on; ++featureSaves; }
+extern "C" int GetLauncherInterface() { return savedInterface; }
+extern "C" void SetLauncherInterfaceAndPersist(int on) { savedInterface=on; ++featureSaves; }
+extern "C" int GetLauncherHandPhysics() { return savedPhysics; }
+extern "C" void SetLauncherHandPhysicsAndPersist(int on) { savedPhysics=on; ++featureSaves; }
+
 int engineStereo=1;
 extern "C" int GetLauncherEngineStereo(){return engineStereo;}
 void Check(bool ok,const char* why){if(!ok)throw std::runtime_error(why);}
@@ -86,6 +95,15 @@ VOID CALLBACK Inspect(HWND,UINT,UINT_PTR,DWORD){
         CURSORINFO info{sizeof(info)};HookedGetCursorInfo(&info);Check(info.ptScreenPos.x==47 && info.ptScreenPos.y==29,"launcher cursor info was scaled");
         Check(HookedGetMessagePos()==MAKELONG(47,29),"launcher message coordinates were scaled");
         ShowLauncherDialog();Check(IsWindow(window),"reentrant request destroyed the active launcher");
+        RECT client{};GetClientRect(window,&client);
+        const int expected[]={savedLobby,savedInterface,savedPhysics};
+        for (int i=0;i<3;++i) {
+            HWND control=GetDlgItem(window,112+i);
+            Check(control && IsWindowVisible(control),"feature switch missing");
+            Check(SendMessageW(control,BM_GETCHECK,0,0)==(expected[i]?BST_CHECKED:BST_UNCHECKED),"feature choice did not reload");
+            RECT r{};GetWindowRect(control,&r);MapWindowPoints(nullptr,window,reinterpret_cast<POINT*>(&r),2);
+            Check(r.left>=0 && r.top>=0 && r.right<=client.right && r.bottom<=client.bottom,"feature switch clipped by launcher");
+        }
         if(mode==0) {
             Check(GetDlgItem(window,102) && GetDlgItem(window,104),"launcher controls missing");
             const auto headset=GetDlgItem(window,104);
@@ -122,10 +140,19 @@ VOID CALLBACK Inspect(HWND,UINT,UINT_PTR,DWORD){
             w=4096;h=4096;Check(FitLauncherResolution(3,3400,3400,&w,&h)==1 && w==3072 && h==3072,"the runtime fit took an engine-stereo step without engine stereo");
             engineStereo=1;
             SelectHmd(window,1);
+            for(int id=112;id<=114;++id) SendMessageW(GetDlgItem(window,id),BM_CLICK,0,0);
+            Check(savedLobby==0 && savedInterface==1 && savedPhysics==1 && featureSaves==0,"switches saved before Start");
             SendMessageW(GetDlgItem(window,105),BM_SETCHECK,BST_CHECKED,0);
             SendMessageW(GetDlgItem(window,102),BM_CLICK,0,0);
-        } else if(mode==1)PostMessageW(window,WM_CLOSE,0,0);
-        else if(mode==2)PostQuitMessage(19);
+            Check(savedLobby==1 && savedInterface==0 && savedPhysics==0 && featureSaves==3,"Start did not save feature choices");
+        } else if(mode==1) {
+            for(int id=112;id<=114;++id) SendMessageW(GetDlgItem(window,id),BM_CLICK,0,0);
+            PostMessageW(window,WM_CLOSE,0,0);
+        }
+        else if(mode==2) {
+            Check(savedLobby==1 && savedInterface==0 && savedPhysics==0 && featureSaves==3,"closing launcher saved unwanted changes");
+            PostQuitMessage(19);
+        }
         else if(mode==3) {
             SelectHmd(window,13);
             SendMessageW(GetDlgItem(window,101),CB_SETCURSEL,6,0);
@@ -168,13 +195,13 @@ int main()try {
         else Check(!PeekMessageW(&message,nullptr,WM_QUIT,WM_QUIT,PM_REMOVE),"closing launcher posted application WM_QUIT");
         RECT client{};HookedGetClientRect(g_gameHwnd,&client);Check(client.right==7654 && client.bottom==4321,"game virtual input did not resume");
     }
-    Check(saves==3 && savedDebug==1,"Start did not save once per selection");
+    Check(saves==3 && savedDebug==1 && featureSaves==9,"Start did not save once per selection");
     WNDCLASSW failed{};failed.lpfnWndProc=RejectWindow;failed.hInstance=gameClass.hInstance;failed.lpszClassName=L"CyberpunkVRPortLauncherClass";
     Check(RegisterClassW(&failed)!=0,"failure class unavailable");ShowLauncherDialog();
     Check(!IsLauncherOpen() && IsWindowVisible(g_gameHwnd),"creation failure stranded game/input");
     UnregisterClassW(failed.lpszClassName,failed.hInstance);
     DestroyWindow(g_gameHwnd);g_gameHwnd=nullptr;UnregisterClassW(gameClass.lpszClassName,gameClass.hInstance);
     Check(SetThreadDesktop(originalDesktop),"cannot restore test thread desktop");CloseDesktop(desktop);
-    std::cout<<"PASS window-shaped Steam Frame/Reverb G2/MeganeX/Galaxy XR/Vive ladders, engine-stereo steps, nearest-cost snap of retired picks, saved IDs, Unicode title, topmost, hidden fullscreen owner, input passthrough, start/close/quit, reentry and creation failure\n";
+    std::cout<<"PASS feature toggle load/click/start/reopen/cancel and bounds; window-shaped Steam Frame/Reverb G2/MeganeX/Galaxy XR/Vive ladders, engine-stereo steps, nearest-cost snap of retired picks, saved IDs, Unicode title, topmost, hidden fullscreen owner, input passthrough, start/close/quit, reentry and creation failure\n";
     return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}

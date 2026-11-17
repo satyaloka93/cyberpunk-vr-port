@@ -17,7 +17,15 @@ extern "C" int GetXrRuntimeMode() { return savedRuntime; }
 extern "C" void SetHmdTypeAndPersist(int value) { savedHmd = value; }
 extern "C" int GetCurrentHmdType() { return savedHmd; }
 extern "C" void SetLauncherDebugAndPersist(int value) { savedDebug = value; }
-extern "C" int GetLauncherDebug() { return savedDebug; }
+extern "C" int GetLauncherDebug(){return savedDebug;}
+int savedLobby=0,savedInterface=1,savedPhysics=1,featureSaves=0;
+extern "C" int GetLauncherLobby() { return savedLobby; }
+extern "C" void SetLauncherLobbyAndPersist(int on) { savedLobby=on; ++featureSaves; }
+extern "C" int GetLauncherInterface() { return savedInterface; }
+extern "C" void SetLauncherInterfaceAndPersist(int on) { savedInterface=on; ++featureSaves; }
+extern "C" int GetLauncherHandPhysics() { return savedPhysics; }
+extern "C" void SetLauncherHandPhysicsAndPersist(int on) { savedPhysics=on; ++featureSaves; }
+
 extern "C" int GetLauncherEngineStereo() { return engineStereo; }
 
 static std::string g_out;

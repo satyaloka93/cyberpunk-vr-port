@@ -709,6 +709,7 @@ void PollLiveControls() {
     float xrBikeTiltDeadDeg = g_liveControls.xrBikeTiltDeadDeg;
     int xrBikeGripToggle = g_liveControls.xrBikeGripToggle;
     int xrMenuGesture = g_liveControls.xrMenuGesture;
+    int xrVrInterface = g_liveControls.xrVrInterface;
     int xrHandPhysics = g_liveControls.xrHandPhysics;
     int xrHandCollision = g_liveControls.xrHandCollision;
     int xrHandCollisionVehicle = g_liveControls.xrHandCollisionVehicle;
@@ -1740,6 +1741,11 @@ void PollLiveControls() {
             xrMenuGesture = intValue;
             continue;
         }
+        if (sscanf_s(line, "xr_vr_interface=%d", &intValue) == 1 ||
+            sscanf_s(line, "xr_vr_interface = %d", &intValue) == 1) {
+            xrVrInterface = intValue;
+            continue;
+        }
         if (sscanf_s(line, "xr_hand_physics=%d", &intValue) == 1 ||
             sscanf_s(line, "xr_hand_physics = %d", &intValue) == 1) {
             xrHandPhysics = intValue;
@@ -2003,6 +2009,7 @@ void PollLiveControls() {
     g_liveControls.xrBikeTiltDeadDeg = cvr::anim::BikeTiltDeadDegrees(xrBikeTiltDeadDeg);
     g_liveControls.xrBikeGripToggle = xrBikeGripToggle != 0 ? 1 : 0;
     g_liveControls.xrMenuGesture = xrMenuGesture != 0 ? 1 : 0;
+    g_liveControls.xrVrInterface = xrVrInterface != 0 ? 1 : 0;
     g_liveControls.xrHandPhysics = xrHandPhysics != 0 ? 1 : 0;
     g_liveControls.xrHandCollision = xrHandCollision != 0 ? 1 : 0;
     g_liveControls.xrHandCollisionVehicle = xrHandCollisionVehicle != 0 ? 1 : 0;
@@ -2398,6 +2405,7 @@ LiveControlsUiState MakeLiveControlsUiState() {
     state.xrBikeTiltDeadDeg = g_liveControls.xrBikeTiltDeadDeg;
     state.xrBikeGripToggle = g_liveControls.xrBikeGripToggle;
     state.xrMenuGesture = g_liveControls.xrMenuGesture;
+    state.xrVrInterface = g_liveControls.xrVrInterface;
     state.xrHandPhysics = g_liveControls.xrHandPhysics;
     state.xrHandCollision = g_liveControls.xrHandCollision;
     state.xrHandCollisionVehicle = g_liveControls.xrHandCollisionVehicle;
@@ -2806,6 +2814,7 @@ void PersistLiveControlsUiState(const LiveControlsUiState& state) {
     fprintf(file, "xr_bike_tilt_dead_deg=%.1f\n", cvr::anim::BikeTiltDeadDegrees(state.xrBikeTiltDeadDeg));
     fprintf(file, "xr_bike_grip_toggle=%d\n", state.xrBikeGripToggle != 0 ? 1 : 0);
     fprintf(file, "xr_menu_gesture=%d\n", state.xrMenuGesture != 0 ? 1 : 0);
+    fprintf(file, "xr_vr_interface=%d\n", state.xrVrInterface != 0 ? 1 : 0);
     fprintf(file, "xr_hand_physics=%d\n", state.xrHandPhysics != 0 ? 1 : 0);
     fprintf(file, "xr_hand_collision=%d\n", state.xrHandCollision != 0 ? 1 : 0);
     fprintf(file, "xr_hand_collision_vehicle=%d\n", state.xrHandCollisionVehicle != 0 ? 1 : 0);
@@ -3000,6 +3009,7 @@ extern "C" void SetLiveControlsUiState(const LiveControlsUiState* state, int per
     g_liveControls.xrBikeTiltDeadDeg = cvr::anim::BikeTiltDeadDegrees(state->xrBikeTiltDeadDeg);
     g_liveControls.xrBikeGripToggle = state->xrBikeGripToggle != 0 ? 1 : 0;
     g_liveControls.xrMenuGesture = state->xrMenuGesture != 0 ? 1 : 0;
+    g_liveControls.xrVrInterface = state->xrVrInterface != 0 ? 1 : 0;
     g_liveControls.xrHandPhysics = state->xrHandPhysics != 0 ? 1 : 0;
     g_liveControls.xrHandCollision = state->xrHandCollision != 0 ? 1 : 0;
     g_liveControls.xrHandCollisionVehicle = state->xrHandCollisionVehicle != 0 ? 1 : 0;

@@ -1,3 +1,4 @@
+#include "Core/LiveControls.hpp"
 #include "Overlay/VrOverlay.hpp"
 #include "Runtimes/FingerGrip.hpp"
 #include <windows.h>
@@ -48,7 +49,8 @@ std::vector<PointerEvent> ConsumePointerEvents(){std::lock_guard lock(mutex);std
 View GetView(){std::lock_guard lock(mutex);return view;}
 void UpdateTracking(const Tracking& t){
     std::lock_guard lock(mutex);clock.Step(t.time);
-    const bool both=t.valid && t.hands[0].valid && t.hands[1].valid && t.hands[0].stickClick && t.hands[1].stickClick;
+    if (!g_liveControls.xrVrInterface) menuSummon=false;
+    const bool both=g_liveControls.xrVrInterface != 0 && t.valid && t.hands[0].valid && t.hands[1].valid && t.hands[0].stickClick && t.hands[1].stickClick;
     // the sticks are held back from the game until they are let go, as after a panel toggle
     if(chord.Update(both,clock.elapsed)){menuSummon=true;releasePending=true;}
     const auto now=GetTickCount64();

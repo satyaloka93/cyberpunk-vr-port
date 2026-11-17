@@ -1,3 +1,4 @@
+local Availability = require("modules/availability")
 -- The menu itself: placement, the pointers, the screens. init.lua drives it (M.init / M.update /
 -- M.release) and can read it again off disk with GetMod("CyberpunkVRPort_Menu").hot().
 
@@ -1506,6 +1507,7 @@ local function capture(on)
 end
 
 function M.open(cam,initialSection)
+  if not Availability.enabled() then return false end
   if S.waitTransition or preGame() then return false end
   -- Not while full-body tracking calibrates: the steps move the hands (an accidental grip swipe opened it)
   if S.fbtCalibrating then return false end
@@ -2079,6 +2081,18 @@ function M.init(shared)
 end
 
 function M.update(dt)
+  if not Availability.enabled() then
+    if not S.interfaceDisabled then
+      M.release()
+      VendorVisit.cancelHandoff(M.shared)
+      M.shared.ripperSession=nil
+      M.shared.stashSession=nil
+      S.pending=nil
+      S.interfaceDisabled=true
+    end
+    return
+  end
+  S.interfaceDisabled=false
   S.time = S.time + (dt or 0)
   -- Full-body tracking calibration started from the settings: the menu gets out of the way (VRFbtCalibrating).
   if type(VRFbtCalibrating) == "function" then

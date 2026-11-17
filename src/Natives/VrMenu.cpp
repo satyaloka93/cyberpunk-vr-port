@@ -75,7 +75,7 @@ std::atomic<int> g_wheelHold{0};
 }
 // Also while full-body tracking calibrates: each step is a pull of both triggers, which the calibration reads from
 // OpenXR itself; the game must not get them. The sticks stay the game's, as with the menu.
-bool CapturesButtons() { return g_capture.load(std::memory_order_relaxed) || cvr::fbt::game::Calibrating(); }
+bool CapturesButtons() { return (g_liveControls.xrVrInterface != 0 && g_capture.load(std::memory_order_relaxed)) || cvr::fbt::game::Calibrating(); }
 bool WheelArmed(uint64_t now) {
     const ULONGLONG beat = g_wheelBeat.load(std::memory_order_relaxed);
     return beat != 0 && now >= beat && now - beat < 500;
@@ -173,6 +173,11 @@ bool cvr::vrmenu::FingerWorld(int side, float* world) {
     return ModelToWorldFrame(m2w) && BoneWorld(m2w, kIndex3[side], end, nullptr, world, nullptr);
 }
 
+void VRInterfaceEnabled(RED4ext::IScriptable*, RED4ext::CStackFrame* stack, bool* out, int64_t) {
+    stack->code++;
+    if (out) *out = g_liveControls.xrVrInterface != 0;
+}
+
 // VRMenuGesture() -> array<Vector4>: empty, or once per swipe
 //   [0] (1, sequence, 0, 0)
 //   [1] where the swipe started, relative to the head in its heading frame: (right, up, forward, 1) metres
@@ -185,7 +190,7 @@ void VRMenuGesture(RED4ext::IScriptable*, RED4ext::CStackFrame* stack, RED4ext::
     out->Clear();
     // NOT IN A BRAINDANCE, by either way in: the grips are its LB and RB there (Hooks/XInput.cpp), and an L3 + R3
     // hold is dropped rather than kept for after it.
-    if (InBraindance()) {
+    if (InBraindance() || !g_liveControls.xrVrInterface) {
         cvr::vrui::ConsumeMenuSummon();
         g_swipe.Clear();
         return;

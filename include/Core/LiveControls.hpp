@@ -154,6 +154,7 @@ struct LiveControls {
     // tap is still the game's next weapon. 0 = the game's own wheel (it slows time). Hooks/WeaponWheelHold.hpp.
     volatile int xrVrWeaponWheel = 1;
     // Upstream PhysX collision controls (separate from rendering).
+    volatile int xrVrInterface = 1; // in-world menus; independent of F10
     volatile int xrHandPhysics = 0; // experimental backport: enable explicitly for contact testing
     volatile int xrHandCollision = 1;
     volatile int xrHandCollisionVehicle = 1;
