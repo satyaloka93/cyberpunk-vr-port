@@ -1,0 +1,37 @@
+[
+  {
+    "name": "bike_road_test.cpp",
+    "source_sha256": "5a48a5057a151afe98974cfacaafa3718629fab42a717cf87ae9baafc5292729",
+    "previous_sha256": null
+  },
+  {
+    "name": "CMakeLists.txt",
+    "source_sha256": "c285cd669e50de10a091dbaa2eb9c45656bbd0cf5a7011ea87dc9f0ef8dcf580",
+    "previous_sha256": "998f88aad729d3276036666650dfbace1f0a492f75657047275d3a566ec6d560"
+  },
+  {
+    "name": "haptics_engine.cpp",
+    "source_sha256": "c940d769eac86661af4058c919ecc00e5cdf1b8a29fe24ee9bcf884dfd422ad7",
+    "previous_sha256": "72d16835bdba41567e579a7189969aee4f22bdf220de388d40e90af450671cd8"
+  },
+  {
+    "name": "haptics_engine.h",
+    "source_sha256": "c6e8ede8071e0288fce5270c1b1c3b92b52ff5205efe30beb7fd4d2f1c8f2605",
+    "previous_sha256": "7e9824cf0847926701a936e7fa64147362715e85f89592cbc0b41e127a16bee2"
+  },
+  {
+    "name": "main.cpp",
+    "source_sha256": "16cf7fa30acc9cccc893d9815435dce288429363844c07b068dc4ca5cc6b6cfb",
+    "previous_sha256": "5df8200b506d3500a145c4be18fbcf9c10e04a26e97f7a2057d853d896cc9e23"
+  },
+  {
+    "name": "vr_motion_haptics.cpp",
+    "source_sha256": "c23e946f238e7fb22d9e2b03f8f310e1fe41d6f9f068346e6f075a912366fd88",
+    "previous_sha256": "14d6f3939f777ccddfa17cf9bf4da9ad8306ae4e664341fb35c53db9a9c22089"
+  },
+  {
+    "name": "vr_motion_protocol.h",
+    "source_sha256": "c5e08dc80be54273f738b2a7fdee58444a98393f35704fea253812164098c751",
+    "previous_sha256": "2d7922357e3b0f001a1bc36b2decf889fa099e17c7995d61fe87c5126e8d0e51"
+  }
+]

@@ -1,0 +1,177 @@
+--- a/projects/psvr2_toolkit_dsx_bridge/bike_road_test.cpp
++++ b/projects/psvr2_toolkit_dsx_bridge/bike_road_test.cpp
+@@ -0,0 +1,33 @@
++#include "haptics_engine.h"
++#include "psvr2tk_capi_loader.h"
++#include "vr_motion_protocol.h"
++#include <chrono>
++#include <thread>
++#include <atomic>
++#include <cstdlib>
++#include <iostream>
++using namespace psvr2_toolkit::bridge;
++std::atomic<unsigned> nonzero{0};
++void Wait(){std::this_thread::sleep_for(std::chrono::milliseconds(2));}
++void Write(VRControllerType,const unsigned char* p){for(int i=0;i<32;++i)if(p[i]){++nonzero;break;}}
++void Check(bool b,const char* why){if(!b){std::cerr<<why<<'\n';std::exit(1);}}
++void Settle(){std::this_thread::sleep_for(std::chrono::milliseconds(40));}
++int main(){
++ vrmotion::BikeRoadLease lease;
++ Check(!lease.Update(0,0,1,true),"old publisher muted rhythm");
++ Check(lease.Update(1,1,100,true),"air mute missing");
++ Check(lease.Update(1,1,250,true),"lease expired early");
++ Check(!lease.Update(1,1,251,true),"stalled producer left mute latched");
++ Check(lease.Update(2,1,260,true),"new sample failed to renew");
++ Check(!lease.Update(3,0,270,true),"landing failed to release");
++ Check(!lease.Update(4,1,280,false),"invalid heartbeat retained mute");
++ Check(!lease.Update(4,2,280,true),"invalid payload muted");
++ p_psvr2_toolkit_wait_for_pcm=&Wait;p_psvr2_toolkit_write_pcm=&Write;
++ HapticsEngine h;h.SetRhythm(VRControllerType::Both,1,15);Check(h.Start(),"real PCM engine failed");Settle();
++ Check(nonzero>0,"grounded rhythm absent");h.SetVehicleRhythmMuted(true);Settle();nonzero=0;Settle();
++ Check(nonzero==0,"vehicle rhythm persisted in air");
++ h.Pulse(VRControllerType::Both,.8f,125,70);Settle();Check(nonzero>0,"mute swallowed contact pulse");
++ std::this_thread::sleep_for(std::chrono::milliseconds(180));nonzero=0;Settle();Check(nonzero==0,"road resumed before touchdown");
++ h.SetVehicleRhythmMuted(false);Settle();Check(nonzero>0,"touchdown failed to resume stored rhythm");h.Stop();
++ std::cout<<"Bike road lease + actual PCM rhythm mute / contact pulse / restore passed\n";
++}
+--- a/projects/psvr2_toolkit_dsx_bridge/CMakeLists.txt
++++ b/projects/psvr2_toolkit_dsx_bridge/CMakeLists.txt
+@@ -70,3 +70,11 @@
+   target_include_directories(psvr2_toolkit_tow2_protocol_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+   add_test(NAME psvr2_toolkit_tow2_protocol_test COMMAND psvr2_toolkit_tow2_protocol_test)
+ endif()
++
++if(PSVR2TK_BUILD_DSX_TESTS)
++  add_executable(psvr2_toolkit_bike_road_test bike_road_test.cpp haptics_engine.cpp)
++  target_link_libraries(psvr2_toolkit_bike_road_test PRIVATE common)
++  target_include_directories(psvr2_toolkit_bike_road_test PRIVATE
++      ${CMAKE_CURRENT_SOURCE_DIR} ../psvr2_toolkit_capi ../psvr2_toolkit_capi_loader)
++  add_test(NAME psvr2_toolkit_bike_road_test COMMAND psvr2_toolkit_bike_road_test)
++endif()
+--- a/projects/psvr2_toolkit_dsx_bridge/haptics_engine.cpp
++++ b/projects/psvr2_toolkit_dsx_bridge/haptics_engine.cpp
+@@ -131,7 +131,8 @@
+       for (size_t side = 0; side < m_channels.size(); ++side) {
+         Channel &channel = m_channels[side];
+         auto &buffer = side == 0 ? left : right;
+-        active[side] = channel.rhythmAmplitude > 0.0f || channel.pulseSamplesLeft > 0 || !m_gameAudio[side].empty();
++        const bool rhythm = channel.rhythmAmplitude > 0.0f && !m_vehicleRhythmMuted.load();
++        active[side] = rhythm || channel.pulseSamplesLeft > 0 || !m_gameAudio[side].empty();
+         if (!active[side])
+           continue;
+         if (channel.pulseSamplesLeft > 0 && !channel.pulseWaitObserved) {
+@@ -145,7 +146,7 @@
+             sample += m_gameAudio[side].front();
+             m_gameAudio[side].pop_front();
+           }
+-          if (channel.rhythmAmplitude > 0.0f) {
++          if (rhythm) {
+             // A resonant carrier with a narrow attack envelope gives distinct
+             // automatic-fire impacts instead of a featureless low buzz.
+             const double envelopeBase = std::max(0.0, std::sin(channel.rhythmPhase));
+--- a/projects/psvr2_toolkit_dsx_bridge/haptics_engine.h
++++ b/projects/psvr2_toolkit_dsx_bridge/haptics_engine.h
+@@ -30,6 +30,9 @@
+   // amplitude is normalized 0..1.
+   void SetRhythm(VRControllerType controller, float amplitude, float rateHz);
+   void ClearRhythm(VRControllerType controller);
++  // Suppress vehicle-derived grip rhythm only; PCM impacts and trigger motors
++  // are independent. The dedicated Cyberpunk mailbox supplies a short lease.
++  void SetVehicleRhythmMuted(bool muted) { m_vehicleRhythmMuted.store(muted); }
+   void Pulse(VRControllerType controller, float amplitude, uint32_t durationMs, float carrierHz = 135.0f);
+ 
+   // Queues interleaved stereo game-audio samples already converted to 3000 Hz
+@@ -65,6 +68,7 @@
+   std::array<std::deque<float>, 2> m_gameAudio;
+   std::mutex m_mutex;
+   std::atomic<bool> m_running{false};
++  std::atomic<bool> m_vehicleRhythmMuted{false};
+   std::atomic<uint64_t> m_pulseSequence{0};
+   DiagnosticCallback m_diagnosticCallback;
+   std::thread m_thread;
+--- a/projects/psvr2_toolkit_dsx_bridge/main.cpp
++++ b/projects/psvr2_toolkit_dsx_bridge/main.cpp
+@@ -697,7 +697,7 @@
+ 
+   // TOW2 automatic textures carry sub-quarter-second fail-closed deadlines;
+   // poll frequently enough to restore the loaded trigger profile near them.
+-  const SocketHandle server = OpenServer(options.port, options.tow2Mode ? 25u : 250u);
++  const SocketHandle server = OpenServer(options.port, options.tow2Mode ? 25u : 8u);
+   if (server == kInvalidSocket) {
+     std::cerr << "Could not bind UDP 127.0.0.1:" << options.port << ". Close DSX or choose another --port.\n";
+     psvr2_toolkit_deinit();
+--- a/projects/psvr2_toolkit_dsx_bridge/vr_motion_haptics.cpp
++++ b/projects/psvr2_toolkit_dsx_bridge/vr_motion_haptics.cpp
+@@ -110,6 +110,7 @@
+       m_thread.join();
+   }
+   DetachMapping();
++  if(m_engine)m_engine->SetVehicleRhythmMuted(false);
+   m_engine = nullptr;
+ }
+ 
+@@ -120,6 +121,8 @@
+   auto markerInvalidSince = std::chrono::steady_clock::time_point{};
+   constexpr auto kMarkerStartupGrace = std::chrono::seconds(2);
+ 
++  BikeRoadLease roadLease;
++  bool lastRoadMute=false;
+   while (m_running.load(std::memory_order_acquire)) {
+     const auto now = std::chrono::steady_clock::now();
+     if (!m_shared) {
+@@ -134,6 +137,7 @@
+     const bool markerValid = MarkerValid(m_shared);
+     const float heartbeat = m_shared[kSlotProtocolHeartbeat];
+     if (!markerValid) {
++      m_engine->SetVehicleRhythmMuted(false);roadLease={};lastRoadMute=false;
+       m_protocolReady = false;
+       m_haveSequence = false;
+       if (markerInvalidSince == std::chrono::steady_clock::time_point{})
+@@ -172,6 +176,12 @@
+       }
+     }
+ 
++#if defined(PSVR2TK_CYBERPUNK_017)
++    const bool roadMute=roadLease.Update(m_shared[kSlotBikeRoadSequence],m_shared[kSlotBikeRoadMute],
++        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count()),m_protocolReady);
++    m_engine->SetVehicleRhythmMuted(roadMute);
++    if(roadMute!=lastRoadMute) {std::cout << "[bike-haptics] vehicle grip rhythm " << (roadMute?"muted in air":"restored") << std::endl;lastRoadMute=roadMute;}
++#endif
+     if (!m_protocolReady) {
+       std::this_thread::sleep_for(kPollInterval);
+       continue;
+--- a/projects/psvr2_toolkit_dsx_bridge/vr_motion_protocol.h
++++ b/projects/psvr2_toolkit_dsx_bridge/vr_motion_protocol.h
+@@ -1,6 +1,8 @@
+ #pragma once
+ 
+ #include <cstddef>
++#include <cstdint>
++#include <cmath>
+ 
+ namespace psvr2_toolkit::bridge::vrmotion {
+ 
+@@ -13,6 +15,23 @@
+ constexpr std::size_t kSlotProtocolMagic = 168;
+ constexpr std::size_t kSlotProtocolVersion = 169;
+ constexpr std::size_t kSlotProtocolHeartbeat = 170;
++// Optional v1 extension. Older publishers leave these zero; older readers
++// ignore them. A separate sequence prevents a running heartbeat renewing stale
++// mute state when gameplay/haptics stopped updating.
++constexpr std::size_t kSlotBikeRoadMute = 171;
++constexpr std::size_t kSlotBikeRoadSequence = 172;
++class BikeRoadLease {
++ public:
++  bool Update(float sequence, float mute, uint64_t nowMs, bool protocolReady) {
++    if(!protocolReady || !std::isfinite(sequence) || sequence<1 || sequence>1000000 ||
++       std::floor(sequence)!=sequence || (mute!=0 && mute!=1)) {*this={};return false;}
++    if(!m_valid || sequence!=m_sequence) {m_valid=true;m_sequence=sequence;m_since=nowMs;m_mute=mute==1;}
++    if(nowMs<m_since || nowMs-m_since>150){return false;}
++    return m_mute;
++  }
++ private:
++  float m_sequence{};uint64_t m_since{};bool m_valid{},m_mute{};
++};
+ constexpr float kProtocolMagic = 18512.0f;
+ constexpr float kProtocolVersion = 1.0f;
+ 
