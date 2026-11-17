@@ -5,6 +5,8 @@
 #include "Render/CommandResources.hpp"
 #include "Render/RenderProbeScope.hpp"
 #include "Camera/PoseIdentity.hpp"
+#include "Hooks/FarInlineHook.hpp"
+#include "Hooks/HookActivation.hpp"
 #include "Stereo/EngineStereo.hpp"
 #include "Stereo/EngineStereoDlss.hpp"
 #include <MinHook.h>
@@ -250,25 +252,59 @@ ngx::Result CreateHook(ID3D12GraphicsCommandList* list,unsigned feature,ngx::Par
     }
     return result;
 }
+// A failed nearby-trampoline search is expensive on Present. Bound retries
+// per loaded DLSS module, including partial creation/enable failures.
+cvr::hooks::HookAttemptBudget installBudget;
+cvr::hooks::HookActivation createActivation, evaluateActivation[2];
+bool installComplete{};
 void Install() {
     auto module=GetModuleHandleW(L"nvngx_dlss.dll");if(!module)return;
     if(GetModuleHandleW(L"CheekyFoveatedDLSSRuntime.dll")){Message("Another foveated backend is loaded; restart required");return;}
     auto create=reinterpret_cast<ngx::Create>(GetProcAddress(module,"NVSDK_NGX_D3D12_CreateFeature"));
     auto release=reinterpret_cast<ngx::Release>(GetProcAddress(module,"NVSDK_NGX_D3D12_ReleaseFeature"));if(!create || !release)return;
-    if(!originalCreate) {
-        if(MH_CreateHook(reinterpret_cast<void*>(create),reinterpret_cast<void*>(&CreateHook),reinterpret_cast<void**>(&originalCreate))!=MH_OK)return;
-        if(MH_EnableHook(reinterpret_cast<void*>(create))!=MH_OK)return;
+    const auto identity=reinterpret_cast<uintptr_t>(module);
+    // Existing trampoline pointers cannot be carried into a replacement module.
+    if(installBudget.module && installBudget.module!=identity &&
+       (createActivation.prepared||createActivation.ready)) {
+        Message("DLSS module changed with hooks active; restart required");return;
     }
+    if(!installBudget.Begin(identity))return;
+    const auto failedAt=[](const char* what,MH_STATUS hookStatus) {
+        Log("[foveated-native] %s failed: %s (attempt %u/%u)%s\n",what,MH_StatusToString(hookStatus),installBudget.attempts,
+            cvr::hooks::HookAttemptBudget::limit,installBudget.attempts>=cvr::hooks::HookAttemptBudget::limit ? "; not retrying for this DLSS module" : "");
+    };
+    const auto hook=[&](cvr::hooks::HookActivation& state,void* target,void* detour,void** original,const char* what) {
+        return state.Ensure([&] {
+            const auto result=MH_CreateHook(target,detour,original);
+            if(result==MH_OK)return cvr::hooks::CreateHookResult::Created;
+            if(result==MH_ERROR_MEMORY_ALLOC)return cvr::hooks::CreateHookResult::AllocationFailure;
+            failedAt(what,result);return cvr::hooks::CreateHookResult::Failed;
+        },[&] {
+            const auto result=MH_EnableHook(target);
+            if(result==MH_OK || result==MH_ERROR_ENABLED)return true;
+            failedAt(what,result);return false;
+        },[&] {
+            const auto result=cvr::hooks::FarInlineHook(target,detour,original);
+            Log("[foveated-native] %s: no nearby MinHook memory; far hook %s (attempt %u/%u)\n",
+                what,cvr::hooks::ToString(result),installBudget.attempts,cvr::hooks::HookAttemptBudget::limit);
+            return result==cvr::hooks::FarHookResult::Ok;
+        });
+    };
+    if(!hook(createActivation,reinterpret_cast<void*>(create),reinterpret_cast<void*>(&CreateHook),
+             reinterpret_cast<void**>(&originalCreate),"CreateFeature hook"))return;
     create=originalCreate;
     const char* names[]{"NVSDK_NGX_D3D12_EvaluateFeature","NVSDK_NGX_D3D12_EvaluateFeature_C"};
     void* hooks[]{reinterpret_cast<void*>(&Hook<0>),reinterpret_cast<void*>(&Hook<1>)};
+    bool complete=true;
     for(unsigned i=0;i<2;++i) {
         auto* target=GetProcAddress(module,names[i]);if(!target || (i && target==routes[0].target))continue;
+        if(evaluateActivation[i].ready)continue;
         routes[i].create=create;routes[i].release=release;routes[i].target=target;
-        if(MH_CreateHook(target,hooks[i],reinterpret_cast<void**>(&routes[i].evaluate))==MH_OK && MH_EnableHook(target)==MH_OK) {
+        if(hook(evaluateActivation[i],target,hooks[i],reinterpret_cast<void**>(&routes[i].evaluate),names[i])) {
             installed=true;Log("[foveated-native] hooked %s\n",names[i]);
-        }
+        } else complete=false;
     }
+    installComplete=complete && installed.load();
 }
 void Publish() {
     const auto settings=GetAppliedSettings();Json::Value root;root["backend"]="native";root["enabled"]=Enabled(settings);
@@ -299,7 +335,7 @@ void Publish() {
 Status GetStatus(){std::lock_guard lock(statsMutex);return status;}
 void Tick(ID3D12Device*,ID3D12CommandQueue*) {
     UpdateSettings();
-    if(!installed && GetTickCount64()>=nextInstall){nextInstall=GetTickCount64()+2000;Install();}
+    if(!installComplete && GetTickCount64()>=nextInstall){nextInstall=GetTickCount64()+2000;Install();}
     std::lock_guard lock(mutex);
     std::vector<std::pair<ngx::Release,ngx::Handle*>> retired;
     {std::lock_guard retiredLock(retiredMutex);retired.swap(retiredFeatures);}
