@@ -213,16 +213,16 @@ extern "C" __declspec(dllexport) int32_t CyberpunkVR_ScannerPulseMs     = 90;
 // as a button. 400 ms is the timeout the game uses for its own hold bindings.
 extern "C" __declspec(dllexport) int32_t CyberpunkVR_VehicleExitHoldMs = 400;
 extern "C" __declspec(dllexport) int32_t CyberpunkVR_DashStickUp = 1;
-// HOW FAR THE RIGHT STICK MUST GO TO SNAP-TURN, and how far back before it can snap again. 0.90 puts
-// the snap where every other gesture in this file already is (sprint, crouch, dash) -- a deliberate
-// push to the stop, not the half-deflection it used to be, which is where a thumb rests and where a
-// wrist drifts while walking. The re-arm is not back at centre on purpose: 90 degrees is three snaps,
-// and a full return between each makes that slow; 0.90/0.50 is a 0.40 band no jitter crosses.
-extern "C" __declspec(dllexport) float CyberpunkVR_SnapTurnStickFire  = 0.90f;
-extern "C" __declspec(dllexport) float CyberpunkVR_SnapTurnStickRearm = 0.50f;
+// Raw horizontal travel, not the deadzoned camera axis. Requiring >0.90 after
+// deadzone meant >0.918 raw travel and missed slightly diagonal flicks. Keep
+// a deliberate push with a wide hysteresis band, without requiring the stop.
+extern "C" __declspec(dllexport) float CyberpunkVR_SnapTurnStickFire  = cvr::input::kSnapTurnStickFire;
+extern "C" __declspec(dllexport) float CyberpunkVR_SnapTurnStickRearm = cvr::input::kSnapTurnStickRearm;
 // How long the synthetic dodge press is held, milliseconds. A dodge is a button PRESS, so the pulse
 // only has to be long enough for the game to see an edge; held level it would dodge over and over.
 extern "C" __declspec(dllexport) int32_t CyberpunkVR_DashPulseMs = 100;
+// A bounded R3 tap per downward push; holding the stick must not hold crouch.
+extern "C" __declspec(dllexport) int32_t CyberpunkVR_CrouchPulseMs = 100;
 
 // The left trigger is claimed by the lighter gesture while it is armed; the gate says so.
 extern "C" __declspec(dllexport) int CyberpunkVR_LtLighterGate;
@@ -1372,9 +1372,10 @@ DWORD WINAPI HookedXInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState) {
     const float legacyRy=ApplyStickDeadzone(vr.rightThumbY,.18f);
     float rx=analogMovement?cvr::input::AnalogAxis(vr.rightThumbX,g_liveControls.xrRightStickDeadzone,fullInput):legacyRx;
     float ry=analogMovement?cvr::input::AnalogAxis(vr.rightThumbY,g_liveControls.xrRightStickDeadzone,fullInput):legacyRy;
+    float snapStickX=vr.rightThumbX;
 
     // Right stick pushed near FULL down => CROUCH. Same bind as the right-stick click
-    // (R3) used today; we assert R3 while the stick is held fully down and consume the
+    // (R3, ToggleCrouch); each push taps R3 once and consumes the
     // downward Y so it doesn't also drive camera pitch. Detected here, before the snap
     // turn block may zero ry, so it works regardless of the turn mode.
     // CROUCH IS THIS, AND ONLY THIS, since the click became the slide release: the stick past 0.90 down.
@@ -1430,16 +1431,23 @@ DWORD WINAPI HookedXInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState) {
             }
             rx = 0.0f;
             ry = 0.0f;
+            snapStickX = 0.0f; // Scanner zoom owns raw snap travel too.
         } else {
             s_nextStepMs = 0;
         }
     }
 
-    const bool fullDown=cvr::input::AtFullTravel(analogMovement?vr.rightThumbY:ry,analogMovement,fullInput,true);
+    const bool fullDown=cvr::input::AtFullTravel(analogMovement?vr.rightThumbY:legacyRy,analogMovement,fullInput,true);
     const bool fullUp=cvr::input::AtFullTravel(analogMovement?vr.rightThumbY:ry,analogMovement,fullInput);
-    const bool wantCrouch = fullDown && !inWater && !g_isInVehicle && !deviceScreen && !scannerActive
-                            && !DeviceCamActive();   // in a camera the stick aims the camera
+    const bool crouchAllowed = !inWater && !g_isInVehicle && !deviceScreen && !scannerActive
+                               && !DeviceCamActive();   // in a camera the stick aims the camera
+    const bool wantCrouch = fullDown && crouchAllowed;
     if (wantCrouch) ry = 0.0f;
+    // R3 is a tap per push, not a level: ToggleCrouch only reacts to a tap, so a held stick stood still.
+    static cvr::input::StickPulse s_crouchPulse;
+    const bool crouchPulse = s_crouchPulse.Update(fullDown, analogMovement ? -vr.rightThumbY : -legacyRy,
+        GetTickCount64(), static_cast<uint32_t>(CyberpunkVR_CrouchPulseMs > 0 ? CyberpunkVR_CrouchPulseMs : 100),
+        crouchAllowed);
 
     // Right stick pushed near FULL UP => DASH (the game's Dodge_Button, pad B). The mirror image of
     // the crouch gesture above, in every respect: same 0.90 threshold, detected here BEFORE the pitch
@@ -1503,7 +1511,7 @@ DWORD WINAPI HookedXInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState) {
     const bool snapEnabled=g_liveControls.xrSnapTurn != 0 && !DeviceCamActive() &&
         !SceneStickYawArmed() && !cvr::input::NativeOwnsTurn(
             g_isInVehicle,g_vehicleState.load(std::memory_order_relaxed),cvr::ladder::Active());
-    const auto turn=cvr::input::RouteTurn(rx,snapEnabled,g_xinputSnapArmedDir,
+    const auto turn=cvr::input::RouteControllerTurn(snapStickX,rx,snapEnabled,g_xinputSnapArmedDir,
         g_liveControls.xrSnapTurnAngleDeg,CyberpunkVR_SnapTurnStickFire,CyberpunkVR_SnapTurnStickRearm);
     if (turn.clearPending) InterlockedExchange(&g_pendingSnapYawDeltaBits,0);
     else if (turn.snapDegrees!=0) {
@@ -1524,7 +1532,7 @@ DWORD WINAPI HookedXInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState) {
     // stick => crouch (R3). OR'd in on top of any physical / VR button press.
     uint16_t synthButtons = 0;
     if (wantSprint) synthButtons |= XINPUT_GAMEPAD_LEFT_THUMB;
-    if (wantCrouch) synthButtons |= XINPUT_GAMEPAD_RIGHT_THUMB;
+    if (crouchPulse) synthButtons |= XINPUT_GAMEPAD_RIGHT_THUMB;
     // The dash, as the B the game's Dodge_Button listens for. Emitted HERE rather than merged with the
     // controller's own buttons, because the physical B is the port's now (the magazine drop) and is
     // masked out of that merge -- so this pulse is the only thing in the process that can dodge.
