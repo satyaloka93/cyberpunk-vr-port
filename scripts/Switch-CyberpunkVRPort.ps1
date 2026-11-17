@@ -93,7 +93,7 @@ function Show-PSVR2ToolkitGuidance {
         Write-Host 'Standard vibration uses OpenXR without Toolkit. Optional adaptive triggers/advanced haptics require our compatible PSVR2Toolkit bridge (Steam DSX is NOT required):'
         Write-Host 'https://github.com/satyaloka93/PSVR2Toolkit/releases/tag/cyberpunk-dsx-bridge-v0.3.2'
         Write-Host 'Use its Cyberpunk 0.1.7 protocol bridge, also used by this fork. RC1 audio/haptics controls are in F10.'
-        Write-Host 'RC1: read docs/PSVR2-023-RC1.md; legacy comparison: docs/PSVR2-019-RC.md. Auto detects the bridge at game startup; otherwise uses OpenXR.'
+        Write-Host 'RC1: read docs/PSVR2-0245-RC1.md; legacy comparison: docs/PSVR2-019-RC.md. Auto detects the bridge at game startup; otherwise uses OpenXR.'
         Write-Host 'This switcher does not install drivers, register OpenXR layers, or start a bridge.'
     }
 }
@@ -337,8 +337,8 @@ try {
 
     $settingsFile = Join-Path $env:LOCALAPPDATA 'CD Projekt Red\Cyberpunk 2077\UserSettings.json'
     if ($Action -eq 'Menu') {
-        Write-Host "CyberpunkVR Port switcher -- official upstream 0.2.45 or PSVR2 0.2.3 RC1 / game-2.5 VRCAM 0.1.8`nGame: $root"
-        Write-Host "1  Install official upstream 0.2.45`n2  Download/check upstream 0.2.45 (no install)`n3  Download/check PSVR2 0.2.3 RC1 (no install)`n4  Install PSVR2 0.2.3 RC1`n5  Restore previous port`n6  Installed dependency status`n7  Open required Nexus download pages`n8  Patch / install optional More Occluders for game 2.5`n9  Download/check game-2.5 VRCAM 0.1.8 comparison`n10 Install game-2.5 VRCAM 0.1.8 comparison`n11 Check installation and recent errors (read-only)`nQ  Quit"
+        Write-Host "CyberpunkVR Port switcher -- official upstream 0.2.45 or PSVR2 0.2.45 RC1 / game-2.5 VRCAM 0.1.8`nGame: $root"
+        Write-Host "1  Install official upstream 0.2.45`n2  Download/check upstream 0.2.45 (no install)`n3  Download/check PSVR2 0.2.45 RC1 (no install)`n4  Install PSVR2 0.2.45 RC1`n5  Restore previous port`n6  Installed dependency status`n7  Open required Nexus download pages`n8  Patch / install optional More Occluders for game 2.5`n9  Download/check game-2.5 VRCAM 0.1.8 comparison`n10 Install game-2.5 VRCAM 0.1.8 comparison`n11 Check installation and recent errors (read-only)`nQ  Quit"
         $choice = Read-Host 'Choose'
         $Action = switch ($choice) { '1' { 'Install' }; '2' { 'Prepare' }; '3' { $Edition='Fork'; 'Prepare' }; '4' { $Edition='Fork'; 'Install' }; '5' { 'Restore' }; '6' { 'Status' }; '7' { 'Nexus' }; '8' { 'PatchOccluders' }; '9' { $Edition='Vrcam'; 'Prepare' }; '10' { $Edition='Vrcam'; 'Install' }; '11' { 'Diagnose' }; default { return } }
         if ($Edition -eq 'Fork' -and -not $ForkArchive) { $ForkArchive = (Read-Host 'Optional path to local fork ZIP (Enter downloads pinned release)').Trim('"') }

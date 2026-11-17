@@ -1,10 +1,10 @@
-CyberpunkVR Port - game 2.5 / PSVR2 0.2.3 RC1 or official upstream 0.2.45
+CyberpunkVR Port - game 2.5 / PSVR2 0.2.45 RC1 or official upstream 0.2.45
 
 Extract the whole ZIP outside the game. Run Switch-CyberpunkVRPort.bat.
 1 Install official upstream 0.2.45
 2 Download/check official upstream without installing
-3 Download/check our PSVR2 0.2.3 RC1 without installing
-4 Install our PSVR2 0.2.3 RC1 (also supports Quest/OpenXR)
+3 Download/check our PSVR2 0.2.45 RC1 without installing
+4 Install our PSVR2 0.2.45 RC1 (also supports Quest/OpenXR)
 5 Restore the previous installed port
 11 Check installation and recent errors (read-only), including Cheeky
 
@@ -18,9 +18,9 @@ Close the game and mod managers first. Keep the backup journals for option 5.
 
 Both modern targets require RED4ext 1.31.0, downloaded automatically. No Nexus
 account is needed for the port. Optional advanced Toolkit haptics have extra setup:
-docs/PSVR2-023-RC1.md. OpenXR vibration works without Toolkit or Steam DSX.
+docs/PSVR2-0245-RC1.md. OpenXR vibration works without Toolkit or Steam DSX.
 
-RC1 is our 0.2.2-based fork with selected 0.2.3 backports, not all stock features.
+RC1 is our 0.2.2-based fork with selected 0.2.45 backports, not all stock features.
 Generation starts OFF. NVIDIA OFA + V557, Medium / 50%, is preselected in F10.
 The SteamVR optimization package is ON (restart required to change); VDXR bypasses
 it automatically. Adaptive real-frame pacing is ON. Diagnostic recording is OFF.

@@ -10,11 +10,11 @@
 
 param(
     [ValidatePattern('^\d+\.\d+\.\d+(?:-[A-Za-z0-9][A-Za-z0-9.-]*)?$')]
-    [string]$Version = "0.2.3-psvr2.1-rc1",
+    [string]$Version = "0.2.45-psvr2.1-rc1",
     # The game 2.5 build tree (RED4ext.SDK game-2.5); build\ is the old 2.31 tree and its DLL is stale.
     [string]$BuildDir = "build-local",
     [ValidatePattern('^[0-9a-fA-F]{7,40}$')]
-    [string]$SourceCommit = "631a180b65da8c026ce3cf7afe03dfbd48adf484",
+    [string]$SourceCommit = "b5552082c2db62cabde73eab0c4a91898109c1dc",
     [string]$DxcDirectory = "",
     [switch]$Zip,
     [switch]$Force
@@ -206,9 +206,10 @@ foreach ($license in @('OFXR-LGPL-3.0.txt','OFXR-GPL-3.0.txt','OpenVR-LICENSE'))
 }
 Add-File (Join-Path $RepoRoot 'LICENSE') 'red4ext\plugins\cyberpunkvrport\licenses\PORT-LICENSE.txt'
 Add-File (Join-Path $RepoRoot 'externals\v557-reconstruction\provenance.json') 'red4ext\plugins\cyberpunkvrport\licenses\V557-provenance.json'
-Add-File (Join-Path $RepoRoot 'docs\PSVR2-023-RC1.md') 'red4ext\plugins\cyberpunkvrport\PSVR2-SETUP.md'
-Add-File (Join-Path $RepoRoot 'docs\REBUILD-0.2.3-RC1.md') 'red4ext\plugins\cyberpunkvrport\licenses\SOURCE-AND-REBUILD.md'
-$releaseInfo=[ordered]@{version=$Version;runtimeCommit='631a180b65da8c026ce3cf7afe03dfbd48adf484';dllSha256=(Get-FileHash -LiteralPath $stereoDll).Hash;source='https://github.com/satyaloka93/cyberpunk-vr-port';sdkCommit='5246e659d783e5834cc08a90e56c8932c9ed3449'}
+Add-File (Join-Path $RepoRoot 'docs\PSVR2-0245-RC1.md') 'red4ext\plugins\cyberpunkvrport\PSVR2-SETUP.md'
+Add-File (Join-Path $RepoRoot 'docs\REBUILD-0.2.45-RC1.md') 'red4ext\plugins\cyberpunkvrport\licenses\SOURCE-AND-REBUILD.md'
+Add-File (Join-Path $RepoRoot 'docs\RELEASE-0.2.45-RC1.md') 'red4ext\plugins\cyberpunkvrport\RELEASE-NOTES.md'
+$releaseInfo=[ordered]@{version=$Version;runtimeCommit=$SourceCommit;dllSha256=(Get-FileHash -LiteralPath $stereoDll).Hash;source='https://github.com/satyaloka93/cyberpunk-vr-port';sdkCommit='5246e659d783e5834cc08a90e56c8932c9ed3449'}
 $releaseInfo | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Out 'red4ext\plugins\cyberpunkvrport\release.json') -Encoding UTF8
 
 # ---- captured grip poses, read from beside the exe -------------------------------------------
@@ -289,7 +290,7 @@ CyberpunkVRPort $Version - PSVR2 / Quest release candidate
 
 Use CyberpunkVRPort-Switcher.zip from this release for a clean backed-up install.
 Run Switch-CyberpunkVRPort.bat; option4 installs this fork, option1 installs stock
-upstream0.2.3, option5 restores the previous port, option11 inspects loader/log errors.
+upstream 0.2.45, option5 restores the previous port, option11 inspects loader/log errors.
 Extract the entire switcher outside the game. Never copy only its main script.
 
 Requires Cyberpunk2077 2.5, RED4ext1.31.0 and your OpenXR runtime. The switcher
@@ -297,8 +298,8 @@ downloads/verifies RED4ext. CET/ArchiveXL/TweakXL/InputLoader/Codeware/redscript
 are not required for the port, but keep them for other mods that need them.
 More Occluders and HUDitor are NOT required. Cheeky, OFXR and Toolkit are optional.
 
-This fork uses our tested0.2.2 base with selected0.2.3 backports, not every upstream
-0.2.3 feature. No automatic graphics overwrite: first_launch=0. Personal game
+This fork uses our tested 0.2.2 base with selected 0.2.45 backports, not every upstream
+0.2.45 feature. No automatic graphics overwrite: first_launch=0. Personal game
 settings and DLSS replacements are preserved by the switcher.
 
 F10 opens the port menu. Framegen starts OFF. To use the improved bike-image
