@@ -11,8 +11,9 @@
 using namespace cvr::framegen;
 extern "C" {int CyberpunkVR_RuntimeDiagnostics=0;}
 namespace cvr::framegen {
-void WakeHardwareTelemetry(){} void StopHardwareTelemetry(){}
-HardwareStatistics GetHardwareStatistics(){return {};}
+int hardwareWakes=0,hardwareStops=0,hardwareReads=0;
+void WakeHardwareTelemetry(){++hardwareWakes;} void StopHardwareTelemetry(){++hardwareStops;}
+HardwareStatistics GetHardwareStatistics(){++hardwareReads;return {};}
 namespace flight {
 void Count(Event){} void Configure(bool){} void Time(Timing,double){}
 void Input(unsigned,uint32_t,uint32_t){} void Period(double){} void Pace(double,bool){}
@@ -68,5 +69,29 @@ int main(){
  }
  requested.backend=Backend::NvidiaV557;requested.flowScale=0;SetSettings(requested);
  check(GetSettings().flowScale==50,"V557 requires optical flow");
+ // Exercise real settings/metrics code through off -> delivery -> detailed -> delivery -> off.
+ requested.overlay=false;SetSettings(requested);
+ const int wakes=hardwareWakes,reads=hardwareReads;
+ requested.overlay=true;requested.overlayLayout=3;SetSettings(requested);
+ check(MetricsEnabled() && !DetailedMetricsEnabled(),"delivery counters without GPU/hardware telemetry");
+ check(hardwareWakes==wakes,"delivery must not start hardware worker");
+ const auto stamp=NowMs();
+ OnRealFrame(100,stamp-20);OnRealFrame(101,stamp-10);
+ OnSubmitted(100,false,false,stamp-20);OnSubmitted(101,true,false,stamp-10);
+ OnDelivery(stamp-20,stamp-40,false);OnDelivery(stamp-10,stamp-30,false);
+ OnGpuFrame(17.0);
+ auto minimal=GetStatistics();
+ check(minimal.outputFps>0 && minimal.deliveryAgeMs==20 && minimal.recentRepeatPercent==0,"delivery numbers remain available");
+ check(!minimal.gpuValid && minimal.historySamples==0 && hardwareReads==reads,"delivery skips GPU/history/hardware consumption");
+ requested.overlayLayout=0;SetSettings(requested);
+ check(DetailedMetricsEnabled() && hardwareWakes>wakes,"detailed starts full telemetry");
+ OnGpuFrame(17.0);auto detailed=GetStatistics();
+ check(detailed.gpuValid && hardwareReads>reads,"detailed metrics restored");
+ const int stops=hardwareStops;
+ requested.overlayLayout=3;SetSettings(requested);
+ check(!DetailedMetricsEnabled() && hardwareStops==stops+1,"return to delivery stops worker");
+ minimal=GetStatistics();check(!minimal.gpuValid && minimal.deliveryAgeMs<0,"layout switch clears stale history");
+ requested.overlay=false;SetSettings(requested);
+ check(!MetricsEnabled() && !DetailedMetricsEnabled(),"off disables both metric paths");
  refresh::Stop();std::cout<<"PASS: actual settings roundtrip, existing-install default, startup latch, independent adaptive control and VDXR bypass\n";
 }

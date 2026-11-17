@@ -54,6 +54,8 @@ bool CaptureInputsEnabled();
 bool MotionWanted();
 void SetDepthCaptureEnabled(bool enabled);
 bool MetricsEnabled();
+// CPU delivery counters are independent of optional GPU/hardware/history telemetry.
+bool DetailedMetricsEnabled();
 void SetSettings(Settings value);
 Statistics GetStatistics();
 struct RuntimeStatus {bool active{};char text[160]{};};

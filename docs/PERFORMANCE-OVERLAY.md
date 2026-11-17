@@ -28,3 +28,14 @@ Do not import V557 or the flight recorder merely to use the layout.
 Validation uses `tools/runtime_recorder/delivery_window_test.cpp` and
 `tools/runtime_recorder/test_overlay.py`: stale/unknown timestamps, repeats,
 clock resets, ring wrap, three bounded green rows and the unknown-age placeholder.
+
+## Delivery-only telemetry
+
+The large green layout collects only CPU-side submission counts and timestamps.
+It does not start the game-queue GPU timer, NVML/hardware polling, or percentile
+and graph calculations. Detailed/Compact/Minimal legacy layouts retain those
+metrics. Frame-generation GPU profiling remains active when the flight recorder
+is explicitly enabled. The recorder logs overlay enable/layout/full-telemetry
+state so off/on periods can be separated without guessing.
+
+This removes unnecessary work; headset performance benefit is not yet proven.

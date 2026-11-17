@@ -399,14 +399,14 @@ struct Generator::Impl {
         return evaluated;
     }
     void RetireTiming() {
-        if(MetricsEnabled()||flight::Enabled())return;
+        if(DetailedMetricsEnabled()||flight::Enabled())return;
         timingUnavailable=false;
         if(!queries || (lastTimingFence && fence->GetCompletedValue()<lastTimingFence))return;
         for(auto& slot:work)slot.timing=false;
         queries.Reset();readback.Reset();lastTimingFence=frequency=0;
     }
     bool TimingReady() {
-        if(!MetricsEnabled()&&!flight::Enabled()) {RetireTiming();return false;}
+        if(!DetailedMetricsEnabled()&&!flight::Enabled()) {RetireTiming();return false;}
         if(queries)return true;if(timingUnavailable)return false;
         D3D12_QUERY_HEAP_DESC query{};query.Type=D3D12_QUERY_HEAP_TYPE_TIMESTAMP;query.Count=12;
         D3D12_RESOURCE_DESC read{};read.Dimension=D3D12_RESOURCE_DIMENSION_BUFFER;read.Width=96;read.Height=1;read.DepthOrArraySize=1;
@@ -802,7 +802,7 @@ bool Generator::Generate(ID3D12Device* device,ID3D12CommandQueue* queue,ID3D12Re
         if(v557->Failed()){Status("V557 failed; toggle framegen off/on");return false;}
         bool result=v557->Generate(colors,cameras,reset,interpolated,colorReady,colorReadyValue,std::move(colorLease),inputs,std::move(captureTiming));
         if(!deferOutputJoin && !v557->JoinOutput(consumer))result=false;
-        if(MetricsEnabled())SetVram(Bytes()+InputVram());
+        if(DetailedMetricsEnabled())SetVram(Bytes()+InputVram());
         return result;
     }
     if(v557){if(!Reset())return false;reset=true;}
@@ -823,6 +823,6 @@ bool Generator::Generate(ID3D12Device* device,ID3D12CommandQueue* queue,ID3D12Re
         impl->failed=true;impl->untrackedGpuWork=true;flight::Count(flight::Event::SynthesisSyncFailed);result=false;
     }
     if(result && interpolated)*interpolated=!reset;
-    if(MetricsEnabled())SetVram(Bytes()+InputVram());return result;
+    if(DetailedMetricsEnabled())SetVram(Bytes()+InputVram());return result;
 }
 }

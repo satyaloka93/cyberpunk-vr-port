@@ -76,8 +76,8 @@ std::unique_ptr<Timer> timer;
 std::atomic<bool> timerExists{false};
 }
 void BeforeGameCommands(ID3D12CommandQueue* queue) {
-    if(inside || !MetricsEnabled())return;
-    std::lock_guard lock(mutex);if(!MetricsEnabled())return;inside=true;
+    if(inside || !DetailedMetricsEnabled())return;
+    std::lock_guard lock(mutex);if(!DetailedMetricsEnabled())return;inside=true;
     if(timer && timer->stopped) {
         if(timer->fence->GetCompletedValue()<timer->value) {inside=false;return;}
         timer.reset();timerExists.store(false,std::memory_order_relaxed);
@@ -90,7 +90,7 @@ void FinishGpuFrame() {
     if(inside || !timerExists.load(std::memory_order_relaxed))return;
     std::lock_guard lock(mutex);if(!timer)return;
     inside=true;
-    if(MetricsEnabled() && !timer->stopped)timer->End();else timer->Stop();
+    if(DetailedMetricsEnabled() && !timer->stopped)timer->End();else timer->Stop();
     if(timer->stopped && timer->fence->GetCompletedValue()>=timer->value) {timer.reset();timerExists.store(false,std::memory_order_relaxed);}
     inside=false;
 }

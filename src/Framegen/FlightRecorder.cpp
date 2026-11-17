@@ -81,7 +81,9 @@ class Recorder {
         auto start=Clock::now(),last=start;
         auto settingsJson=[] {
             auto s=GetSettings();return Json{{"enabled",s.enabled},{"backend",int(s.backend)},
-                {"quality",s.quality},{"flow_scale",s.flowScale},{"adaptive_pacing",s.autoPace},{"steamvr_package_requested",s.steamVrOptimizations},{"fps_cap",FpsCap()}};
+                {"quality",s.quality},{"flow_scale",s.flowScale},{"adaptive_pacing",s.autoPace},{"steamvr_package_requested",s.steamVrOptimizations},{"fps_cap",FpsCap()},
+                {"overlay_enabled",s.overlay},{"overlay_layout",s.overlayLayout},
+                {"overlay_full_telemetry",s.overlay && s.overlayLayout!=3}};
         };
         Json priorSettings=settingsJson();
         double deliverySum=0;uint64_t deliveryN=0,records=0,shown=0,zero=0,dropped=0,mispresented=0,extra=0,holes=0;

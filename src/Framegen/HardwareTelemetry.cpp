@@ -150,9 +150,9 @@ class Monitor {
         Sampler sampler;
         std::unique_lock lock(mutex);
         while(!stopping) {
-            if(!MetricsEnabled()) {wake.wait(lock,[&] {return stopping || MetricsEnabled();});continue;}
+            if(!DetailedMetricsEnabled()) {wake.wait(lock,[&] {return stopping || DetailedMetricsEnabled();});continue;}
             lock.unlock();auto next=sampler.Read();lock.lock();next.sequence=snapshot.sequence+1;snapshot=next;
-            wake.wait_for(lock,std::chrono::seconds(1),[&] {return stopping || !MetricsEnabled();});
+            wake.wait_for(lock,std::chrono::seconds(1),[&] {return stopping || !DetailedMetricsEnabled();});
         }
     }
 public:
@@ -160,7 +160,7 @@ public:
     void Wake() {
         std::lock_guard lifecycleLock(lifecycle);
         std::lock_guard lock(mutex);
-        if(!thread.joinable() && MetricsEnabled()) {stopping=false;monitorRunning.store(true);thread=std::thread([this]{Run();});}
+        if(!thread.joinable() && DetailedMetricsEnabled()) {stopping=false;monitorRunning.store(true);thread=std::thread([this]{Run();});}
         wake.notify_all();
     }
     HardwareStatistics Read() {std::lock_guard lock(mutex);return snapshot;}
@@ -175,7 +175,7 @@ public:
 Monitor& Hardware() {static Monitor monitor;return monitor;}
 }
 void ConfigureHardwareTelemetry(ID3D12Device* device) {
-    if(!device || !MetricsEnabled())return;const auto luid=std::bit_cast<uint64_t>(device->GetAdapterLuid());
+    if(!device || !DetailedMetricsEnabled())return;const auto luid=std::bit_cast<uint64_t>(device->GetAdapterLuid());
     if(requestedAdapter.exchange(luid,std::memory_order_acq_rel)!=luid || !monitorRunning.load(std::memory_order_acquire))Hardware().Wake();
 }
 void WakeHardwareTelemetry() {Hardware().Wake();}

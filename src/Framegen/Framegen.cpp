@@ -32,7 +32,7 @@ namespace {
 std::mutex mutex;
 std::mutex settingsWriteMutex;
 Settings settings;
-std::atomic<bool> enabled{false},metrics{false};
+std::atomic<bool> enabled{false},metrics{false},detailedMetrics{false};
 std::atomic<bool> depthCapture{false};
 std::atomic<bool> autoPace{true},pacingReady{false};
 std::atomic<int64_t> displayPeriod{0};
@@ -108,6 +108,7 @@ bool CaptureInputsEnabled() {return Enabled() || DepthCaptureEnabled() || cvr::a
 bool MotionWanted() {return Enabled() || cvr::afw::Launch();}
 void SetDepthCaptureEnabled(bool value) {depthCapture.store(value,std::memory_order_relaxed);}
 bool MetricsEnabled() {return metrics.load(std::memory_order_relaxed);}
+bool DetailedMetricsEnabled() {return detailedMetrics.load(std::memory_order_relaxed);}
 void SetSettings(Settings value) {
     std::lock_guard settingsLock(settingsWriteMutex);
     value.backend=Backend(std::clamp(int(value.backend),0,3));
@@ -122,9 +123,11 @@ void SetSettings(Settings value) {
     value.overlayCone=bounded(value.overlayCone,5,90,60);value.overlayScale=bounded(value.overlayScale,.5f,2,1);
     value.overlayDistance=bounded(value.overlayDistance,.5f,5,1.25f);
     value.overlayX=bounded(value.overlayX,-60,60,0);value.overlayY=bounded(value.overlayY,-45,45,0);
-    bool metricsChanged=false;
+    const bool wantsDetailed=value.overlay && value.overlayLayout!=3;
+    bool metricsChanged=false,detailedChanged=false;
     {std::lock_guard lock(mutex);
-    metricsChanged=value.overlay!=settings.overlay;
+    metricsChanged=value.overlay!=settings.overlay || value.overlayLayout!=settings.overlayLayout;
+    detailedChanged=wantsDetailed!=detailedMetrics.load(std::memory_order_relaxed);
     const bool disabledReportChanged=metricsChanged || value.enabled!=settings.enabled || value.backend!=settings.backend || !CyberpunkVR_FramegenReport[0];
     if(metricsChanged)ClearMetricsLocked();
     if(value.historySeconds!=settings.historySeconds)nextRefresh=nextSummary=0;
@@ -132,6 +135,7 @@ void SetSettings(Settings value) {
     settings=value;
     enabled.store(value.enabled,std::memory_order_relaxed);
     metrics.store(value.overlay,std::memory_order_relaxed);
+    detailedMetrics.store(wantsDetailed,std::memory_order_relaxed);
     autoPace.store(value.autoPace,std::memory_order_relaxed);
     if(!value.enabled || !value.autoPace){pacingIntervalMs=0;resetPacing=true;}
     if(!value.enabled) {pacingReady.store(false,std::memory_order_relaxed);stats.generationMs=0;}
@@ -143,7 +147,7 @@ void SetSettings(Settings value) {
     }
     }
     flight::Configure(value.flightRecorder);
-    if(value.overlay)WakeHardwareTelemetry();else if(metricsChanged)StopHardwareTelemetry();
+    if(wantsDetailed)WakeHardwareTelemetry();else if(detailedChanged)StopHardwareTelemetry();
 }
 RuntimeStatus GetRuntimeStatus() {
     std::lock_guard lock(mutex);RuntimeStatus result{};result.active=stats.active;
@@ -159,6 +163,9 @@ Statistics GetStatistics() {
     result.outputFps=output.Rate(now);result.repeatFps=repeats.Rate(now);
     const auto recent=delivery.Read(now);
     result.recentRepeatPercent=recent.repeatPercent;result.deliveryAgeMs=recent.ageMs;
+    // No history walks/sorts or hardware sampling under the shared settings mutex
+    // for the three-value delivery display. It needs only accepted-frame counters.
+    if(settings.overlayLayout==3) {cached=result;return result;}
     result.cpuPeakMs=cpu.Peak(now);result.gpuPeakMs=gpu.Peak(now);
     if(now>=nextSummary) {cpuSummary=cpuHistory.Summarize(now,settings.historySeconds);gpuSummary=gpuHistory.Summarize(now,settings.historySeconds);nextSummary=now+1000;}
     result.historySamples=cpuSummary.samples;result.cpuAverageMs=cpuSummary.average;result.gpuAverageMs=gpuSummary.average;
@@ -198,7 +205,7 @@ void OnRealFrame(uint64_t serial,double now) {
     if(serial)flight::Count(flight::Event::Capture);
     if(!MetricsEnabled())return;std::lock_guard lock(mutex);if(!settings.overlay || !serial || serial==lastReal)return;
     if(!started)started=now;
-    if(lastRealTime>0 && now>lastRealTime) {
+    if(DetailedMetricsEnabled() && lastRealTime>0 && now>lastRealTime) {
         stats.cpuMs=now-lastRealTime;cpu.Add(now,stats.cpuMs);cpuHistory.Add(now,stats.cpuMs);
         const auto n=CyberpunkVR_FrameRingCount[0].load(std::memory_order_relaxed);
         CyberpunkVR_FrameRingCpu[n%8192]=float(stats.cpuMs);CyberpunkVR_FrameRingCount[0].store(n+1,std::memory_order_release);
@@ -217,8 +224,8 @@ void OnDelivery(double now,double captureMs,bool repeat) {
     if(settings.overlay)delivery.Add(now,captureMs,repeat);
 }
 void OnGpuFrame(double ms) {
-    if(!MetricsEnabled() || !std::isfinite(ms) || ms<0 || ms>10000)return;
-    std::lock_guard lock(mutex);if(!settings.overlay)return;stats.gpuValid=true;stats.gpuMs=ms;const auto now=NowMs();gpu.Add(now,ms);gpuHistory.Add(now,ms);
+    if(!DetailedMetricsEnabled() || !std::isfinite(ms) || ms<0 || ms>10000)return;
+    std::lock_guard lock(mutex);if(!settings.overlay || settings.overlayLayout==3)return;stats.gpuValid=true;stats.gpuMs=ms;const auto now=NowMs();gpu.Add(now,ms);gpuHistory.Add(now,ms);
     const auto n=CyberpunkVR_FrameRingCount[1].load(std::memory_order_relaxed);
     CyberpunkVR_FrameRingGpu[n%8192]=float(ms);CyberpunkVR_FrameRingCount[1].store(n+1,std::memory_order_release);
 }

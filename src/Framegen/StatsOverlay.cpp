@@ -158,7 +158,7 @@ const XrCompositionLayerBaseHeader* StatsOverlay::Prepare(XrSession session,XrSp
         return nullptr;
     }
     if(!device || !queue || !session || !view)return nullptr;
-    ConfigureHardwareTelemetry(device);
+    if(DetailedMetricsEnabled())ConfigureHardwareTelemetry(device);
     const uint32_t wantedWidth=settings.overlayLayout==0 ? 720u : (settings.overlayLayout==1 ? 420u : (settings.overlayLayout==3 ? 420u : 360u));
     const uint32_t wantedHeight=settings.overlayLayout==0 ? 452u : (settings.overlayLayout==1 ? 404u : (settings.overlayLayout==3 ? 144u : 222u));
     if(swapchain && (width!=wantedWidth || height!=wantedHeight) && fence->GetCompletedValue()>=fenceValue)Shutdown();

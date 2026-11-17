@@ -134,7 +134,7 @@ void V557Generator::Shutdown(){
 bool V557Generator::Compatible(ID3D12Device* device,ID3D12CommandQueue* queue,ID3D12Resource* const colors[2],const Settings& settings) const {
     if(!impl || impl->device.Get()!=device || impl->routing.Producer()!=queue ||
        impl->borrowed!=(captured_color::Shared(colors[0]) && captured_color::Shared(colors[1])) ||
-       impl->isolated!=refresh::Targeted() || impl->timing!=(MetricsEnabled() || flight::Enabled()) || impl->settings.quality!=settings.quality || impl->settings.flowScale!=settings.flowScale)return false;
+       impl->isolated!=refresh::Targeted() || impl->timing!=(DetailedMetricsEnabled() || flight::Enabled()) || impl->settings.quality!=settings.quality || impl->settings.flowScale!=settings.flowScale)return false;
     for(unsigned e=0;e<2;++e){if(!colors[e] || impl->eyes[e].sharedRead!=captured_color::Shared(colors[e]))return false;const auto d=colors[e]->GetDesc();const auto& old=impl->eyes[e].desc;
         if(d.Width!=old.Width || d.Height!=old.Height || d.Format!=old.Format || d.Flags!=old.Flags ||
            d.Dimension!=old.Dimension || d.MipLevels!=old.MipLevels || d.DepthOrArraySize!=old.DepthOrArraySize ||
@@ -142,7 +142,7 @@ bool V557Generator::Compatible(ID3D12Device* device,ID3D12CommandQueue* queue,ID
     return true;
 }
 bool V557Generator::Create(ID3D12Device* device,ID3D12CommandQueue* queue,ID3D12Resource* const colors[2],const Settings& settings) {
-    auto& p=*impl;p.device=device;p.settings=settings;p.isolated=refresh::Targeted();p.timing=MetricsEnabled() || flight::Enabled();
+    auto& p=*impl;p.device=device;p.settings=settings;p.isolated=refresh::Targeted();p.timing=DetailedMetricsEnabled() || flight::Enabled();
     p.borrowed=captured_color::Shared(colors[0]) && captured_color::Shared(colors[1]);
     LARGE_INTEGER hz{};if(QueryPerformanceFrequency(&hz))p.cpuHz=double(hz.QuadPart);
     if(!p.routing.Initialize(device,queue,p.isolated)) {p.failed=true;return false;}
