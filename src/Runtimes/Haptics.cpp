@@ -1,3 +1,6 @@
+#include "Runtimes/BikeContactHaptics.hpp"
+#include "Hooks/BikeBank.hpp"
+#include "Camera/PlayerCameraState.hpp"
 // Haptics -- see Runtimes/Haptics.hpp for the shape of it.
 //
 // WHY THE FRAME THREAD PLAYS EVERYTHING. A round is reported from whichever worker ran the shot, a
@@ -29,6 +32,10 @@
 #include <algorithm>
 #include <cstdint>
 #include <mutex>
+
+extern bool OverlayIsVisible();
+extern std::atomic<int> g_sceneTier;
+extern void Log(const char*,...);
 
 extern "C" {
 // Master switch (ini xr_haptics) and the strength of everything (ini xr_haptic_scale, 0..2).
@@ -87,6 +94,7 @@ struct Envelope {
 std::mutex g_lock;
 Envelope   g_hand[2];            // 0 left, 1 right
 PulseRequest g_pulse[2];
+BikeContactHaptics g_bikeContact;
 float g_vehicle[2]{};
 uint64_t g_vehicleMs = 0;
 std::atomic<float> g_legacyGain{1.25f};
@@ -168,6 +176,8 @@ void Clear() {
     std::lock_guard lock(g_lock);
     for (int hand = 0; hand < 2; ++hand) { g_hand[hand] = {}; g_pulse[hand] = {}; g_vehicle[hand] = 0; }
     g_vehicleMs = 0;
+    g_bikeContact.Reset();
+    if(HapticRoute().Toolkit())cvr::psvr2::Haptics().SetBikeRoadMute(false);
 }
 
 void ShotForHand(int hand, float kick, bool supportHandOnGun) {
@@ -224,11 +234,25 @@ void Tick() {
     if (!CyberpunkVR_Haptics || SafeGain(CyberpunkVR_HapticScale) <= 0) { Clear(); return; }
     struct Due { float amp; float sec; };
     Due due[2] = {};
+    unsigned contactEvent=0,contactAccepted=0,contactGripBlocked=0,contactPriorityBlocked=0;
+    bool muteBridgeRhythm=false;
+    const bool bike=g_isDriving.load(std::memory_order_relaxed) && g_isOnBike.load(std::memory_order_relaxed);
+    const bool bikeEffects=bike && VehicleGain()>0 && g_menuModeValue==0 &&
+        g_sceneTier.load(std::memory_order_relaxed)<=2 && !OverlayIsVisible();
+    // Snapshot native data before the mixer lock; no cross-thread engine calls.
+    const auto motion=bikeEffects ? cvr::bikebank::LastMotion():cvr::anim::BikeAttitude{};
+    const auto owner=bikeEffects ? CurrentMountedVehicleIdentity():0;
     {
         std::lock_guard lock(g_lock);
         const int64_t now = Qpc();
         const uint64_t nowMs = GetTickCount64();
         const float gain = LegacyGain() * SafeGain(CyberpunkVR_HapticScale);
+        const auto bikeEffect=g_bikeContact.Update(motion,XrDiagNowUs(),owner,bikeEffects);
+        contactEvent=bikeEffect.event;
+        muteBridgeRhythm=bikeEffect.muteRoad && !g_hasWeaponEquipped;
+        if(contactEvent)Log("[bike-haptics] %s front=%d rear=%d mute_road=%d amp=%.2f duration_ms=%d\n",
+            contactEvent==1?"liftoff":"touchdown",motion.frontContact?1:0,motion.rearContact?1:0,
+            bikeEffect.muteRoad?1:0,bikeEffect.amplitude,bikeEffect.durationMs);
         for (int h = 0; h < 2; ++h) {
             Envelope& e = g_hand[h];
             const auto pulse = g_pulse[h];
@@ -244,15 +268,29 @@ void Tick() {
                 e.next = 0; e.priority = 2; e.done = e.end[0];
                 ++CyberpunkVR_HapticStats[0];
             }
+            const bool held = (h == 0 ? cvr::anim::g_wheelBlendLeft.load() : cvr::anim::g_wheelBlendRight.load()) > .01f;
+            // Contact impacts use driving strength/grip controls and the same
+            // actuator owner as road audio. Weapon/interaction envelopes win.
+            if(contactEvent && VehicleAudioRequireGrip() && !held)contactGripBlocked|=1u<<h;
+            if(contactEvent && now<e.done && e.priority>1)contactPriorityBlocked|=1u<<h;
+            // Real contact outranks a belt/menu tick; shots and parries still win.
+            if(contactEvent && gain>0 && (!VehicleAudioRequireGrip() || held) &&
+               !(now<e.done && e.priority>1)) {
+                contactAccepted|=1u<<h;
+                e={};e.amp[0]=std::min(1.f,bikeEffect.amplitude*VehicleGain()*gain);
+                e.start[0]=now;e.end[0]=now+MsToQpc(float(bikeEffect.durationMs));
+                e.start[1]=e.end[1]=e.start[2]=e.end[2]=e.end[0];
+                e.next=0;e.priority=1;e.done=e.end[0];
+                ++CyberpunkVR_HapticStats[0];
+            }
             int started = -1;
             while (e.next < kSegs && e.start[e.next] <= now) started = e.next++;
             if (started >= 0 && e.amp[started] > 0) {
                 const double left = static_cast<double>(e.end[started] - now) / static_cast<double>(QpcFreq());
                 if (left > 0.003) due[h] = { e.amp[started], static_cast<float>(left) };
             }
-            if (now >= e.done && VehicleGain() > 0 &&
+            if (now >= e.done && VehicleGain() > 0 && !bikeEffect.muteRoad &&
                 VehicleFresh(g_isDriving.load(std::memory_order_relaxed), nowMs, g_vehicleMs)) {
-                const bool held = (h == 0 ? cvr::anim::g_wheelBlendLeft.load() : cvr::anim::g_wheelBlendRight.load()) > .01f;
                 float audio = g_vehicle[h];
                 const int channels = VehicleAudioChannels();
                 if (channels == 1) audio = std::max(g_vehicle[0], g_vehicle[1]);
@@ -267,6 +305,9 @@ void Tick() {
     }
     // Use the selected actuator owner, including OpenXR fallback on PSVR2.
     const bool psvr2 = HapticRoute().Toolkit();
+    if(psvr2)cvr::psvr2::Haptics().SetBikeRoadMute(muteBridgeRhythm);
+    if(contactEvent)Log("[bike-haptics] route=%s accepted_mask=%u grip_blocked_mask=%u priority_blocked_mask=%u submitted_amp=%.2f/%.2f\n",
+        psvr2?"toolkit-mailbox":"openxr",contactAccepted,contactGripBlocked,contactPriorityBlocked,due[0].amp,due[1].amp);
     for (int h = 0; h < 2; ++h) {
         if (due[h].amp <= 0.0f) continue;
         if (psvr2) {
@@ -275,6 +316,7 @@ void Tick() {
             continue;
         }
         const int r = OpenXRManager::Get().ApplyHaptic(h, due[h].amp, due[h].sec);
+        if(contactAccepted&(1u<<h))Log("[bike-haptics] openxr hand=%d result=%d\n",h,r);
         CyberpunkVR_HapticStats[3] = r;
         if (r == 0) ++CyberpunkVR_HapticStats[h == 0 ? 1 : 2];
         else ++CyberpunkVR_HapticStats[5];

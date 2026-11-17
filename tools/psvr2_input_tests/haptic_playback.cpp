@@ -1,3 +1,4 @@
+#include "Hooks/BikeBank.hpp"
 #include "Anim/LeftHanded.hpp"
 #include "Runtimes/Haptics.hpp"
 #include "Runtimes/Psvr2HapticChannel.hpp"
@@ -15,7 +16,17 @@ float CyberpunkVR_WeaponKickDeg = 1;
 extern int CyberpunkVR_Haptics;
 extern float CyberpunkVR_HapticScale;
 }
-std::atomic<bool> g_isDriving{false};
+std::atomic<bool> g_isDriving{false},g_isOnBike{false};
+std::atomic<int> g_sceneTier{1};
+volatile int g_menuModeValue=0;
+bool g_hasWeaponEquipped=false;
+bool OverlayIsVisible(){return false;}
+void Log(const char*,...){}
+uintptr_t CurrentMountedVehicleIdentity(){return 42;}
+namespace cvr::bikebank {
+cvr::anim::BikeAttitude testMotion;
+cvr::anim::BikeAttitude LastMotion(){return testMotion;}
+}
 namespace cvr::anim {
 std::atomic<float> g_wheelBlendRight{0};
 std::atomic<float> g_wheelBlendLeft{0};
@@ -92,5 +103,42 @@ int main() {
     Clear(); output.clear(); CyberpunkVR_TwoHandActive=0;
     Play(kMeleeSwing,kLeft); Tick();
     check(output.size()==1 && output[0].hand==0,"upstream swing event survives RC5 integration");
+    // Execute the real mixer for both actuator owners, with native observations
+    // supplied at the seam. No simulated haptic mixing or routing in this test.
+    for(bool toolkit:{false,true}) {
+        Clear();output.clear();channel.events.clear();
+        HapticRoute().Request(toolkit?2:1);HapticRoute().BeginSession(toolkit,toolkit);
+        g_isDriving=true;g_isOnBike=true;SetVehicleGain(1);SetVehicleAudioRequireGrip(true);
+        cvr::anim::g_wheelBlendLeft=1;cvr::anim::g_wheelBlendRight=1;
+        auto& m=cvr::bikebank::testMotion;m={};m.vehicle=42;m.valid=m.wheelsValid=true;
+        auto step=[&](bool front,bool rear){m.frontContact=front;m.rearContact=rear;m.stampUs=XrDiagNowUs();SetVehicleHaptics(.1f,.1f);Tick();};
+        auto clearOutput=[&](){output.clear();channel.events.clear();};
+        auto count=[&](){return toolkit?channel.events.size():output.size();};
+        step(true,true);check(count()==2,"grounded bike road missing");clearOutput();
+        step(false,true);check(count()==0,"wheelie continued sending road vibration");
+        if(toolkit){check(channel.bikeRoadMuted,"Toolkit Machine rhythm was not muted");
+            g_hasWeaponEquipped=true;step(false,true);check(!channel.bikeRoadMuted,"bike mute suppressed weapon rhythm");
+            g_hasWeaponEquipped=false;step(false,true);check(channel.bikeRoadMuted,"holstered bike lost road mute");}
+        Sleep(35);step(false,true);check(count()==2,"liftoff pulse not routed to both hands");
+        const float lift=toolkit?channel.events[0].amplitude:output[0].amp;
+        check(toolkit?output.empty():channel.events.empty(),"liftoff sent through both actuator owners");
+        clearOutput();Sleep(90);step(false,true);check(count()==0,"road restarted after liftoff pulse");
+        step(true,true);check(count()==0,"touchdown sent road before contact confirmation");
+        Sleep(35);step(true,true);check(count()==2,"landing not felt on both hands");
+        if(toolkit)check(!channel.bikeRoadMuted,"bridge rhythm stayed muted after landing");
+        check((toolkit?channel.events[0].amplitude:output[0].amp)>lift,"landing not stronger than liftoff");
+        clearOutput();Sleep(140);step(true,true);check(count()==2,"road did not resume after landing envelope");
+        Clear();clearOutput();SetVehicleGain(0);step(true,true);step(false,true);Sleep(35);step(false,true);
+        check(count()==0,"driving strength zero failed to mute contact pulses");
+        SetVehicleGain(1);Clear();clearOutput();cvr::anim::g_wheelBlendLeft=0;
+        step(true,true);clearOutput();step(false,true);Sleep(35);step(false,true);
+        check(count()==1 && (toolkit?channel.events[0].hand:output[0].hand)==1,"contact pulse ignored per-hand grip option");
+        Clear();clearOutput();cvr::anim::g_wheelBlendLeft=1;
+        step(true,true);step(false,true);Sleep(35);Play(kBeltTouch,kLeft);clearOutput();step(false,true);
+        check(count()==2 && (toolkit?channel.events[0].amplitude:output[0].amp)>.5f,"belt tick swallowed contact thump");
+        Clear();clearOutput();step(true,true);step(false,true);Sleep(35);Play(kMeleeParry,kRight);clearOutput();step(false,true);
+        check(count()==2 && (toolkit?channel.events[1].duration:output[1].seconds*1000)<25,"contact overwrote parry");
+        Clear();clearOutput();cvr::anim::g_wheelBlendLeft=0;g_isOnBike=false;step(false,true);check(count()==1,"car road accidentally suppressed by bike contact");
+    }
     std::cout << checks << " production haptic playback checks passed\n";
 }

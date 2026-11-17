@@ -32,6 +32,14 @@ public:
             data[157] = data[157] >= 1000000.0f ? 1.0f : data[157] + 1.0f;
         }
     }
+    // Optional v1 extension, separate lease from the ordinary heartbeat. Old
+    // bridges ignore it; new bridges expire mute if gameplay stops publishing.
+    void SetBikeRoadMute(bool muted) {
+        std::lock_guard lock(mutex);
+        if(!data)return;
+        data[171]=muted?1.f:0.f;MemoryBarrier();
+        data[172]=data[172]>=1000000.f?1.f:data[172]+1.f;
+    }
     void Pulse(int hand, float amplitude, int duration) {
         std::lock_guard lock(mutex);
         if (data) pulses.Push(hand, amplitude, duration, GetTickCount64());

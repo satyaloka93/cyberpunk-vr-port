@@ -1381,7 +1381,7 @@ bool DrawLiveControls(LiveControlsUiState& state,int section,bool* foveatedEditi
                 changed |= widgets::Combo("Driving audio channels", &state.xrVehicleAudioChannels,
                     "Stereo\0Stronger channel to both hands\0Left audio to both hands\0Right audio to both hands\0");
                 changed |= UI::Checkbox("Driving audio only while each hand holds wheel/handlebar", &state.xrVehicleAudioRequireGrip);
-                UI::TextWrapped("Unchecked: road/engine rumble continues with hands off while driving. Uses the active Toolkit or OpenXR output. Toolkit full-game audio above is independent; leave it off if you only want driving rumble.");
+                UI::TextWrapped("Unchecked: road/engine rumble continues with hands off while driving. On bikes, road rumble pauses with the front wheel lifted; liftoff and touchdown give short pulses. Driving strength and per-hand grip settings also apply to these pulses. Uses the active Toolkit or OpenXR output. Toolkit full-game audio above is independent; leave it off if you only want driving rumble.");
                 if (UI::IsItemHovered()) UI::SetTooltip("Earlier fork's 28-320 Hz road/engine envelope, only while driving.\n"
                     "Default output audio (including music/other apps) can contribute. Zero disables vehicle rumble only.");
             }

@@ -33,3 +33,8 @@ add_executable(haptic_queue_tests haptic_queue.cpp)
 target_compile_features(haptic_queue_tests PRIVATE cxx_std_17)
 target_include_directories(haptic_queue_tests PRIVATE ../../include)
 add_test(NAME haptic_queue_fairness COMMAND haptic_queue_tests)
+
+add_executable(bike_contact_tests bike_contact.cpp)
+target_compile_features(bike_contact_tests PRIVATE cxx_std_17)
+target_include_directories(bike_contact_tests PRIVATE ../../include)
+add_test(NAME bike_contact_policy COMMAND bike_contact_tests)
