@@ -87,3 +87,56 @@ and handling still require this live validation. No need for a performance A/B.
 
 User confirmed the direct bank works well on 2026-11-17. The subsequent wheelie/
 stoppie input work keeps this bank hook and its physical steering math unchanged.
+
+## Lean-assisted turning and recovery candidate — 2026-11-17
+
+The original direct-bank mode deliberately sent handlebars alone to TurnX.
+A recorded bank sample showed requested -17.46 degrees / actual -12.62 with
+steering zero. Physical roll was therefore not a reliable lane-change control.
+
+Banking modes now also feed a bounded lean contribution to the game's normal
+steering, only with fresh two-wheel contact. Existing body-lean strength is
+shown as **Lean turn strength** in banking modes: default0.50 makes20degrees
+request25% steering, capped35%. Handlebars add independently. Zero strength
+keeps bank-only control. This is a turning arc, not sideways teleportation.
+No tire friction, velocity, brake, traction control or physics forces are written.
+The game's speed-dependent steering and tire model remain responsible for motion.
+
+A90degree/s timestamp-driven ramp supplies both the lean steering and bank
+request, including monotonic return to upright. With same-side native bank, use
+the stronger of native and physical requests instead of their sum; opposing
+lean counters the native target. Preserve native tilt limits/scripted targets
+and no-contact fallback. Exact vehicle feel still needs headset validation.
+
+One observed code defect was reproducible offline: a6cm common hand movement,
+two-to-one grip transition, return, then two grips retained13.496degrees/33.7%
+steering at original hand positions. Banking modes now preserve the initial
+two-hand heading reference and smoothly remove that residual on rejoining
+(90degrees/s), while genuine handlebar movement remains. A temporary loss of
+one tracked hand while BOTH grips remain owned suspends the pair instead of
+creating a false one-hand pivot. Original upstream mode and car math unchanged.
+
+Countersteering from actual tire/vehicle physics is not established by that
+reproduction. Bounded bank logs now include bar/lean contributions, grip mask
+and both wheel-contact flags; these are contact observations, not tire-slip
+measurements. No claim of a universal road-traction fix.
+
+Artifact root: build/bike-lateral-control-20261117. The exact prior fork811e2c4b
+was restored from the switcher backup before this candidate was built, including
+its scripts and port settings. Game graphics settings/saves remain current.
+
+## Neutral correction — 2026-11-18
+
+In either physical-bank mode, the first complete two-hand grip sets the bar and
+lean neutral together. Sit naturally and grab both bars. The lean axes come from
+the horizontal line between the hands, so looking aside during the grab does
+not make forward/back torso movement steer sideways. Subsequent one-hand/pair
+transitions preserve the existing turn and pair-reference recovery. Release both
+and regrab to establish a new neutral. Cars and upstream steering mode retain
+their original calibration behavior.
+
+Lean turn strength now uses physical lean after its deadzone, before bank gain
+and angle cap. Bank strength changes the bike angle without multiplying the
+extra steering. No saved setting values changed. Both neutral regression cases
+failed on the previous implementation and pass now; all42 driving cases pass
+ASan/UBSan. Headset handling remains to be validated.

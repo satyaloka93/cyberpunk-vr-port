@@ -330,3 +330,34 @@ contact debounce, repeated-poll invariance and response at 30/60/90/144 Hz. The
 closed-loop test uses a simple synthetic pitch plant; it does not establish the
 correct gains for every actual Cyberpunk bike. Headset behavior still needs a test.
 Artifacts: root `build/bike-balance-hold-20261117`.
+
+## Banking turn/recovery update — 2026-11-17
+
+Body/head-tilt banking now also turns through native steering while both wheels
+are grounded. In Advanced bike tuning, **Lean turn strength** controls that
+contribution (existing saved body-lean value, default0.50; zero means bank only).
+A20degree bank at0.50 contributes25% steering; the contribution is capped35%.
+Handlebars add to it. Stronger same-side native bank and requested lean are
+coordinated rather than added twice. The90degree/s lean ramp eases upright
+recovery, without synthesizing an opposite steering pulse.
+
+Banking mode also recovers the original two-hand steering reference after a
+one-hand interval and treats a tracked-hand dropout as suspension. Car and
+upstream-mode steering remain unchanged. See BIKE-DIRECT-BANK.md for tests,
+contact limitations and the difference between turning and sideways movement.
+
+## Neutral correction — 2026-11-18
+
+In either physical-bank mode, the first complete two-hand grip sets the bar and
+lean neutral together. Sit naturally and grab both bars. The lean axes come from
+the horizontal line between the hands, so looking aside during the grab does
+not make forward/back torso movement steer sideways. Subsequent one-hand/pair
+transitions preserve the existing turn and pair-reference recovery. Release both
+and regrab to establish a new neutral. Cars and upstream steering mode retain
+their original calibration behavior.
+
+Lean turn strength now uses physical lean after its deadzone, before bank gain
+and angle cap. Bank strength changes the bike angle without multiplying the
+extra steering. No saved setting values changed. Both neutral regression cases
+failed on the previous implementation and pass now; all42 driving cases pass
+ASan/UBSan. Headset handling remains to be validated.

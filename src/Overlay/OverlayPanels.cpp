@@ -723,7 +723,7 @@ static bool DrawDrivingControls(LiveControlsUiState& state) {
                 if(UI::IsItemHovered()) UI::SetTooltip(
                     "Upstream: handlebars and sideways torso movement both steer, using upstream's original math.\n"
                     "Head-tilt assist: handlebars steer and tilting an ear toward a shoulder adds steering.\n"
-                    "Banking modes: body lean or head tilt adds bike angle; handlebars still steer independently.\n"
+                    "Banking modes: body lean or head tilt banks and gently turns the bike; handlebars add steering.\n"
                     "Grab upright facing forward. Release BOTH grips and regrab to reset neutral.\n"
                     "Use both hands for predictable handlebar control.");
                 changed |= CheckboxInt("Wheelies / stoppies",&state.xrBikeStunts);
@@ -759,14 +759,16 @@ static bool DrawDrivingControls(LiveControlsUiState& state) {
                 if(UI::CollapsingHeader("Advanced bike tuning")) {
                     float bars=cvr::anim::BikeBarLockDegrees(state.xrBikeBarLockDeg);
                     if(widgets::SliderFloat("Handlebar full lock (deg)",&bars,cvr::anim::BikeBarLockMin,cvr::anim::BikeBarLockMax,"%.0f")){state.xrBikeBarLockDeg=bars;changed=true;}
-                    if(UI::IsItemHovered())UI::SetTooltip("Default 40 degrees. Lower = more sensitive. Push one hand forward and pull the other back.\nTwo hands use their connecting line; one hand turns around a virtual pivot.");
+                    if(UI::IsItemHovered())UI::SetTooltip("Default 40 degrees. Lower = more sensitive. Push one hand forward and pull the other back.\nIn bank modes, your first complete two-hand grip sets neutral; grab both while sitting naturally.\nLooking aside at that grab does not change the lean axes. Later hand changes preserve your turn.\nTwo hands use their connecting line; one hand turns around a virtual pivot.");
                     if(leanMode==0) {
                         changed |= widgets::SliderFloat("Body lean steering strength",&state.xrBikeBodyLean,0.f,1.f,"%.2f");
                         if(UI::IsItemHovered())UI::SetTooltip("Upstream default 0.50: 15 cm sideways torso travel adds half steering.\nThe first 3 cm is a deadzone. Set zero to use handlebars only.");
                     }
                     if(state.xrBikeDirectBank) {
+                        changed |= widgets::SliderFloat("Lean turn strength",&state.xrBikeBodyLean,0.f,1.f,"%.2f");
+                        if(UI::IsItemHovered())UI::SetTooltip("%s", "Default 0.50: 20 degrees of physical lean adds 25% steering through the game's normal handling.\nIncrease for stronger lane changes; zero restores bank-only movement. Additional lean steering is capped at 35%.\nIndependent of Bank strength and Maximum added bank: those affect the bike angle only.\nRequires both wheels on the road. Handlebars add to the turn; friction and traction are unchanged.");
                         changed |= widgets::SliderFloat("Bank strength",&state.xrBikeBankGain,0.f,2.f,"%.2f");
-                        if(UI::IsItemHovered())UI::SetTooltip("Default 1.0: one degree of added bike bank per degree of physical lean beyond the deadzone.\nBody mode estimates torso angle; handlebars keep steering independently.");
+                        if(UI::IsItemHovered())UI::SetTooltip("Default 1.0: one degree of requested bike bank per degree of physical lean beyond the deadzone.\nBody mode estimates torso angle. Native steering bank is not added twice.");
                         changed |= widgets::SliderFloat("Maximum added bank (deg)",&state.xrBikeBankMaxDeg,0.f,45.f,"%.0f");
                         if(UI::IsItemHovered())UI::SetTooltip("Default 20 degrees. Limits your added bank, not the bike's natural bank. Native tilt limits still apply.");
                     }
@@ -803,7 +805,10 @@ static bool DrawDrivingControls(LiveControlsUiState& state) {
                     const auto stunt=cvr::anim::WheelLastBikeStuntSample();
                     const auto bank=cvr::bikebank::LastSample();
                     if(bike.stampUs)UI::Text("Bars %+.1f deg; body lean %+.1f cm; steering %+.0f%%",bike.barsDegrees,bike.leanMeters*100,bike.combinedShare*100);
-                    if(state.xrBikeDirectBank && bank.stampUs)UI::Text("Bank: native %+.1f + lean %+.1f; actual %+.1f deg",bank.nativeDegrees,bank.requestedDegrees,bank.actualDegrees);
+                    if(state.xrBikeDirectBank && bank.stampUs) {
+                        UI::Text("Bank: native %+.1f, lean %+.1f; target %+.1f, actual %+.1f deg",bank.nativeDegrees,bank.requestedDegrees,bank.targetDegrees,bank.actualDegrees);
+                        UI::Text("Steering: bars %+.0f%% + lean %+.0f%%",bike.barShare*100,bike.turnShare*100);
+                    }
                     if(stunt.stampUs) {
                         UI::Text("Fore/aft %+.1f cm; hands %+.1f cm; front %s",stunt.meters*100,stunt.handMeters*100,!stunt.motionValid?"unknown":stunt.frontLifted?"lifted":"grounded");
                         UI::Text("Balance hold %s: pitch %.1f / target %.1f deg",stunt.holdActive?"active":"idle",stunt.holdPitch,stunt.holdTarget);

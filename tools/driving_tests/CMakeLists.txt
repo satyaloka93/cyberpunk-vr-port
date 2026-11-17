@@ -10,7 +10,7 @@ target_include_directories(driving_tests PRIVATE ../../include ../../build/_deps
 if(MSVC)
     target_compile_options(driving_tests PRIVATE /W4 /permissive-)
 endif()
-foreach(case bike_wheelie_hold bike_wheelie_hold_response bike_contact_steering bike_wheelie_limit bike_hands_balance bike_seat_mirror grab_offset one_hand two_hands handoff lock_reversal tracking_loss rate_matrix deadzone extended_travel gamepad_range
+foreach(case bike_initial_pair_neutral bike_look_aside_neutral bike_lateral_contact bike_lateral_coupling bike_lean_ramp bike_pair_recovery bike_pair_tracking bike_wheelie_hold bike_wheelie_hold_response bike_contact_steering bike_wheelie_limit bike_hands_balance bike_seat_mirror grab_offset one_hand two_hands handoff lock_reversal tracking_loss rate_matrix deadzone extended_travel gamepad_range
              tracked_head_motion handlebar bike_lean_lifecycle bike_head_tilt bike_direct_bank bike_bank_policy bike_stunt_motion bike_stunt_lifecycle bike_stunt_native tracked_roundtrip tracked_lifetime tracked_freeze prediction_constant prediction_stop_reverse
              prediction_boundaries prediction_freshness prediction_tracking prediction_jitter prediction_model)
     add_test(NAME driving_${case} COMMAND driving_tests ${case})

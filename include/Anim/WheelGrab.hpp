@@ -53,6 +53,7 @@ struct BikeSteeringSample {
     float bankOffsetDegrees{};
     uint8_t held{};
     float barsDegrees{},leanMeters{},leanShare{},combinedShare{};
+    float barShare{},turnShare{};
     float peakLeanMeters{},peakLeanShare{};
     bool headTiltMode{},headTiltValid{};
     float headTiltDegrees{},peakHeadTiltDegrees{};

@@ -452,6 +452,127 @@ void BikeDirectBank() {
         Near(tick(pose(++seq,yaw,0,dir*20,dir*.15f,movingHands)),dir*.5f,"body bank lost independent bar steering");
     }
 }
+void BikeLateralContact() {
+    BikeAttitude a{};a.stampUs=1000000;a.vehicle=42;a.wheelsValid=true;a.frontContact=a.rearContact=true;
+    Check(BikeLeanGrounded(a,1000010,42),"fresh grounded contact disabled lean");
+    a.frontContact=false;Check(!BikeLeanGrounded(a,1000010,42),"wheelie got ground lean steering");
+    a.frontContact=true;a.rearContact=false;Check(!BikeLeanGrounded(a,1000010,42),"stoppie got ground lean steering");
+    a.rearContact=true;a.scriptedTilt=true;Check(!BikeLeanGrounded(a,1000010,42),"scripted bank got extra steer");
+    a.scriptedTilt=false;Check(!BikeLeanGrounded(a,1100001,42),"stale contact used");
+    Check(!BikeLeanGrounded(a,999999,42),"future contact used");
+    Check(!BikeLeanGrounded(a,1000010,43),"other vehicle contact used");
+    a.wheelsValid=false;Check(!BikeLeanGrounded(a,1000010,42),"invalid contact used");
+}
+void BikeLateralCoupling() {
+    using namespace cvr::bikebank;
+    for(float sign:{-1.f,1.f}) {
+        Near(LeanSteering(sign*20,.5f),sign*.25f,"lean alone does not turn gently");
+        Near(LeanSteering(sign*45,1),sign*.35f,"lean turn exceeds cap");
+        Near(LeanSteering(sign*20,0),0,"zero strength must disable lean steering");
+        Near(CoordinatedTarget(sign*12*kRadPerDegree,sign*20,38)/kRadPerDegree,sign*20,"native and lean bank double counted");
+        Near(CoordinatedTarget(sign*30*kRadPerDegree,sign*20,38)/kRadPerDegree,sign*30,"stronger native bank lost");
+        Near(CoordinatedTarget(sign*12*kRadPerDegree,-sign*5,38)/kRadPerDegree,sign*7,"counter lean lost");
+        Near(CoordinatedTarget(sign*30*kRadPerDegree,sign*45,38)/kRadPerDegree,sign*38,"native bank limit exceeded");
+        Near(CoordinatedTarget(sign*12*kRadPerDegree,0,38)/kRadPerDegree,sign*12,"upright rider altered native target");
+    }
+    Near(LeanSteering(std::numeric_limits<float>::quiet_NaN(),.5f),0,"NaN steering");
+    Near(CoordinatedTarget(.2f,20,0),.2f,"invalid native limit modified");
+    Near(CoordinatedTarget(1.f,20,38),1.f,"out of bounds native bank modified");
+}
+void BikeLeanRamp() {
+    using namespace cvr::bikebank;
+    for(int hz:{30,60,90,144})for(float sign:{-1.f,1.f}) {
+        LeanRamp ramp;uint64_t t=1000000;const uint64_t dt=1000000/hz;
+        Near(ramp.Update(sign*20,t,1,42),0,"new grab starts with torque");
+        float previous=0;
+        for(int i=0;i<hz;++i) {
+            t+=dt;const float value=ramp.Update(sign*20,t,1,42);
+            Check(sign*value>=sign*previous && std::abs(value)<=20.001,"lean ramp overshot");
+            Near(ramp.Update(sign*20,t,1,42),value,"repeat input poll advanced ramp");previous=value;
+        }
+        Near(previous,sign*20,"steady lean not reached");
+        for(int i=0;i<hz;++i) {
+            t+=dt;const float value=ramp.Update(0,t,1,42);
+            Check(sign*value>=0 && std::abs(value)<=std::abs(previous)+.0001,"recovery reversed or grew");previous=value;
+        }
+        Near(previous,0,"recovery retained a turn");
+        t+=dt;ramp.Update(sign*20,t,1,42);
+        Near(ramp.Update(sign*20,t+dt,2,42),0,"recenter did not reset lean");
+        Near(ramp.Update(sign*20,t+2*dt,2,43),0,"vehicle change did not reset lean");
+        Near(ramp.Update(sign*20,t+1000000,2,43),0,"stale input retained lean");
+    }
+}
+void BikePairRecovery() {
+    for(int hz:{30,60,90,144})for(int single:{1,2})for(float direction:{-1.f,1.f}) {
+        WheelSteering wheel;const float dt=1.f/hz;
+        auto push=[&](int held,float y,float angle=0.f) {
+            const float rad=-angle*pi/180;
+            return wheel.Update(held,{.25f*std::cos(rad),y+.25f*std::sin(rad)},
+                {-.25f*std::cos(rad),y-.25f*std::sin(rad)},.25f,40,0,true,true,dt);
+        };
+        push(3,0);push(3,direction*.06f);push(single,direction*.06f);push(single,0);
+        const float wrong=wheel.Angle();Check(std::abs(wrong)>10,"reproduction did not exercise pivot drift");
+        float last=std::abs(wrong);
+        for(int i=0;i<hz;++i) {
+            push(3,0);Check(wheel.Angle()*wrong>=-.0001,"pair recovery countersteered beyond centre");
+            Check(std::abs(wheel.Angle())<=last+.0001,"pair recovery increased wrong angle");
+            Check(last-std::abs(wheel.Angle())<=90*dt+.001,"pair recovery snapped");last=std::abs(wheel.Angle());
+        }
+        Near(wheel.Angle(),0,"two-hand centre permanently shifted");
+        Near(push(3,0,20),.5f,"intentional steering lost after recovery");
+        Near(push(3,0,0),0,"return from new turn shifted centre");
+    }
+}
+void BikeInitialPairNeutral() {
+    for(int hand:{1,2})for(float side:{-1.f,1.f}) {
+        TrackedWheelSteering w;uint64_t seq=1;
+        auto tick=[&](int held,WheelTrackingFrame f) {return w.Update(uint8_t(held),f,f.stampUs,.25f,40,0,0,true,.5f,false,25,3,true);};
+        auto first=Bars(seq++,0,{side*.10f,0,.06f});first.head.position.x=side*.10f;
+        tick(hand,first);tick(hand,Bars(seq++,0));
+        Near(tick(3,Bars(seq++,0)),0,"first complete grip inherited approach-hand steering");
+        Near(w.LeanMeters(),0,"first complete grip inherited approach-body lean");
+        Near(tick(3,Bars(seq++,20)),.5f,"steering lost after complete grip calibration");
+        tick(hand,Bars(seq++,20));
+        Near(tick(3,Bars(seq++,20)),.5f,"later rejoining hand reset deliberate turn");
+        Near(tick(3,Bars(seq++,0)),0,"paired neutral shifted after regrip");
+    }
+}
+void BikeLookAsideNeutral() {
+    for(float yaw:{-75.f,-45.f,0.f,45.f,75.f}) {
+        TrackedWheelSteering w;uint64_t seq=0;
+        auto pose=[&](float look,float sideways,float foreaft) {
+            auto f=Bars(++seq,0);
+            const float a=look*pi/360;f.head.orientation={0,std::sin(a),0,std::cos(a)};
+            const auto offset=RotateVector(f.head.orientation,XrVector3f{0,-.10f,.10f});
+            f.head.position={sideways-offset.x,1.5f-offset.y,.1f+foreaft-offset.z};
+            for(int i=0;i<2;++i) {
+                const XrVector3f world{i==0?.25f:-.25f,1.2f,-.4f};
+                f.hands[i]=RotateVector(ConjugateQuat(f.head.orientation),XrVector3f{
+                    world.x-f.head.position.x,world.y-f.head.position.y,world.z-f.head.position.z});
+            }
+            return f;
+        };
+        auto tick=[&](WheelTrackingFrame f){return w.Update(3,f,f.stampUs,.25f,40,0,0,true,.5f,false,25,3,true);};
+        tick(pose(yaw,0,0));
+        for(float forward:{-.15f,0.f,.15f}) {
+            Near(tick(pose(0,0,forward)),0,"looking aside at grab changed handlebar neutral");
+            Near(w.LeanMeters(),0,"forward lean became lateral turn after looking aside at grab");
+        }
+        for(float side:{-.15f,.15f}) {
+            tick(pose(-yaw,side,0));Near(w.LeanMeters(),side,"lateral lean scaled with initial head yaw");
+        }
+    }
+}
+void BikePairTracking() {
+    TrackedWheelSteering wheel;uint64_t seq=1;
+    auto tick=[&](WheelTrackingFrame f){return wheel.Update(3,f,f.stampUs,.25f,40,0,0,true,.5f,false,25,3,true);};
+    tick(Bars(seq++,0));Near(tick(Bars(seq++,20)),.5f,"initial bar turn");
+    auto missing=Bars(seq++,20);missing.validHands=1;tick(missing);
+    Check(!wheel.CurrentSampleValid(),"one missing hand interpreted as new grip");
+    Near(tick(Bars(seq++,0)),0,"tracking gap retained steering offset");
+    Near(tick(Bars(seq++,20)),.5f,"tracking recovery lost steering");
+}
+
 void BikeBankPolicy() {
     using namespace cvr::bikebank;
     for(float dir:{-1.f,1.f}) {
@@ -861,7 +982,7 @@ void BikeSeatMirror() {
 }
 int main(int argc,char** argv) {
     if(argc!=2)return 2;const std::string name=argv[1];
-    if(name=="bike_wheelie_hold")BikeWheelieHoldPolicy();else if(name=="bike_wheelie_hold_response")BikeWheelieHoldResponse();else if(name=="bike_contact_steering")BikeContactSteering();else if(name=="bike_wheelie_limit")BikeWheelieLimit();else if(name=="bike_hands_balance")BikeHandsBalance();else if(name=="bike_seat_mirror")BikeSeatMirror();else if(name=="grab_offset")GrabOffset();else if(name=="one_hand")OneHand();
+    if(name=="bike_initial_pair_neutral")BikeInitialPairNeutral();else if(name=="bike_look_aside_neutral")BikeLookAsideNeutral();else if(name=="bike_lateral_contact")BikeLateralContact();else if(name=="bike_lateral_coupling")BikeLateralCoupling();else if(name=="bike_lean_ramp")BikeLeanRamp();else if(name=="bike_pair_recovery")BikePairRecovery();else if(name=="bike_pair_tracking")BikePairTracking();else if(name=="bike_wheelie_hold")BikeWheelieHoldPolicy();else if(name=="bike_wheelie_hold_response")BikeWheelieHoldResponse();else if(name=="bike_contact_steering")BikeContactSteering();else if(name=="bike_wheelie_limit")BikeWheelieLimit();else if(name=="bike_hands_balance")BikeHandsBalance();else if(name=="bike_seat_mirror")BikeSeatMirror();else if(name=="grab_offset")GrabOffset();else if(name=="one_hand")OneHand();
     else if(name=="two_hands")TwoHands();else if(name=="handoff")Handoff();
     else if(name=="lock_reversal")LockReversal();else if(name=="tracking_loss")TrackingLoss();
     else if(name=="rate_matrix")RateMatrix();else if(name=="deadzone")Deadzone();

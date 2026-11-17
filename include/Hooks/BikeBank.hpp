@@ -8,6 +8,7 @@ cvr::anim::BikeAttitude LastMotion();
 struct Sample {
     uint64_t stampUs{};
     float nativeDegrees{},requestedDegrees{},targetDegrees{},actualDegrees{},maxDegrees{},steering{};
+    float barShare{},leanSteer{};uint8_t held{};bool front{},rear{},contactValid{};
     // 0 applied, 1 invalid layout, 2 scripted tilt, 3 airborne, 4 input unavailable.
     unsigned reason=4;
 };

@@ -9,6 +9,7 @@ struct BikeAttitude {
     float pitch{},rate{},upZ=1,roll{};
     int contacts{};
     bool valid{},frontContact{},rearContact{},wheelsValid{};
+    bool scriptedTilt{}; // native quest/custom bank owns the vehicle
     float frontGap{},rearGap{};uint32_t wheelCount{};
 };
 // Exact ordered predicate used by the game's wheel +B4 query (RVA53BFF0).
@@ -16,6 +17,9 @@ struct BikeAttitude {
 inline bool BikeNativeWheelContact(float gap) {return gap<=0.f;}
 inline bool BikeContactFresh(const BikeAttitude& a,uint64_t now,uintptr_t owner) {
     return a.wheelsValid && owner && a.vehicle==owner && a.stampUs && now>=a.stampUs && now-a.stampUs<=100000;
+}
+inline bool BikeLeanGrounded(const BikeAttitude& a,uint64_t now,uintptr_t owner) {
+    return BikeContactFresh(a,now,owner) && a.frontContact && a.rearContact && !a.scriptedTilt;
 }
 inline bool BikeMotionFresh(const BikeAttitude& a,uint64_t now,uintptr_t owner) {
     return a.valid && BikeContactFresh(a,now,owner);

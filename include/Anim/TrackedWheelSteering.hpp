@@ -23,6 +23,7 @@ public:
     static constexpr uint64_t kHoldUs=2000000;   // the last output is held this long through a suspension, then 0
     void Reset() { *this={}; }
     bool CurrentSampleValid() const { return m_currentSampleValid; }
+    bool PairCenteredThisUpdate() const { return m_pairCenteredThisUpdate; }
     float Angle() const { return m_wheel.Angle(); }
     float HeadTiltDegrees() const { return m_tiltDegrees; }
     bool HeadTiltValid() const { return m_tiltValid; }
@@ -39,13 +40,16 @@ public:
     float Update(uint8_t held,const WheelTrackingFrame& frame,uint64_t now,
                  float radius,float limit,float dead,float predictionMs=0,
                  bool handlebar=false,float bodyLean=0, bool headTilt=false,float tiltLock=25,float tiltDead=3,bool directBank=false) {
-        m_currentSampleValid=false;
+        m_currentSampleValid=false;m_pairCenteredThisUpdate=false;
         held&=3;
         if(!held) {Reset();return 0;}
         const bool useHeadTilt=handlebar && headTilt;
         const bool useDirectBank=handlebar && directBank;
         if(m_headTilt!=useHeadTilt || m_directBank!=useDirectBank)Reset();
         const uint8_t tracked=held&frame.validHands;
+        // A temporarily untracked hand still owns its grip. Do not turn a
+        // two-hand bar into a new one-hand pivot during that interruption.
+        if(useDirectBank && held==3 && tracked!=3)return Suspend(now);
         const auto& q=frame.head.orientation;
         const float norm=q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w;
         if(!tracked || !frame.headValid || !frame.origin || !frame.sequence || !frame.stampUs ||
@@ -56,9 +60,24 @@ public:
         m_origin=frame.origin;
         m_headTilt=useHeadTilt;
         m_directBank=useDirectBank;
+        const float scale=1/std::sqrt(norm);
+        const XrQuaternionf rotation{q.x*scale,q.y*scale,q.z*scale,q.w*scale};
+        // The first hand can move while the second finds its grip. Establish
+        // the riding neutral once BOTH grips are owned, not from that approach.
+        // Use the physical bar span for the lean axes: looking aside at grab
+        // must not turn a later forward/back body movement into lateral input.
+        if(useDirectBank && tracked==3 && !m_pairCentered) {
+            for(const auto& h:frame.hands)
+                if(!Finite(h) || h.x*h.x+h.y*h.y+h.z*h.z>4)return Suspend(now);
+            const auto r=RotateVector(rotation,frame.hands[0]);
+            const auto l=RotateVector(rotation,frame.hands[1]);
+            const float x=r.x-l.x,z=r.z-l.z,length=std::hypot(x,z);
+            if(!std::isfinite(length)||length<.08f)return Suspend(now);
+            m_bankRightX=x/length;m_bankRightZ=z/length;m_bankBasisValid=true;
+            m_pairCentered=true;m_pairCenteredThisUpdate=true;
+            m_wheel.Reset();m_prediction.Reset();m_leanValid=false;m_tiltNeutralValid=false;
+        }
         if(useHeadTilt) {
-            const float scale=1/std::sqrt(norm);
-            const XrQuaternionf rotation{q.x*scale,q.y*scale,q.z*scale,q.w*scale};
             const auto right=RotateVector(rotation,XrVector3f{1,0,0});
             const auto up=RotateVector(rotation,XrVector3f{0,1,0});
             // Head roll relative to gravity: yaw cancels, and normal pitch
@@ -77,9 +96,7 @@ public:
         }
         const float horizon=WheelPrediction::ClampMs(predictionMs);
         if(m_held!=tracked || horizon!=m_horizon){m_prediction.Reset();m_horizon=horizon;}
-        if(m_sequence==frame.sequence && m_held==tracked){m_currentSampleValid=true;return Keep(now,Output(now,limit,dead));}
-        const float scale=1/std::sqrt(norm);
-        const XrQuaternionf rotation{q.x*scale,q.y*scale,q.z*scale,q.w*scale};
+        if(!m_pairCenteredThisUpdate && m_sequence==frame.sequence && m_held==tracked){m_currentSampleValid=true;return Keep(now,Output(now,limit,dead));}
         if(useDirectBank && !m_bankBasisValid) {
             const auto forward=RotateVector(rotation,XrVector3f{0,0,-1});
             const float horizontal=std::hypot(forward.x,forward.z);
@@ -99,6 +116,8 @@ public:
             points[i]=useDirectBank ? WheelPoint{x*m_bankRightX+z*m_bankRightZ,x*m_bankRightZ-z*m_bankRightX}
                 : WheelPoint{x,handlebar ? -z:frame.head.position.y+world.y};
         }
+        const float sampleDt=m_stamp && frame.stampUs>=m_stamp ?
+            std::min(float(frame.stampUs-m_stamp)*1e-6f,.05f):0.f;
         m_sequence=frame.sequence;m_stamp=frame.stampUs;m_held=tracked;
         // THE BODY LEANING INTO A BIKE'S TURN, measured from where it was at the grab. At the neck and not the headset:
         // the eyes swing round it, and looking 60 degrees aside moved the headset about 9 cm sideways.
@@ -111,7 +130,7 @@ public:
             m_leanMeters=neck-m_leanNeck;
             m_leanDegrees=BikeLeanDegrees(m_leanMeters,bodyLean,WheelFullLockDegrees(limit));
         }
-        m_wheel.Update(tracked,points[0],points[1],radius,limit,dead,handlebar);
+        m_wheel.Update(tracked,points[0],points[1],radius,limit,dead,handlebar,useDirectBank,sampleDt);
         m_currentSampleValid=true;
         if(!m_horizon)return Keep(now,CombinedOutput(Angle(),limit,dead));
         m_prediction.Push(Angle(),frame.stampUs);
@@ -125,7 +144,7 @@ private:
     float m_horizon{},m_last{};
     static constexpr float kNeckBelowM=.10f,kNeckBehindM=.10f; // estimated, from between the eyes
     float m_leanDegrees{},m_leanNeck{},m_leanMeters{};
-    bool m_leanValid{};
+    bool m_leanValid{},m_pairCentered{},m_pairCenteredThisUpdate{};
     bool m_headTilt{},m_tiltNeutralValid{},m_tiltValid{},m_directBank{},m_currentSampleValid{},m_bankBasisValid{};
     float m_bankRightX{},m_bankRightZ{};
     float m_tiltNeutral{},m_tiltDegrees{},m_tiltShare{};

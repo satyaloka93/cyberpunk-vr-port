@@ -16,7 +16,7 @@ public:
     void Reset() { *this={}; }
     float Angle() const { return m_angle; }
     float Update(uint8_t held,WheelPoint right,WheelPoint left,float radius,
-                 float maxDegrees,float deadDegrees,bool handlebar=false) {
+                 float maxDegrees,float deadDegrees,bool handlebar=false,bool stablePair=false,float dt=0) {
         held&=3;
         if(!held || ((held&1) && !Finite(right)) || ((held&2) && !Finite(left))) {
             Reset();return 0;
@@ -59,6 +59,18 @@ public:
             // Only the output saturates; returning the hand returns to zero.
             m_angle+=delta;
         }
+        if(stablePair && held==3) {
+            if(!m_pairValid) {m_pairVector=v;m_pairAngle=m_angle;m_pairValid=true;}
+            else if(rebase)m_pairRecover=true;
+            if(m_pairRecover) {
+                const float turn=-std::atan2(m_pairVector.x*v.y-m_pairVector.y*v.x,
+                                             m_pairVector.x*v.x+m_pairVector.y*v.y)*kDegrees;
+                const float target=m_pairAngle+turn;
+                const float step=90.f*(std::isfinite(dt)?std::clamp(dt,0.f,.05f):0.f);
+                m_angle+=std::clamp(target-m_angle,-step,step);
+                if(std::abs(target-m_angle)<.0001f)m_pairRecover=false;
+            }
+        }
         m_previous=v;m_valid=true;
         return Output(m_angle,limit,deadDegrees);
     }
@@ -76,7 +88,8 @@ private:
     static WheelPoint Sub(WheelPoint a,WheelPoint b) { return {a.x-b.x,a.y-b.y}; }
     static float Length(WheelPoint p) { return std::hypot(p.x,p.y); }
     uint8_t m_held{};
-    bool m_valid{};
+    bool m_valid{},m_pairValid{},m_pairRecover{};
+    WheelPoint m_pairVector{};float m_pairAngle{};
     float m_angle{};
     WheelPoint m_pivot{},m_previous{};
 };

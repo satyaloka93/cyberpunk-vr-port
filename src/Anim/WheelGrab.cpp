@@ -98,6 +98,7 @@ bool  g_wheelCenterValid = false;
 // animation holds it. It is the reference LEVER for the steering measurement below.
 float g_wheelSpan = 0.0f;
 TrackedWheelSteering g_steering;
+cvr::bikebank::LeanRamp g_bankLean, g_turnLean;
 TrackedBikeStunts g_stunts;
 BikeHandBalance g_handBalance;
 BikeWheelieAssist g_wheelieAssist;
@@ -355,6 +356,7 @@ float WheelSteerInput() {
         std::lock_guard lock(g_steerMutex);
         if(g_sampledGrabEpoch==(grab>>2)) {
             g_lastBikeSample.bankValid=false;
+            g_bankLean.Reset();g_turnLean.Reset();
             g_stunts.Suspend();
             float out=g_steering.Suspend(XrDiagNowUs());
             if(g_wheelMountedBike.load(std::memory_order_relaxed) && g_liveControls.xrBikeAirLeanOnly)out=0;
@@ -375,7 +377,7 @@ float WheelSteerInput() {
         }
     }
     std::lock_guard lock(g_steerMutex);
-    if(g_sampledGrabEpoch!=(grab>>2)){g_steering.Reset();g_lastBikeSample={};ResetBikeStunts();g_lastStuntSample={};g_sampledGrabEpoch=grab>>2;}
+    if(g_sampledGrabEpoch!=(grab>>2)){g_steering.Reset();g_bankLean.Reset();g_turnLean.Reset();g_lastBikeSample={};ResetBikeStunts();g_lastStuntSample={};g_sampledGrabEpoch=grab>>2;}
     const bool car=g_wheelMountedCar.load(std::memory_order_relaxed);
     const bool bike=g_wheelMountedBike.load(std::memory_order_relaxed);
     const bool directBank=bike && g_liveControls.xrBikeDirectBank!=0;
@@ -390,6 +392,10 @@ float WheelSteerInput() {
         g_liveControls.xrWheelPrediction ? g_liveControls.xrWheelPredictionMs:0.f,
         bike,g_liveControls.xrBikeBodyLean,g_liveControls.xrBikeHeadTilt!=0,
         g_liveControls.xrBikeTiltLockDeg,g_liveControls.xrBikeTiltDeadDeg,directBank);
+    if(g_steering.PairCenteredThisUpdate()) {
+        g_bankLean.Reset();g_turnLean.Reset();
+        Log("[bike-neutral] first two-hand grip centered bars and lean; head-look independent axes\n");
+    }
     // A car's output is the share of its cabin wheel's full lock the hands have turned; the input that puts the
     // cabin wheel there is read off its curve, so the wheel the hands hold turns with them one to one.
     if(car)out=CarInputForCabinAngle(out*CarCabinWheelLockDeg);
@@ -398,15 +404,29 @@ float WheelSteerInput() {
        g_steering.CurrentSampleValid() && g_steering.SampleStampUs()==frame.stampUs) {
         const bool tiltMode=g_liveControls.xrBikeHeadTilt!=0;
         if(g_lastBikeSample.origin!=frame.origin || g_lastBikeSample.headTiltMode!=tiltMode)g_lastBikeSample={};
-        auto& s=g_lastBikeSample;s.stampUs=frame.stampUs;s.origin=frame.origin;
+        auto& s=g_lastBikeSample;s.barShare=out;s.stampUs=frame.stampUs;s.origin=frame.origin;
         s.held=uint8_t(state&grab&frame.validHands&3);s.barsDegrees=g_steering.Angle();
         s.headTiltMode=tiltMode;s.headTiltValid=g_steering.HeadTiltValid();s.headTiltDegrees=g_steering.HeadTiltDegrees();
         if(std::abs(s.headTiltDegrees)>std::abs(s.peakHeadTiltDegrees))s.peakHeadTiltDegrees=s.headTiltDegrees;
         s.leanMeters=g_steering.LeanMeters();s.combinedShare=out;
         s.vehicleIdentity=CurrentMountedVehicleIdentity();s.directBank=directBank;
-        s.bankValid=directBank && s.vehicleIdentity && (!tiltMode || s.headTiltValid);
+        s.bankValid=directBank && s.vehicleIdentity && g_sceneTier.load(std::memory_order_relaxed)<=2 && (!tiltMode || s.headTiltValid);
         s.bankOffsetDegrees=s.bankValid ? cvr::bikebank::RequestedDegrees(tiltMode,s.headTiltValid,s.headTiltDegrees,s.leanMeters,
             g_liveControls.xrBikeTiltDeadDeg,g_liveControls.xrBikeBankGain,g_liveControls.xrBikeBankMaxDeg):0;
+        s.turnShare=0;
+        if(s.bankValid) {
+            s.bankOffsetDegrees=g_bankLean.Update(s.bankOffsetDegrees,s.stampUs,s.origin,s.vehicleIdentity);
+            // Contact must be fresh: no made-up steering during a jump or stale
+            // physics. Rear-wheel-only lean remains the wheelie policy below.
+            const auto contact=cvr::bikebank::LastMotion();
+            // Bank gain/limit change the chassis angle, not steering sensitivity.
+            const float physicalLean=cvr::bikebank::RequestedDegrees(tiltMode,s.headTiltValid,
+                s.headTiltDegrees,s.leanMeters,g_liveControls.xrBikeTiltDeadDeg,1.f,45.f);
+            const float turnLean=g_turnLean.Update(physicalLean,s.stampUs,s.origin,s.vehicleIdentity);
+            if(BikeLeanGrounded(contact,XrDiagNowUs(),s.vehicleIdentity))
+                s.turnShare=cvr::bikebank::LeanSteering(turnLean,g_liveControls.xrBikeBodyLean);
+            out=std::clamp(out+s.turnShare,-1.f,1.f);s.combinedShare=out;
+        } else {g_bankLean.Reset();g_turnLean.Reset();}
         s.leanShare=tiltMode ? (g_steering.HeadTiltValid() ? BikeTiltOutput(g_steering.HeadTiltDegrees(),
             g_liveControls.xrBikeTiltLockDeg,g_liveControls.xrBikeTiltDeadDeg):0.f) : WheelSteering::Output(g_steering.LeanDegrees(),
             BikeBarLockDegrees(g_liveControls.xrBikeBarLockDeg),g_liveControls.xrWheelSteerDeadDeg);
@@ -414,6 +434,7 @@ float WheelSteerInput() {
             s.peakLeanMeters=s.leanMeters;s.peakLeanShare=s.leanShare;
         }
     }
+    if(!g_lastBikeSample.bankValid){g_bankLean.Reset();g_turnLean.Reset();}
     if(bike && g_liveControls.xrBikeAirLeanOnly) {
         const auto motion=cvr::bikebank::LastMotion();
         const bool lifted=BikeFrontLifted(motion,XrDiagNowUs(),CurrentMountedVehicleIdentity());
@@ -601,7 +622,7 @@ void WheelFingers(uint8_t* boneBuf) {
 
 void WheelReset() {
     std::lock_guard lock(g_steerMutex);
-    g_steering.Reset();g_lastBikeSample={};ResetBikeStunts();g_lastStuntSample={};g_wheelFrame=0;
+    g_steering.Reset();g_bankLean.Reset();g_turnLean.Reset();g_lastBikeSample={};ResetBikeStunts();g_lastStuntSample={};g_wheelFrame=0;
     const auto epoch=(g_grabState.load(std::memory_order_relaxed)>>2)+1;
     g_grabState.store(epoch<<2,std::memory_order_release);g_wheelStampMs.store(0,std::memory_order_relaxed);
     for (int h = 0; h < 2; ++h) {

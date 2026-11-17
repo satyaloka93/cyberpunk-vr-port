@@ -34,4 +34,41 @@ inline float AddToNative(float nativeRadians,float addedDegrees,float nativeMaxD
     if(std::abs(nativeRadians)>limit+.0001f)return nativeRadians;
     return std::clamp(nativeRadians+std::clamp(addedDegrees,-45.f,45.f)*kRadPerDegree,-limit,limit);
 }
+// A gentle turn through native speed-dependent steering; no sideways force.
+// Default strength .5 gives 25% steering at 20 degrees of physical bank.
+inline float LeanSteering(float degrees,float strength) {
+    if(!std::isfinite(degrees))return 0;
+    strength=std::isfinite(strength)?std::clamp(strength,0.f,1.f):.5f;
+    return std::clamp(degrees*strength/40.f,-.35f,.35f);
+}
+// Steering already requests bank: use the stronger same-side request, not both
+// added together. Opposing lean still counters the native steering bank.
+inline float CoordinatedTarget(float nativeRadians,float leanDegrees,float maximum) {
+    if(!std::isfinite(nativeRadians)||!std::isfinite(leanDegrees)||leanDegrees==0||
+       !std::isfinite(maximum)||maximum<1||maximum>89)return nativeRadians;
+    const float limit=maximum*kRadPerDegree;
+    if(std::abs(nativeRadians)>limit+.0001f)return nativeRadians;
+    const float lean=std::clamp(leanDegrees,-45.f,45.f)*kRadPerDegree;
+    const float target=nativeRadians*lean>=0 ? std::copysign(std::max(std::abs(nativeRadians),std::abs(lean)),lean)
+                                           : nativeRadians+lean;
+    return std::clamp(target,-limit,limit);
+}
+// Both lean steering and bank share this monotonic ramp. Timestamp, not poll
+// count, controls the rate. Recenter, vehicle changes and stale input reset it.
+class LeanRamp {
+public:
+    void Reset(){*this={};}
+    float Update(float wanted,uint64_t stamp,uint64_t origin,uintptr_t vehicle) {
+        if(!std::isfinite(wanted)||!stamp||!origin||!vehicle){Reset();return 0;}
+        if(origin!=m_origin||vehicle!=m_vehicle||stamp<m_stamp||stamp-m_stamp>100000){
+            Reset();m_stamp=stamp;m_origin=origin;m_vehicle=vehicle;return 0;
+        }
+        const float step=90.f*float(stamp-m_stamp)*1e-6f;
+        m_stamp=stamp;m_value+=std::clamp(std::clamp(wanted,-45.f,45.f)-m_value,-step,step);
+        return m_value;
+    }
+private:
+    float m_value{};uint64_t m_stamp{},m_origin{};uintptr_t m_vehicle{};
+};
+
 }

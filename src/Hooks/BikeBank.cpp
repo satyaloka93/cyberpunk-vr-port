@@ -34,6 +34,8 @@ std::mutex motionMutex;
 cvr::anim::BikeAttitude motion{};
 void ObserveMotion(uintptr_t model,uintptr_t owner,float dt) {
     cvr::anim::BikeAttitude next{};next.stampUs=XrDiagNowUs();next.vehicle=owner;
+    float custom=0;
+    next.scriptedTilt=!ReadFloatSafe(model+0xE24,&custom)||!std::isfinite(custom)||custom!=0;
     uintptr_t physical{},state{};float q[4]{};
     if(motionReady.load(std::memory_order_relaxed) && ReadU64Safe(model+0x60,&physical) && physical &&
        ReadU64Safe(physical+0x2D8,&state) && state &&
@@ -63,12 +65,15 @@ void ObserveMotion(uintptr_t model,uintptr_t owner,float dt) {
 }
 void Record(Sample next) {
     std::lock_guard lock(sampleMutex);sample=next;
-    // One bounded line per five seconds, only for the player's mounted bike.
-    static uint64_t lastLog=0;
-    if(next.stampUs>=lastLog && next.stampUs-lastLog<5000000)return;
-    lastLog=next.stampUs;
-    Log("[bike-bank] native=%.2f add=%.2f target=%.2f actual=%.2f limit=%.2f steer=%.3f reason=%u\n",
-        next.nativeDegrees,next.requestedDegrees,next.targetDegrees,next.actualDegrees,next.maxDegrees,next.steering,next.reason);
+    // Slow periodic sample plus bounded grip/contact transitions, not a per-frame log.
+    static uint64_t lastLog=0;static unsigned previous=~0u;
+    const unsigned state=next.reason|(unsigned(next.held)<<4)|(unsigned(next.front)<<6)|
+        (unsigned(next.rear)<<7)|(unsigned(next.contactValid)<<8);
+    const auto elapsed=next.stampUs>=lastLog?next.stampUs-lastLog:0;
+    if(lastLog && elapsed<5000000 && (state==previous || elapsed<250000))return;
+    previous=state;lastLog=next.stampUs;
+    Log("[bike-bank] native=%.2f add=%.2f target=%.2f actual=%.2f limit=%.2f steer=%.3f reason=%u bars=%.3f lean_turn=%.3f held=%u contacts=%d/%d valid=%d\n",
+        next.nativeDegrees,next.requestedDegrees,next.targetDegrees,next.actualDegrees,next.maxDegrees,next.steering,next.reason,next.barShare,next.leanSteer,unsigned(next.held),int(next.front),int(next.rear),int(next.contactValid));
 }
 float __fastcall Target(uintptr_t model,float dt) {
     // Original owns its internal smoothing state and all native/scripted cases.
@@ -86,6 +91,10 @@ float __fastcall Target(uintptr_t model,float dt) {
     if(!g_liveControls.xrBikeDirectBank)return native;
     Sample out{};out.stampUs=XrDiagNowUs();out.nativeDegrees=native/kRadPerDegree;
     out.targetDegrees=out.nativeDegrees;out.reason=1;
+    const auto contact=LastMotion();out.contactValid=contact.wheelsValid;
+    out.front=contact.frontContact;out.rear=contact.rearContact;
+    const auto input=cvr::anim::WheelLastBikeSample();
+    out.barShare=input.barShare;out.leanSteer=input.turnShare;out.held=input.held;
     float custom=0,actual=0;uintptr_t back=0;
     if(!ReadU64Safe(owner+0x2D0,&back) || back!=model ||
        !ReadFloatSafe(model+0xE24,&custom) || !ReadFloatSafe(model+0xE64,&out.maxDegrees) ||
@@ -97,13 +106,12 @@ float __fastcall Target(uintptr_t model,float dt) {
     // The game returns zero natural bank without wheel contact; do not introduce
     // our own balance torque in midair or replace the native air controls.
     if(contacts(model)<=0) {out.reason=3;Record(out);return native;}
-    const auto input=cvr::anim::WheelLastBikeSample();
     if(!(cvr::anim::WheelControlState()&3) || !input.bankValid || !input.directBank ||
        input.headTiltMode!=(g_liveControls.xrBikeHeadTilt!=0) || input.vehicleIdentity!=owner ||
        !Fresh(out.stampUs,input.stampUs)) {out.reason=4;Record(out);return native;}
     if(!std::isfinite(out.maxDegrees) || out.maxDegrees<1 || out.maxDegrees>89) {Record(out);return native;}
     out.requestedDegrees=input.bankOffsetDegrees;
-    const float result=AddToNative(native,out.requestedDegrees,out.maxDegrees);
+    const float result=CoordinatedTarget(native,out.requestedDegrees,out.maxDegrees);
     out.targetDegrees=result/kRadPerDegree;out.reason=0;Record(out);
     return result;
 }
@@ -126,7 +134,7 @@ bool Install() {
     if(MH_CreateHook(target,reinterpret_cast<void*>(&Target),reinterpret_cast<void**>(&original))!=MH_OK)return false;
     if(MH_EnableHook(target)!=MH_OK) {MH_RemoveHook(target);original=nullptr;return false;}
     ready.store(true,std::memory_order_release);
-    Log("[bike-bank] direct target hook ready; native bank + physical lean, native balance controller retained\n");
+    Log("[bike-bank] direct target hook ready; coordinated physical lean + native steering bank, native balance controller retained\n");
     return true;
 }
 CVR_HOOK("BikeBank",::cvr::hooks::Stage::Boot,83,Install);
