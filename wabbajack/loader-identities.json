@@ -49,6 +49,20 @@
       "version": null,
       "sha256": "d45a9cae869271b3818c8f7f1ce236aec6ce0643e89913676561270ab09f3ac5",
       "source": "Local deployment 2026-11-16; CheekyFoveatedDLSS .okf/operations/cp2077-renodx-investigation-20261115.md. Exact hash identity only, not package compatibility."
+    },
+    {
+      "path": "bin/x64/winmm.dll",
+      "identity": "RED4ext loader",
+      "version": "1.31.1",
+      "sha256": "531efcb3d50dbbd03abd385963cf6cea97a24cdbed4a45cbb1997733b8feaf47",
+      "source": "WopsS/RED4ext v1.31.1 official ZIP SHA256 ce10bda503fd48c8674ef3e517d635636a262c089055f189caabeb300eef7932"
+    },
+    {
+      "path": "red4ext/RED4ext.dll",
+      "identity": "RED4ext framework",
+      "version": "1.31.1",
+      "sha256": "988f26cc714e795c5f4dbe93c381c8bf748551f4fd022d529a0d56e863d65d38",
+      "source": "WopsS/RED4ext v1.31.1 official ZIP SHA256 ce10bda503fd48c8674ef3e517d635636a262c089055f189caabeb300eef7932"
     }
   ]
 }

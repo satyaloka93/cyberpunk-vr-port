@@ -46,10 +46,9 @@ function Show-LoaderIdentityReport([string]$Root) {
 }
 function Test-Red4extIdentity([string]$Root) {
     $catalog = @(Get-LoaderCatalog)
-    foreach ($rel in @('bin\x64\winmm.dll','red4ext\RED4ext.dll')) {
-        if ((Get-LoaderIdentity $Root $rel $catalog).State -ne 'VERIFIED') { return $false }
-    }
-    return $true
+    $loader = Get-LoaderIdentity $Root 'bin\x64\winmm.dll' $catalog
+    $framework = Get-LoaderIdentity $Root 'red4ext\RED4ext.dll' $catalog
+    return ($loader.State -eq 'VERIFIED' -and $framework.State -eq 'VERIFIED' -and $loader.Version -eq $framework.Version)
 }
 function Assert-Red4extRepairSafe([string]$Root) {
     $catalog = @(Get-LoaderCatalog)
