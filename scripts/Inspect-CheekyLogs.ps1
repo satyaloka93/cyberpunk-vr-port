@@ -1,4 +1,5 @@
 #requires -Version 5.1
+. (Join-Path $PSScriptRoot 'Inspect-OpenXRLayers.ps1')
 # Read-only inspection. Keep session evidence separate from inferred causes.
 if (-not ('CpvrLogTail' -as [type])) {
     Add-Type -TypeDefinition @'
@@ -148,7 +149,7 @@ function Get-CpvrInstallationDiagnostics {
     if(@($identities | Where-Object {$_.State -eq 'UNKNOWN'}).Count){$hints.Add('UNKNOWN is not proof of damage or conflict. A newer/custom DLL needs provenance before identifying it.')}
     if($logs[0].State -eq 'MISSING'){$hints.Add('Missing Cheeky loader log: possible older loader, proxy never loaded, failure before entry, or unwritable directory. This is not proof of a mod conflict.')}
     $hints.Add('Cheeky DXGI and VERSION are alternatives. Do not overwrite an ASI Loader version.dll or RED4ext winmm.dll. The switcher does not install or repair Cheeky.')
-    return [pscustomobject]@{GeneratedUtc=[datetime]::UtcNow;GameRoot=$Root;Identities=$identities;Logs=$results;Hints=@($hints.ToArray())}
+    return [pscustomobject]@{GeneratedUtc=[datetime]::UtcNow;GameRoot=$Root;Identities=$identities;OpenXR=(Get-CpvrOpenXrDiagnostics -Root $Root);Logs=$results;Hints=@($hints.ToArray())}
 }
 
 function Format-CpvrInstallationDiagnostics {
@@ -164,6 +165,7 @@ function Format-CpvrInstallationDiagnostics {
         if($item.ExpectedPath){"  Catalog location: $($item.ExpectedPath)"}
     }
     foreach($hint in $Report.Hints){"NOTE: $hint"}
+    Format-CpvrOpenXrDiagnostics $Report.OpenXR
     foreach($r in $Report.Logs){
         $l=$r.Log;'';"[$($l.State)] $($l.Path)"
         if($l.State -eq 'MISSING'){'  Log missing.';continue}

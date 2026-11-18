@@ -26,7 +26,9 @@ The SteamVR optimization package is ON (restart required to change); VDXR bypass
 it automatically. Adaptive real-frame pacing is ON. Diagnostic recording is OFF.
 
 Existing Cheeky/ReShade loaders and settings are preserved. Option 11 identifies
-known loaders and extracts recent errors without changing files or uploading logs.
+known loaders, checks 64-bit OpenXR layer registrations/versions/environment overrides,
+and extracts recent errors without changing files or uploading logs. It flags possible
+stale/duplicate Cheeky layers and gives matching-package repair guidance; no automatic repair.
 See docs/CHEEKY-DIAGNOSTICS.md. Unknown hashes are not automatically a fault.
 
 Options 9/10 retain the game-2.5 VRCAM 0.1.8 comparison, with its older dependencies.

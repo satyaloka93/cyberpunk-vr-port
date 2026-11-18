@@ -23,6 +23,52 @@ To export a local report, use PowerShell from the extracted switcher directory:
 
 Use your actual game path. The report must be outside the game folder, use a new filename, and have an existing parent directory without junctions/symlinks. Reports contain paths/usernames; review them before sharing. Nothing is uploaded automatically.
 
-## RC1 preparation status
+## OpenXR layer checks (RC1 switcher update)
 
-This diagnostic option is implemented for the upcoming 0.2.3 RC1 workflow. The preparation package retains the previously published upstream 0.2.2/fork RC5/VRCAM download targets. It does **not** yet download the locally tested RC1 DLL. Release publication must pin the completed RC1 archive and update its dependency manifest and labels together. The local Cheeky diagnostic-proxy identities identify a debug package, not a bundled/released Cheeky installer.
+Option 11 also reads the **64-bit** HKCU and HKLM registry views at
+`SOFTWARE\Khronos\OpenXR\1\ApiLayers\Implicit` and `...\Explicit`.
+It does not require elevation to write anything; unreadable keys are reported as an incomplete scan.
+The 32-bit registrations are not used to diagnose this 64-bit game.
+
+For each registration it shows the registry key, DWORD value, manifest path,
+manifest-declared layer name, resolved DLL path, embedded file version and SHA-256.
+The manifest's `implementation_version` is not treated as a release version.
+A zero DWORD enables an implicit registration; explicit registration only makes
+that layer available to an application. Nonzero DWORD values disable entries.
+Neither registry presence nor a disk hash proves which DLL a running game loaded.
+
+Checks identify missing/malformed manifests, missing/unreadable DLLs, different
+enabled manifests declaring the same layer name, repeated registration of the
+same manifest, and possible Cheeky layer/Host/Runtime version-label differences.
+Different labels are advisory; equal labels do not guarantee matching releases.
+Cheeky plus OFXR is reported without assuming incompatibility. Unknown or upstream
+files are not automatically classified as broken.
+
+The report shows relevant Process/User/Machine environment overrides, including
+`CHEEKY_OPENXR_LAYER_DISABLE`, `XR_API_LAYER_PATH`, `XR_ADD_API_LAYER_PATH`,
+`XR_ENABLE_API_LAYERS`, `XR_LOADER_LAYERS_ENABLE/DISABLE/ALLOW`, `XR_RUNTIME_JSON`,
+and manifest-declared enable/disable variable names. Process values belong to the
+diagnostic process, not the game. Steam may hold older inherited values until
+restarted. Environment-specified directories are reported, not recursively scanned.
+Only local drive paths are opened; network/device paths are reported uninspected.
+Manifest reads are capped at 1 MiB, DLL hashing at 256 MiB, and registrations at
+256 per key. Access errors and caps make the scan incomplete rather than proving absence.
+
+### Deconflicting a mismatched installation
+
+1. Close VR games before changing their shared layer.
+2. Install the game loader/Host/Runtime and `OpenXR/CheekyOpenXRSetup.exe` from
+   the same chosen Cheeky release. Updating game files alone does not update the
+   shared layer. The usual manifest is
+   `C:\Program Files\CheekyFoveatedDLSS\OpenXR\XR_APILAYER_CHEEKY_foveated_dlss.json`.
+3. If the report shows another enabled Cheeky manifest in an old directory,
+   confirm its ownership and back up that exact registry value before disabling
+   only the stale entry (DWORD 1). Keep the matching layer for stereo calibration
+   and eye tracking. Do not delete the shared Khronos registry key.
+4. Restart the applications and inspect same-run logs/loaded-module evidence.
+   An already running game can retain the old DLL even after the files change.
+
+This switcher performs **none of those repairs automatically**. It does not alter
+layers, environment variables, drivers, loaders, game files or framegen settings.
+Current option 4 remains our published 0.2.45 PSVR2 RC1; option 1 remains stock
+upstream 0.2.45. This diagnostic update does not change the port binaries.
