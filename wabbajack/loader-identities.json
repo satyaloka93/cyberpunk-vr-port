@@ -42,6 +42,13 @@
       "version": null,
       "sha256": "98162c49a9413ec985fcedf0b0c8d36b6efcf148b4ec9324f93aa5fd60683708",
       "source": "Local diagnostic package Cheeky-Loader-Diagnostics-20261109.zip; not a complete published Cheeky release"
+    },
+    {
+      "path": "bin/x64/dxgi.dll",
+      "identity": "Cheeky standalone DXGI loader (Nov 16 startup-chain fix)",
+      "version": null,
+      "sha256": "d45a9cae869271b3818c8f7f1ce236aec6ce0643e89913676561270ab09f3ac5",
+      "source": "Local deployment 2026-11-16; CheekyFoveatedDLSS .okf/operations/cp2077-renodx-investigation-20261115.md. Exact hash identity only, not package compatibility."
     }
   ]
 }

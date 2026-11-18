@@ -8,6 +8,7 @@ param(
     [string]$DownloadsDir = (Join-Path $env:USERPROFILE 'Downloads'),
     [string]$RestoreFrom,
     [string]$ReportPath,
+    [switch]$DetailedDiagnostics,
     [string]$MoreOccludersArchive,
     [switch]$PatchMoreOccluders,
     [ValidateSet('Upstream','Fork','Vrcam')][string]$Edition = 'Upstream',
@@ -351,7 +352,7 @@ try {
             if ($gameVersion -notmatch '^2\.5(?:\.0)?$') { throw "All switcher editions require game 2.5; detected '$gameVersion'. Nothing changed." }
         }
     }
-    if ($Action -eq 'Diagnose') { Show-CpvrInstallationDiagnostics $root $ReportPath; return }
+    if ($Action -eq 'Diagnose') { Show-CpvrInstallationDiagnostics $root $ReportPath -DetailedDiagnostics:$DetailedDiagnostics; return }
     if ($Action -eq 'Nexus') {
         $links = @($dependencies | Where-Object { $_.PSObject.Properties.Name -contains 'manualUrl' -and -not (Test-Dependency $_ $root) } | ForEach-Object { $_.manualUrl })
         if (-not $links.Count) { Write-Host 'All Nexus-required mods are already present. No account downloads needed.'; return }

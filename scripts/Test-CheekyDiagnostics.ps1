@@ -71,6 +71,46 @@ try {
     Put $h "Initializing standalone host`nDLSS-NR runtime search path=private.dll error=126`nDLSS-NR runtime search path=game.dll error=0`n"
     $r=Get-CpvrLogFindings (Read-CpvrDiagnosticLog $h)
     Assert ($r.Findings.Count -eq 1 -and $r.SuccessEvidence.Count -eq 1) 'DLL search fallback success shown alongside failed probe'
+    # Presentation classification must never clear a fatal or an unresolved retry.
+    Put $loader "HookIAT: Failed to find function 'MoveWindow' in DLL 'user32.dll' for module 00007FF00001`n"
+    $r=Analyze
+    Assert ((Get-CpvrFindingDisposition $r $r.Findings[0]) -eq 'Optional hook') 'Known absent optional import classified as noise'
+    Put $loader "HookIAT: Failed to find function 'CreateWindowExW' in DLL 'user32.dll' for module 00007FF00001`n"
+    $r=Analyze
+    Assert ((Get-CpvrFindingDisposition $r $r.Findings[0]) -eq 'Review') 'Unknown hook failures remain visible'
+    Put $loader "[T42] DLSS-NR runtime search path=private.dll error=126`n[T42] DLSS-NR runtime search path=game.dll error=0`n"
+    $r=Analyze
+    Assert ((Get-CpvrFindingDisposition $r $r.Findings[0]) -eq 'Recovered search') 'Nearby same-thread NR fallback grouped as recovered'
+    Put $loader "[T42] DLSS-NR runtime search path=private.dll error=126`n[T43] DLSS-NR runtime search path=game.dll error=0`n"
+    $r=Analyze
+    Assert ((Get-CpvrFindingDisposition $r $r.Findings[0]) -eq 'Review') 'Other-thread success does not clear NR failure'
+    Put $loader "[T42] DLSS-NR runtime search path=private.dll error=126`n[T42] DLSS-NR runtime search path=game.dll error=0`n[T42] DLSS-NR runtime search path=private.dll error=126`n"
+    $r=Analyze
+    Assert ((Get-CpvrFindingDisposition $r $r.Findings[0]) -eq 'Review') 'Later unresolved repeat is not cleared by earlier recovery'
+    Put $loader "[T42] DLSS-NR runtime search path=private.dll error=126`n[T42] DLSS-NR runtime selection=Previous`n[T42] DLSS-NR runtime search path=game.dll error=0`n"
+    $r=Analyze
+    Assert ((Get-CpvrFindingDisposition $r $r.Findings[0]) -eq 'Review') 'Another NR selection does not prove failed selection recovered'
+    Put $loader "OpenXRManager: Mono capture failed. serial=1 views=(0,0)`nOpenXRManager: eye image 3144x3000 resourceFmt=27 viewFmt=29`n"
+    $r=Analyze
+    Assert ((Get-CpvrFindingDisposition $r $r.Findings[0]) -eq 'Startup observation') 'Initial empty capture with following surface creation summarized'
+    Put $loader "OpenXRManager: Mono capture failed. serial=25 views=(0,0)`nOpenXRManager: eye image 3144x3000 resourceFmt=27 viewFmt=29`n"
+    $r=Analyze
+    Assert ((Get-CpvrFindingDisposition $r $r.Findings[0]) -eq 'Review') 'Noninitial capture failure remains visible'
+    Put $loader "FATAL: device removed`nhost started successfully`n"
+    $r=Analyze
+    Assert ((Get-CpvrFindingDisposition $r $r.Findings[0]) -eq 'Review') 'Host ready does not clear fatal GPU failure'
+    $emptyXr=[pscustomobject]@{Layers=@();Environment=@();Errors=@();Hints=@();Components=@()}
+    $sample=[pscustomobject]@{GameRoot=$root;GeneratedUtc=[datetime]::UtcNow;Identities=@();OpenXR=$emptyXr;Logs=@($r);Hints=@()}
+    $summary=@(Format-CpvrDiagnosticSummary $sample) -join "`n"
+    Assert ($summary -match 'FATAL/GPU' -and $summary -notmatch 'No unresolved') 'Concise output retains fatal despite readiness'
+    $sample.Logs=@(Get-CpvrLogFindings (Read-CpvrDiagnosticLog $loader) -NowUtc ([datetime]::UtcNow.AddDays(2)))
+    $summary=@(Format-CpvrDiagnosticSummary $sample) -join "`n"
+    Assert ($summary -notmatch 'device removed' -and $summary -match '1 stale log') 'Old fatal log counted as stale instead of current failure'
+    Put $loader "HookIAT: Failed to find function 'MoveWindow' in DLL 'user32.dll' for module 00007FF00001`n[T42] DLSS-NR runtime search path=private.dll error=126`n[T42] DLSS-NR runtime search path=game.dll error=0`nhost started successfully`n"
+    $sample.Logs=@(Analyze);$summary=@(Format-CpvrDiagnosticSummary $sample)
+    Assert ($summary.Count -lt 15 -and ($summary -join "`n") -match 'Recovered: 1' -and ($summary -join "`n") -notmatch 'error=126|MoveWindow') 'Healthy summary is short and omits noisy details'
+    $full=@(Format-CpvrInstallationDiagnostics $sample) -join "`n"
+    Assert ($full -match 'error=126' -and $full -match 'MoveWindow') 'Full evidence retains suppressed lines'
     Put (Join-Path $root 'red4ext\logs\red4ext-2026-11-09.log') 'framework log'
     Put (Join-Path $root 'red4ext\logs\unrelated-newer.log') 'different component'
     $before=Snap;$report=Get-CpvrInstallationDiagnostics $root
@@ -80,6 +120,7 @@ try {
     $export=Join-Path $base 'report.txt';Show-CpvrInstallationDiagnostics $root $export
     Assert ((Snap) -ceq $before) 'Report generation preserves every fixture game/config byte'
     Assert (Test-Path $export) 'Explicit local report exported'
+    Assert ((Get-Content $export -Raw) -match 'DETAILED EVIDENCE' -and (Get-Content $export -Raw) -match 'SHA-256:') 'Export includes full evidence after concise summary'
     $blocked=$false;try {Show-CpvrInstallationDiagnostics $root $export}catch{$blocked=$true}
     Assert $blocked 'Existing reports never overwritten'
     $blocked=$false;try {Show-CpvrInstallationDiagnostics $root (Join-Path $root 'bad-report.txt')}catch{$blocked=$true}

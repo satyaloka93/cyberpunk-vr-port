@@ -2,6 +2,27 @@
 
 Run `Switch-CyberpunkVRPort.bat`, then choose **11 — Check installation and recent errors (read-only)**. It can run while the game is open. No repair, download, DLL removal, settings change, registry change or process termination occurs.
 
+## Concise by default
+
+Option 11 prints a quick summary: loader identities, Cheeky layer state, relevant
+layer/environment warnings, startup readiness and at most eight prioritized
+unresolved log findings. Paths/hashes/context remain in the detailed report.
+Stale logs and absent alternate/legacy log locations are counted instead of dumped.
+
+Only four known optional user32 import-hook messages (MoveWindow, GetCursorInfo,
+GetSystemMetrics and GetMessagePos) are hidden from individual error listings.
+An NR search failure is summarized as recovered only when a nearby later search
+succeeds, with matching thread/PID when those identifiers exist. A later unresolved
+repeat stays visible. The first empty mono capture followed immediately by eye
+surface creation is a startup observation, not a claim of successful presentation.
+Fatal/GPU, loader, OpenXR, script and other unresolved failures remain review items;
+shutdown or Host readiness never clears an unrelated error.
+
+Use `-DetailedDiagnostics` with `-Action Diagnose` for all console detail.
+`-ReportPath` always exports the summary **and** full detailed evidence, while the
+console remains concise unless `-DetailedDiagnostics` is also supplied. No raw
+log content is deleted or changed by these display filters.
+
 The report identifies DXGI, VERSION, chained DXGI2 and RED4ext components using exact catalog hashes and embedded versions. **UNKNOWN does not mean broken.** Recognized Cheeky DXGI and VERSION files together are reported as possible duplicate entry points. They are alternatives: never overwrite an ASI Loader `version.dll` or RED4ext `winmm.dll` to make room for Cheeky.
 
 The inspector reads the selected game's Cheeky Loader, Host and Standalone logs, modern/legacy VR port logs, RED4ext logs and redscript log. It shows paths, modification times, latest retained startup boundary, and PID/UTC where present. New Cheeky diagnostic loaders report `PROCESS_ATTACH`, module/build identity, host startup and Win32/export failures. Older loaders may not write that log at all.

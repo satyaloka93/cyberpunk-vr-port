@@ -186,8 +186,101 @@ function Format-CpvrInstallationDiagnostics {
     }
 }
 
+function Get-CpvrFindingDisposition($Session,$Finding) {
+    # Suppression is narrow and presentation-only. Full findings remain in the export.
+    if($Finding.Kind -ne 'CANDIDATE'){return 'Review'}
+    if($Finding.Text -match "HookIAT: Failed to find function '(MoveWindow|GetCursorInfo|GetSystemMetrics|GetMessagePos)' in DLL 'user32\.dll' for module [0-9A-Fa-f]+\s*$") {return 'Optional hook'}
+    if($Finding.Text -match 'DLSS-NR runtime search path=.+error=[1-9]\d*\s*$') {
+        $lines=@($Session.Log.Lines)
+        $failed=$lines[$Finding.LastLine-1]
+        $thread=if($failed -match '\[T(\d+)\]'){$Matches[1]}else{$null}
+        $findingPid=if($failed -match '\bpid=(\d+)'){$Matches[1]}else{$null}
+        for($i=$Finding.LastLine;$i -lt [Math]::Min($lines.Count,$Finding.LastLine+6);$i++) {
+            $line=$lines[$i]
+            if($thread -and $line -notmatch ('\[T'+[regex]::Escape($thread)+'\]')){continue}
+            if($findingPid -and $line -notmatch ('\bpid='+[regex]::Escape($findingPid)+'\b')){continue}
+            if($line -match 'DLSS-NR runtime selection=|Initializing|PROCESS_ATTACH|\bFATAL\b'){break}
+            if($line -match 'DLSS-NR runtime search path=.+error=0\s*$'){return 'Recovered search'}
+        }
+    }
+    if($Finding.Count -eq 1 -and $Finding.Text -match 'OpenXRManager: Mono capture failed\. serial=1 views=\(0,0\)\s*$') {
+        # Surface creation is startup progress, not proof later frames displayed successfully.
+        $lines=@($Session.Log.Lines)
+        if($Finding.LastLine -lt $lines.Count -and $lines[$Finding.LastLine] -match 'OpenXRManager: eye image [1-9]\d*x[1-9]\d* '){return 'Startup observation'}
+    }
+    return 'Review'
+}
+function Format-CpvrDiagnosticSummary($Report) {
+    'Cyberpunk / Cheeky quick check (READ-ONLY)'
+    "Game: $($Report.GameRoot)"
+    $sessions=@($Report.Logs | Where-Object {$_.Log.State -eq 'READ' -and $_.Freshness -ne 'STALE'})
+    $dated=@($sessions | Where-Object {$_.SessionUtc} | Sort-Object SessionUtc -Descending | Select-Object -First 1)
+    if($dated.Count){"Latest dated log session: $($dated[0].SessionUtc.ToString('u')) (not a live-process check)"}
+    else {'No recent dated session found; log findings may not describe your current launch.'}
+    $red=@($Report.Identities | Where-Object {$_.Path -in @('bin\x64\winmm.dll','red4ext\RED4ext.dll')})
+    if($red.Count -eq 2 -and @($red | Where-Object State -ne 'VERIFIED').Count -eq 0){'OK: RED4ext loader/framework identities verified.'}
+    foreach($item in $Report.Identities) {
+        if($item.State -eq 'MISSING' -and $item.Path -notin @('bin\x64\winmm.dll','red4ext\RED4ext.dll')){continue}
+        if($item.State -eq 'VERIFIED' -and $item.Path -in @('bin\x64\winmm.dll','red4ext\RED4ext.dll')){continue}
+        "[$($item.State)] $($item.Path): $($item.Identity)"
+    }
+    $xr=$Report.OpenXR
+    $cheeky=@($xr.Layers | Where-Object {$_.Name -match '(?i)cheeky' -or $_.Manifest -match '(?i)cheeky'})
+    $enabled=@($cheeky | Where-Object Registration -eq 'ENABLED-REGISTRATION')
+    "Cheeky OpenXR: $($enabled.Count) enabled implicit registration(s)."
+    foreach($l in $cheeky){
+        if($l.Registration -eq 'ENABLED-REGISTRATION'){
+            $dll=if($l.Binary){$l.Binary.Path}else{$l.Manifest}
+            "  [$($l.State)] $dll"
+        }
+    }
+    $other=@($xr.Layers | Where-Object {$_.Registration -eq 'ENABLED-REGISTRATION' -and $_ -notin $cheeky} | ForEach-Object {$_.Name})
+    if($other.Count){'Other enabled layers: '+($other -join ', ')}
+    foreach($l in $xr.Layers | Where-Object {$_.Registration -eq 'INVALID' -or ($_.Registration -in @('ENABLED-REGISTRATION','EXPLICIT-AVAILABLE') -and $_.State -ne 'READ')}) {"REVIEW layer: $($l.Registration) / $($l.State): $($l.Manifest) $($l.Error)"}
+    foreach($hint in $xr.Hints | Where-Object {$_ -match '^(POSSIBLE DUPLICATE|REPEATED REGISTRATION|NO READABLE|DIFFERENT CHEEKY|CHEEKY \+ OFXR)'}){$hint}
+    foreach($scanError in $xr.Errors){"SCAN INCOMPLETE: $scanError"}
+    if($xr.Environment.Count){
+        'Environment overrides (diagnostic process/User/Machine; game inheritance may differ):'
+        foreach($e in $xr.Environment | Select-Object -First 6){"  [$($e.Scope)] $($e.Name)=$($e.Value)"}
+        if($xr.Environment.Count -gt 6){'  More overrides are included in the detailed report.'}
+    }
+    foreach($hint in $Report.Hints | Where-Object {$_ -match '^(POSSIBLE DUPLICATE CHEEKY|MISPLACED KNOWN|Missing Cheeky loader log)'}){$hint}
+    $review=New-Object 'System.Collections.Generic.List[object]'
+    $optional=0;$recovered=0;$startup=0
+    foreach($r in $sessions){
+        foreach($f in $r.Findings){
+            switch(Get-CpvrFindingDisposition $r $f){
+                'Optional hook' {$optional+=$f.Count}
+                'Recovered search' {$recovered+=$f.Count}
+                'Startup observation' {$startup+=$f.Count}
+                default {$review.Add([pscustomobject]@{Session=$r;Finding=$f})}
+            }
+        }
+    }
+    $ready=@($sessions | ForEach-Object {$_.SuccessEvidence} | Where-Object {$_.Text -match 'host started successfully|Host ready;|Menu ready'})
+    if($ready.Count){'Cheeky startup: Host/Menu readiness appears in the inspected logs.'}
+    if($recovered){"Recovered: $recovered NR DLL search failure(s), followed by a nearby successful search."}
+    if($optional){"Hidden: $optional known optional Win32 import-hook message(s)."}
+    if($startup){"Startup: $startup initial empty mono capture(s), followed by eye-surface creation; not a sustained-failure diagnosis."}
+    $unread=@($Report.Logs | Where-Object {$_.Log.State -eq 'UNREADABLE'})
+    foreach($r in $unread){"UNREADABLE log: $($r.Log.Path): $($r.Log.ReadError)"}
+    if($review.Count){
+        "Log findings to review: $($review.Count) distinct."
+        foreach($entry in $review | Sort-Object @{Expression={switch($_.Finding.Kind){'FATAL/GPU'{0};'LOADER/HOST'{1};'OPENXR'{2};'DEPENDENCY/SCRIPT'{3};default{4}}}} | Select-Object -First 8){
+            $f=$entry.Finding;$r=$entry.Session
+            $where=if($r.Log.Offset){'tail line'}else{'line'}
+            "  [$($f.Kind); $($r.Freshness)] $([IO.Path]::GetFileName($r.Log.Path)) $where $($f.Line), x$($f.Count): $($f.Text)"
+        }
+        if($review.Count -gt 8){'  Additional findings are retained in the detailed report.'}
+    } else {'No unresolved error signatures in the inspected recent log tails. This does not verify live compatibility.'}
+    $stale=@($Report.Logs | Where-Object {$_.Log.State -eq 'READ' -and $_.Freshness -eq 'STALE'})
+    $missing=@($Report.Logs | Where-Object {$_.Log.State -eq 'MISSING'})
+    if($stale.Count -or $missing.Count){"Omitted from summary: $($stale.Count) stale log(s), $($missing.Count) absent log location(s), including alternate/legacy paths."}
+    'Registration is not proof a layer loaded. Full paths, hashes and error context remain available with -DetailedDiagnostics or -ReportPath.'
+}
+
 function Show-CpvrInstallationDiagnostics {
-    param([string]$Root,[string]$ReportPath)
+    param([string]$Root,[string]$ReportPath,[switch]$DetailedDiagnostics)
     # Export only on explicit request, never into the game tree and never over an existing file.
     if($ReportPath){
         $dest=[IO.Path]::GetFullPath($ReportPath);$prefix=[IO.Path]::GetFullPath($Root).TrimEnd('\')+'\'
@@ -198,8 +291,10 @@ function Show-CpvrInstallationDiagnostics {
         for($p=$parent;$null -ne $p;$p=$p.Parent){if($p.Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'Use a report directory without junctions or symbolic links.'}}
     }
     $report=Get-CpvrInstallationDiagnostics $Root
-    $text=@(Format-CpvrInstallationDiagnostics $report)
-    $text | ForEach-Object {Write-Host $_}
+    $summary=@(Format-CpvrDiagnosticSummary $report)
+    $text=@($summary)
+    if($DetailedDiagnostics -or $ReportPath){$text+=@("", "DETAILED EVIDENCE", "")+@(Format-CpvrInstallationDiagnostics $report)}
+    if($DetailedDiagnostics){$text | ForEach-Object {Write-Host $_}}else{$summary | ForEach-Object {Write-Host $_}}
     if($ReportPath){
         $stream=[IO.File]::Open($dest,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read)
         try {$bytes=[Text.Encoding]::UTF8.GetBytes(($text -join [Environment]::NewLine));$stream.Write($bytes,0,$bytes.Length)} finally {$stream.Dispose()}
